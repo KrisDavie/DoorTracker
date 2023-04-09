@@ -21,6 +21,7 @@ Start SNI and launch the tracker. The tracker will automatically connect to SNI 
 
 ## Requirements
 * Python 3.6+
+* grpcio
 * TODO...
 
 In the meantime use the requirements from the Doors branch and add `Pillow`
