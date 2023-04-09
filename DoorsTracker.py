@@ -3,6 +3,7 @@ import asyncio
 import math
 from pathlib import Path
 import pickle
+import sys
 from tkinter import Tk, TOP, BOTH, Toplevel, ttk, filedialog
 from PIL import Image
 import logging
@@ -14,7 +15,7 @@ from gui.Entrances.overview import entrance_customizer_page
 from gui.Items.overview import item_customizer_page
 from SpoilerToYaml import parse_dr_spoiler
 from data.worlds_data import dungeon_worlds
-from data.doors_data import eg_tile_multiuse, door_coordinates
+from data.doors_data import eg_tile_multiuse, door_coordinates, dark_tiles
 
 import os
 import yaml
@@ -24,18 +25,18 @@ dungeon_ids = {
     '02': 'Hyrule_Castle',
     '04': "Eastern_Palace",
     '06': "Desert_Palace",
-    '08': "Tower_of_Hera",
-    '0a': "Castle_Tower",
+    '14': "Tower_of_Hera",
+    '08': "Castle_Tower",
     '0c': "Palace_of_Darkness",
-    '0e': "Swamp_Palace",
+    '0a': "Swamp_Palace",
     '10': "Skull_Woods",
-    '12': "Thieves_Town",
-    '14': "Ice_Palace",
-    '16': "Misery_Mire",
+    '16': "Thieves_Town",
+    '12': "Ice_Palace",
+    '0e': "Misery_Mire",
     '18': "Turtle_Rock",
     '1a': "Ganons_Tower",
-}
 
+}
 
 def customizerGUI(mainWindow, args=None):
    
@@ -291,17 +292,24 @@ def customizerGUI(mainWindow, args=None):
     doors_page = get_named_page(mainWindow.notebook, mainWindow.pages, 'doors')
     mainWindow.notebook.select(doors_page)
 
-def build_multi_request(add_space, mem_mapping):
-    addresses = {
+mem_addresses = {
         'link_y': (0xF50020, 0x2),
         'link_x': (0xF50022, 0x2),
         'indoors': (0xF5001B, 0x1),
         'dungeon': (0xF5040C, 0x1),
         'dungeon_room': (0xF5048E, 0x1),
-        'transitioning': (0XF500B0, 0x1)
+        'transitioning': (0xF500B0, 0x1),
+        'scrolling': (0xF50126, 0x1),
+        'falling': (0xF5005B, 0x1),
+        'dead': (0xF5010A, 0x1),
+        'stairs': (0xF50464, 0x1),
+        'lampcone': (0xF50458, 0x1),
+        'torches': (0xF5045A, 0x1),
     }
+
+def build_multi_request(add_space, mem_mapping):
     requests = {}
-    for name, (address, size) in addresses.items():
+    for name, (address, size) in mem_addresses.items():
         request = sni_pb2.ReadMemoryRequest()
         request.requestAddressSpace = add_space
         request.requestMemoryMapping = mem_mapping
@@ -312,8 +320,6 @@ def build_multi_request(add_space, mem_mapping):
 
 def des_data(mem_request_names, mem_data):
     data = {mem_request_names[n]: x.data.hex() for n, x in enumerate(mem_data.responses)}
-    # data['link_y'] = f"{data['link_y'][2:]}{data['link_y'][:2]}"
-    # data['link_x'] = f"{data['link_x'][2:]}{data['link_x'][:2]}"
     return data
 
 async def tk_main(root):
@@ -328,7 +334,10 @@ def get_named_page(nb, pages, name):
     return nb.index(pages[name])
 
 def find_closest_door(x, y, tile):
-    doors = door_coordinates[tile] # dict of door coordinates
+    try:
+        doors = door_coordinates[tile] # dict of door coordinates
+    except KeyError:
+        return None
     closest_door = None
     closest_distance = 512
     for door in doors:
@@ -340,101 +349,141 @@ def find_closest_door(x, y, tile):
 
 
 
-async def sni_probe(mainWindow, port: int = 8191):
-    async with grpc.aio.insecure_channel(f'localhost:{port}') as channel:
-        stub = sni.DevicesStub(channel)
-        response = await stub.ListDevices(sni_pb2.DevicesRequest(kinds=''))
-        print("Found device: " + response.devices[0].uri)
-        dev_uri = response.devices[0].uri
-        dev_addrspace = response.devices[0].defaultAddressSpace
-        mem_stub = sni.DeviceMemoryStub(channel)
-        mem_mapping = await mem_stub.MappingDetect(sni_pb2.DetectMemoryMappingRequest(uri=dev_uri))
-        mem_mapping = mem_mapping.memoryMapping
-        mem_request = build_multi_request(dev_addrspace, mem_mapping)
-        mem_request_names = list(mem_request.keys())
+async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: bool = False):
+    # While loop to auto reconnect if the channel is closed?
+    while True:
+        async with grpc.aio.insecure_channel(f'localhost:{port}') as channel:
+            stub = sni.DevicesStub(channel)
+            response = await stub.ListDevices(sni_pb2.DevicesRequest(kinds=''))
+            print("Found device: " + response.devices[0].uri)
+            dev_uri = response.devices[0].uri
+            dev_addrspace = response.devices[0].defaultAddressSpace
+            mem_stub = sni.DeviceMemoryStub(channel)
+            mem_mapping = await mem_stub.MappingDetect(sni_pb2.DetectMemoryMappingRequest(uri=dev_uri))
+            mem_mapping = mem_mapping.memoryMapping
+            mem_request = build_multi_request(dev_addrspace, mem_mapping)
+            mem_request_names = list(mem_request.keys())
 
-        main_nb = mainWindow.notebook
-        doors_page = get_named_page(main_nb, mainWindow.pages, 'doors')
-        doors_nb = mainWindow.pages['doors'].notebook
+            main_nb = mainWindow.notebook
+            doors_page = get_named_page(main_nb, mainWindow.pages, 'doors')
+            doors_nb = mainWindow.pages['doors'].notebook
 
-        current_tile = None
-        previous_tile = None
-        current_x = None
-        current_y = None
-        previous_x = None
-        previous_y = None
+            current_tile = None
+            previous_tile = None
+            current_x = None
+            current_y = None
+            previous_x = None
+            previous_y = None
+            was_transitioning = False
+            was_falling = False
+            was_dead = False
+            old_data = {k: None for k in mem_request_names}
 
-        while True:
-            mem_req = sni_pb2.MultiReadMemoryRequest(uri=dev_uri, requests=list(mem_request.values()))
-            mem_data = await mem_stub.MultiRead(mem_req)
-            data = des_data(mem_request_names, mem_data)
-            if data['dungeon'] not in dungeon_ids.keys() or data['indoors'] != '01':
-                current_tile = None
-                previous_tile = None
-                current_x = None
-                current_y = None
-                previous_x = None
-                previous_y = None
-                await asyncio.sleep(0.5)
-                continue
-            
-            # Select the doors tab and the dungeon page
-            if get_cur_page(main_nb) != doors_page:
-                mainWindow.notebook.select(doors_page)
-            dungeon_page = get_named_page(doors_nb, mainWindow.pages['doors'].pages, dungeon_ids[data["dungeon"]])
-            if get_cur_page(doors_nb) != dungeon_page:
-                doors_nb.select(dungeon_page)
+            while True:
+                mem_req = sni_pb2.MultiReadMemoryRequest(uri=dev_uri, requests=list(mem_request.values()))
+                mem_data = await mem_stub.MultiRead(mem_req)
+                data = des_data(mem_request_names, mem_data)
+                data_diff = {k: v for k, v in data.items() if v != old_data[k]}
+                old_data = data
+                if len(data_diff) != 0 and args.debug:
+                    print(data_diff)
 
-            if data['transitioning'] != '00':
+                if data['dungeon'] not in dungeon_ids.keys() or data['indoors'] != '01':
+                    current_tile = None
+                    previous_tile = None
+                    current_x = None
+                    current_y = None
+                    previous_x = None
+                    previous_y = None
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                # Select the doors tab and the dungeon page
+                if get_cur_page(main_nb) != doors_page:
+                    mainWindow.notebook.select(doors_page)
+                dungeon_page = get_named_page(doors_nb, mainWindow.pages['doors'].pages, dungeon_ids[data["dungeon"]])
+                if get_cur_page(doors_nb) != dungeon_page:
+                    doors_nb.select(dungeon_page)
+
+                if data['transitioning'] != '00':
+                    was_transitioning = True
+                    await asyncio.sleep(0.1)
+                    continue
+
+                # TODO: Check doors to see if they're entrances and add lobbies?                
+
+                eg_tile = (int(data['dungeon_room'], 16) % 16, int(data['dungeon_room'], 16) // 16)
+                dp_content = mainWindow.pages['doors'].pages[dungeon_ids[data["dungeon"]]].content
+                if 'map_tile' not in dp_content.tiles[eg_tile]:
+                    dp_content.auto_add_tile(dp_content, eg_tile)
+
+                previous_x = current_x
+                previous_y = current_y
+                current_x_subtile = int(data['link_x'][2:], 16) % 2
+                current_y_subtile = int(data['link_y'][2:], 16) % 2
+                current_x = (current_x_subtile * 255) + int(data['link_x'][:2], 16) 
+                current_y = (current_y_subtile * 255) + int(data['link_y'][:2], 16)
+
+                if eg_tile not in dark_tiles or darkpos or (eg_tile in dark_tiles and (data['lampcone'] != '00' or data['torches'] != '00')):
+                    dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
+
+                # Both dying and falling can change supertile with no real doors
+                if data['dead'] == '01':
+                    previous_tile = current_tile = None
+                    was_dead = True
+                    continue 
+
+                if data['falling'] != '00':
+                    previous_tile = current_tile = None
+                    was_falling = True
+                    continue
+
+                if current_tile != eg_tile and current_tile == None:
+                    previous_tile = eg_tile
+                    current_tile = eg_tile
+                    if was_falling or was_dead:
+                        was_falling = False
+                        was_dead = False
+                        continue
+                    # We just entered a new dungeon, add an entrance
+                    if eg_tile == (2, 1):
+                        continue
+                    new_door = find_closest_door(current_x, current_y, eg_tile)
+                    dp_content.auto_add_lobby(dp_content, new_door)
+
+                elif (current_tile != eg_tile and current_tile != None) or was_transitioning:     
+                    was_transitioning = False         
+                    previous_tile = current_tile
+                    current_tile = eg_tile
+                    
+                    old_door = find_closest_door(previous_x, previous_y, previous_tile)
+                    new_door = find_closest_door(current_x, current_y, eg_tile)
+                    if old_door == new_door:
+                        continue
+                    dp_content.auto_add_door_link(dp_content, old_door, new_door)
+
                 await asyncio.sleep(0.1)
-                continue
-
-            # TODO: Check doors to see if they're entrances and add lobbies?
-            # TODO: Check if a darkroom is visible (has lamp or torch lit), if not, skip it.
-            
-
-            eg_tile = (int(data['dungeon_room'], 16) % 16, int(data['dungeon_room'], 16) // 16)
-            dp_content = mainWindow.pages['doors'].pages[dungeon_ids[data["dungeon"]]].content
-            if 'map_tile' not in dp_content.tiles[eg_tile]:
-                dp_content.auto_add_tile(dp_content, eg_tile)
-
-            previous_x = current_x
-            previous_y = current_y
-            current_x_subtile = int(data['link_x'][2:], 16) % 2
-            current_y_subtile = int(data['link_y'][2:], 16) % 2
-            current_x = (current_x_subtile * 255) + int(data['link_x'][:2], 16) 
-            current_y = (current_y_subtile * 255) + int(data['link_y'][:2], 16)
-            dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
-
-            if current_tile != eg_tile and current_tile == None:
-                previous_tile = eg_tile
-                current_tile = eg_tile
-                # We just entered a new dungeon, add an entrance
-                new_door = find_closest_door(current_x, current_y, eg_tile)
-                dp_content.auto_add_lobby(dp_content, new_door)
-
-            elif current_tile != eg_tile and current_tile != None:
-                previous_tile = current_tile
-                current_tile = eg_tile
-                old_door = find_closest_door(previous_x, previous_y, previous_tile)
-                new_door = find_closest_door(current_x, current_y, eg_tile)
-                dp_content.auto_add_door_link(dp_content, old_door, new_door)
-
-            await asyncio.sleep(0.5)
 
 if __name__ == "__main__":
     logging.basicConfig()
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--size", choices=['small', 'medium', 'large'], default='medium')
     parser.add_argument('--port', type=int, default=8191)
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--darkpos', action='store_true')
+    parser.add_argument('--help', action='store_true')
 
     args, _ = parser.parse_known_args()
+    if args.help:
+        parser.print_help()
+        sys.exit(0)
+        
     mainWindow = Tk()
 
     customizerGUI(mainWindow, args=args)
 
     tkmain = asyncio.ensure_future(tk_main(mainWindow))
-    sn_probe = asyncio.ensure_future(sni_probe(mainWindow, port=args.port))
+    sn_probe = asyncio.ensure_future(sni_probe(mainWindow, port=args.port, debug=args.debug, darkpos=args.darkpos))
 
     loop = asyncio.get_event_loop()
     mainWindow.loop = loop

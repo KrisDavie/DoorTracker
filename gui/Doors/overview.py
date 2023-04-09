@@ -822,14 +822,21 @@ def door_customizer_page(
             self.canvas.itemconfigure(self.door_buttons[last_link["linked_door"]], fill="grey")  # type: ignore
 
     def auto_add_door_link(self: DoorPage, door, linked_door):
-        if has_target(self, linked_door):
-            return
+        for d in [door, linked_door]:
+            if has_target(self, d) or d in INTERIOR_DOORS or d in [x['door'] for x in self.lobby_doors] or d == None:
+                return
+
         add_door_link(self, door, linked_door)
         draw_latest_door_link(self, linked_door)
         redraw_canvas(self)
 
     def auto_add_lobby(self: DoorPage, door):
         lobby_idx = len(self.lobby_doors)
+        current_lobby_doors = [x['door'] for x in self.lobby_doors]
+        if door in current_lobby_doors or door == None:
+            return
+        if 'Sanctuary Mirror Route' in current_lobby_doors:
+            lobby_idx -= 1
         lobby = dungeon_lobbies[tab_world][lobby_idx]
         add_lobby_door(self, door, lobby)
         x_loc, y_loc = get_final_door_coords(self, self.lobby_doors[-1], "source", self.x_offset, self.y_offset)
@@ -842,10 +849,13 @@ def door_customizer_page(
         redraw_canvas(self)
 
 
-
-
     def has_target(self: DoorPage, loc_name):
-        return loc_name in self.door_links
+        linked_doors = set()
+        for data in self.door_links:
+            linked_doors.add(data["door"])
+            if 'linked_door' in data:
+                linked_doors.add(data["linked_door"])
+        return loc_name in linked_doors
 
     def return_connections(door_links, lobby_doors, special_doors):
         # print(lobby_doors)

@@ -12,11 +12,12 @@ This tracker will auto-track dungeon layouts from the Doors branch of ALttPR usi
 ## Usage
 Start SNI and launch the tracker. The tracker will automatically connect to SNI and start tracking.
 
-`python tracker.py`
+`python DoorsTracker.py`
 
 ## Arguments
 * `--size` - Size of the tracker window ('small', 'medium', 'large')
 * `--port` - Port to use for SNI connection
+* `--darkpos` - Show player position on map when in dark rooms without lamp and without any torches lit
 
 
 ## Requirements
@@ -24,12 +25,9 @@ Start SNI and launch the tracker. The tracker will automatically connect to SNI 
 * grpcio
 * TODO...
 
-In the meantime use the requirements from the Doors branch and add `Pillow`
+In the meantime use the requirements from the Doors branch and add `Pillow` and `grpcio`
 
 ## Known Issues
-* Currently there are no exceptions for dark rooms, these will be added
 * Lots of old code leftover from plando tool
 * Dropdowns won't be marked as lobbies, and links will be lost from them
-* There is no error checking in most of the code. If a device is not found when starting the tracker, auto-tracking won't work until reloading
-* Saving and loading is not tested (but _might_ work)
-* Sometimes the auto-tracking will stop working and you'll have to restart the tracker (losing all of the maps)
+* Sometimes the auto-tracking will stop working and you'll have to restart the tracker (losing all of the maps) - let me know if you come across this

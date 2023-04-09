@@ -26,6 +26,22 @@ door_fix_map = {
     "Ice Cross Top Push Block Right": "Ice Cross Right ES",
 }
 
+dark_tiles = {(0, 12),
+ (0, 13),
+ (1, 2),
+ (1, 4),
+ (2, 2),
+ (2, 3),
+ (2, 4),
+ (2, 9),
+ (3, 9),
+ (5, 11),
+ (9, 1),
+ (9, 9),
+ (10, 6),
+ (10, 11),
+ (11, 0)}
+
 door_coordinates = {
     (1, 6): [
         {"x": 57, "y": 263, "loc_type": "door", "button": 9, "name": "Hyrule Castle Lobby W"},
