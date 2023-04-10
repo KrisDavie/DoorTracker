@@ -1,7 +1,7 @@
 from enum import Enum
 from pathlib import Path
 
-import gui.new_location_data as location_data
+import data.new_location_data as location_data
 
 
 class World(Enum):

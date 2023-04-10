@@ -2,9 +2,9 @@ from enum import Enum
 import math
 from tkinter import Toplevel, ttk, NW, Canvas
 from PIL import ImageTk, Image, ImageOps, ImageDraw
-import gui.item_sprite_data as item_sprite_data
+import data.item_sprite_data as item_sprite_data
 from data.worlds_data import worlds_data
-from gui.new_location_data import supertile_overrides
+from data.new_location_data import supertile_overrides
 
 from pathlib import Path
 

@@ -86,6 +86,7 @@ item_table = {
     "Flippers": (1, 3),
     "Hookshot": (1, 4),
     "Sanctuary_Mirror": (8, 5),
+    "Drop": (7, 5)
 }
 
 dungeon_lobbies = {

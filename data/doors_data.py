@@ -137,6 +137,7 @@ door_coordinates = {
         {"x": 383, "y": 478, "loc_type": "door", "button": 83, "name": "Sewers Secret Room Key Door S"},
         {"x": 291, "y": 393, "loc_type": "door", "button": 84, "name": "Sewers Rat Path WS"},
         {"x": 289, "y": 137, "loc_type": "door", "button": 85, "name": "Sewers Rat Path WN"},
+        {"x": 402, "y": 286, "loc_type": "door", "button": 86, "name": "Sewer Drop"},
         {"x": 222, "y": 395, "loc_type": "door", "button": 86, "name": "Sewers Secret Room ES"},
         {"x": 221, "y": 136, "loc_type": "door", "button": 87, "name": "Sewers Secret Room EN"},
         {"x": 383, "y": 49, "loc_type": "door", "button": 88, "name": "Sewers Secret Room Up Stairs"},
@@ -578,6 +579,7 @@ door_coordinates = {
         {"x": 289, "y": 391, "loc_type": "door", "button": 494, "name": "Skull Map Room WS"},
         {"x": 383, "y": 478, "loc_type": "door", "button": 495, "name": "Skull Map Room SE"},
         {"x": 291, "y": 135, "loc_type": "door", "button": 496, "name": "Skull Pot Circle WN"},
+        {"x": 410, "y": 118, "loc_type": "door", "button": 497, "name": "Skull Drop Entrance Top"},
         {"x": 219, "y": 135, "loc_type": "door", "button": 497, "name": "Skull Pull Switch EN"},
         {"x": 128, "y": 250, "loc_type": "door", "button": 498, "name": "Skull Pull Switch S"},
         {"x": 127, "y": 264, "loc_type": "door", "button": 499, "name": "Skull Big Chest N"},
@@ -585,11 +587,13 @@ door_coordinates = {
     (8, 6): [
         {"x": 383, "y": 50, "loc_type": "door", "button": 501, "name": "Skull Pinball NE"},
         {"x": 31, "y": 392, "loc_type": "door", "button": 502, "name": "Skull Pinball WS"},
+        {"x": 218, "y": 286, "loc_type": "door", "button": 503, "name": "Skull Drop Entrance Right"},
     ],
     (7, 6): [
         {"x": 383, "y": 49, "loc_type": "door", "button": 504, "name": "Skull Compass Room NE"},
         {"x": 477, "y": 392, "loc_type": "door", "button": 505, "name": "Skull Compass Room ES"},
         {"x": 221, "y": 391, "loc_type": "door", "button": 506, "name": "Skull Left Drop ES"},
+        {"x": 127, "y": 124, "loc_type": "door", "button": 507, "name": "Skull Drop Entrance Left"},
         {"x": 289, "y": 392, "loc_type": "door", "button": 507, "name": "Skull Compass Room WS"},
     ],
     (7, 5): [
@@ -605,6 +609,7 @@ door_coordinates = {
     (6, 5): [
         {"x": 477, "y": 393, "loc_type": "door", "button": 518, "name": "Skull Small Hall ES"},
         {"x": 290, "y": 392, "loc_type": "door", "button": 519, "name": "Skull Small Hall WS"},
+        {"x": 378, "y": 156, "loc_type": "door", "button": 520, "name": "Skull Drop Entrance Back"},
         {"x": 128, "y": 480, "loc_type": "door", "button": 520, "name": "Skull 2 West Lobby S"},
         {"x": 222, "y": 392, "loc_type": "door", "button": 521, "name": "Skull 2 West Lobby ES"},
         {"x": 127, "y": 306, "loc_type": "door", "button": 522, "name": "Skull 2 West Lobby NW"},
@@ -1249,12 +1254,12 @@ dungeon_lobbies = {
     World.EasternPalace: ["Eastern"],
     World.GanonsTower: ["Ganons Tower"],
     World.TowerOfHera: ["Hera"],
-    World.HyruleCastle: ["Hyrule Castle South", "Hyrule Castle East", "Hyrule Castle West", "Sanctuary"],
+    World.HyruleCastle: ["Hyrule Castle South", "Hyrule Castle East", "Hyrule Castle West", "Sanctuary", 'Sewer Drop'],
     World.IcePalace: ["Ice"],
     World.MiseryMire: ["Mire"],
     World.PalaceOfDarkness: ["Palace of Darkness"],
     # World.Sanctuary: ['Sanctuary'],
-    World.SkullWoods: ["Skull 1", "Skull 2 East", "Skull 2 West", "Skull 3"],
+    World.SkullWoods: ["Skull 1", "Skull 2 East", "Skull 2 West", "Skull 3", 'Skull Drop Entrance Left', 'Skull Drop Entrance Right', 'Skull Drop Entrance Top', 'Skull Drop Entrance Back'],
     World.SwampPalace: ["Swamp"],
     World.ThievesTown: ["Thieves Town"],
     World.TurtleRock: [
@@ -1265,6 +1270,7 @@ dungeon_lobbies = {
     ],
 }
 
+
 # Boss tiles are locked to their dungeons.
 # SW drop tiles are locked to their dungeon.
 mandatory_tiles: dict[World, list[tuple[int, int]]] = {
@@ -1273,7 +1279,7 @@ mandatory_tiles: dict[World, list[tuple[int, int]]] = {
     World.EasternPalace: [(8, 12)],
     World.GanonsTower: [(13, 0)],
     World.TowerOfHera: [(7, 0), ],
-    World.HyruleCastle: [],
+    World.HyruleCastle: [(1, 1)],
     World.IcePalace: [(14, 13)],
     World.MiseryMire: [(0, 9)],
     World.PalaceOfDarkness: [(10, 5)],
@@ -2725,7 +2731,12 @@ dungeon_warps = [
     ('GT Hidden Star Warp', 'GT Invisible Bridges')
 ]
 
+doors_data["Sewer Drop"] = (17, "Up")
 doors_data["Sanctuary Mirror Route"] = (18, "Up")
+doors_data["Skull Drop Entrance Top"] = (88, "Up")
+doors_data["Skull Drop Entrance Right"] = (104, "Up")
+doors_data["Skull Drop Entrance Left"] = (103, "Up")
+doors_data["Skull Drop Entrance Back"] = (86, "Up")
 
 regions_to_doors = {'Sewer Drop': ['Sewer Drop'],
 'Sanctuary Portal': ['Sanctuary Exit', 'Enter HC (Sanc)'],
@@ -2780,7 +2791,7 @@ regions_to_doors = {'Sewer Drop': ['Sewer Drop'],
 'Sewers Dark Aquabats': ['Sewers Dark Aquabats ES', 'Sewers Dark Aquabats N'],
 'Sewers Key Rat': ['Sewers Key Rat S', 'Sewers Key Rat NE'],
 'Sewers Secret Room Blocked Path': ['Sewers Secret Room Up Stairs'],
-'Sewers Rat Path': ['Sewers Secret Room Key Door S', 'Sewers Secret Room Push Block', 'Sewers Rat Path WS', 'Sewers Rat Path WN'],
+'Sewers Rat Path': ['Sewers Secret Room Key Door S', 'Sewers Secret Room Push Block', 'Sewers Rat Path WS', 'Sewers Rat Path WN', 'Sewer Drop'],
 'Sewers Secret Room': ['Sewers Secret Room ES', 'Sewers Secret Room EN'],
 'Sewers Yet More Rats': ['Sewers Pull Switch Down Stairs', 'Sewers Yet More Rats S'],
 'Sewers Pull Switch': ['Sewers Pull Switch N', 'Sewers Pull Switch S'],
@@ -2988,18 +2999,18 @@ regions_to_doors = {'Sewer Drop': ['Sewer Drop'],
 'Swamp Boss': ['Swamp Boss SW'],
 'Skull 1 Lobby': ['Skull 1 Lobby S', 'Skull 1 Lobby WS', 'Skull 1 Lobby ES'],
 'Skull Map Room': ['Skull Map Room WS', 'Skull Map Room SE'],
-'Skull Pot Circle': ['Skull Pot Circle WN', 'Skull Pot Circle Star Path'],
+'Skull Pot Circle': ['Skull Drop Entrance Top', 'Skull Pot Circle WN', 'Skull Pot Circle Star Path'],
 'Skull Pull Switch': ['Skull Pull Switch EN', 'Skull Pull Switch S'],
 'Skull Big Chest': ['Skull Big Chest N', 'Skull Big Chest Hookpath'],
-'Skull Pinball': ['Skull Pinball NE', 'Skull Pinball WS'],
+'Skull Pinball': ['Skull Drop Entrance Right', 'Skull Pinball NE', 'Skull Pinball WS'],
 'Skull Pot Prison': ['Skull Pot Prison ES', 'Skull Pot Prison SE'],
 'Skull Compass Room': ['Skull Compass Room NE', 'Skull Compass Room ES', 'Skull Compass Room WS'],
-'Skull Left Drop': ['Skull Left Drop ES'],
+'Skull Left Drop': ['Skull Drop Entrance Left', 'Skull Left Drop ES'],
 'Skull 2 East Lobby': ['Skull 2 East Lobby NW', 'Skull 2 East Lobby WS', 'Skull 2 East Lobby SW'],
 'Skull Big Key': ['Skull Big Key SW', 'Skull Big Key EN'],
 'Skull Lone Pot': ['Skull Lone Pot WN'],
 'Skull Small Hall': ['Skull Small Hall ES', 'Skull Small Hall WS'],
-'Skull Back Drop': ['Skull Back Drop Star Path'],
+'Skull Back Drop': ['Skull Drop Entrance Back', 'Skull Back Drop Star Path'],
 'Skull 2 West Lobby': ['Skull 2 West Lobby ES', 'Skull 2 West Lobby Pits', 'Skull 2 West Lobby S'],
 'Skull 2 West Lobby Ledge': ['Skull 2 West Lobby NW', 'Skull 2 West Lobby Ledge Pits'],
 'Skull X Room': ['Skull X Room SW'],

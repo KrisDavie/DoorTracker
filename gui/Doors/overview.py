@@ -3,7 +3,7 @@ from typing import List, Tuple, TypedDict, Union
 import typing
 from PIL import ImageTk, Image, ImageOps, ImageColor
 from collections import deque, defaultdict
-import gui.doors_sprite_data as doors_sprite_data
+import data.doors_sprite_data as doors_sprite_data
 from gui.Entrances.overview import SelectState
 from data.worlds_data import dungeon_worlds
 from data.doors_data import (
@@ -27,11 +27,11 @@ from pathlib import Path
 BORDER_SIZE = 20
 TILE_BORDER_SIZE = 3
 MANUAL_REGIONS_ADDED = {
-    "Sewers Secret Room Up Stairs": "Sewers Rat Path",  # Sewer Drop
-    "Skull Small Hall ES": "Skull Back Drop",  # Skull Back Drop
-    "Skull Pot Circle WN": "Skull Pot Circle",  # Skull Pot Circle
-    "Skull Left Drop ES": "Skull Left Drop",  # Skull Left Drop
-    "Skull Pinball NE": "Skull Pinball",  # Skull Pinball
+    # "Sewers Secret Room Up Stairs": "Sewers Rat Path",  # Sewer Drop
+    # "Skull Small Hall ES": "Skull Back Drop",  # Skull Back Drop
+    # "Skull Pot Circle WN": "Skull Pot Circle",  # Skull Pot Circle
+    # "Skull Left Drop ES": "Skull Left Drop",  # Skull Left Drop
+    # "Skull Pinball NE": "Skull Pinball",  # Skull Pinball
     "Eastern Hint Tile WN": "Eastern Hint Tile Blocked Path",  # Eastern Hint Tile
 }
 
@@ -192,7 +192,7 @@ def door_customizer_page(
                 if door in doors_to_regions:
                     nd_region = doors_to_regions[door]
                 else:
-                    print("ERROR: Door not found in doors_to_regions", door)
+                    # print("ERROR: Door not found in doors_to_regions", door)
                     return
             else:
                 nd_region = door
@@ -322,11 +322,11 @@ def door_customizer_page(
                 door_links_to_make.add(next_door)
             else:
                 if next_door not in self.doors:
-                    print("ERROR: Door not found in doors", next_door)
+                    # print("ERROR: Door not found in doors", next_door)
                     continue
                 _region = self.doors[next_door]
                 if _region not in regions_to_doors:
-                    print("ERROR: Region not found in regions_to_doors", _region)
+                    # print("ERROR: Region not found in regions_to_doors", _region)
                     queue_regions_doors(self.doors[next_door])
                 else:
                     queue_regions_doors(self.doors[next_door], region=True)
@@ -343,6 +343,8 @@ def door_customizer_page(
 
             # (Is this a door) or (have we already added the tile)?
             if (door_tile_x, door_tile_y) == (None, None) or (door_tile_x, door_tile_y) in self.tiles:
+                if next_door in dungeon_lobbies[tab_world]:
+                    add_lobby_door(self, next_door, next_door)
                 continue
 
             # PoD warp tile (Never seen but still linked, start from 0,0)
@@ -380,6 +382,9 @@ def door_customizer_page(
                 elif last_cardinal == 1:
                     last_cardinal = 0
             self.tiles[(door_tile_x, door_tile_y)]['map_tile'] = (new_tile_x, new_tile_y)
+
+            if next_door in dungeon_lobbies[tab_world]:
+                add_lobby_door(self, next_door, next_door)
 
         for door in door_links_to_make:
             if door in INTERIOR_DOORS:
@@ -458,7 +463,7 @@ def door_customizer_page(
 
         # find doors in this tile:
         for door in door_coordinates[eg_tile]:
-            if door in INTERIOR_DOORS:
+            if door['name'] in INTERIOR_DOORS or door['name'] == 'Sanctuary Mirror Route':
                 continue
             self.unlinked_doors.remove(door['name'])
             if door['name'] in self.special_doors:
@@ -609,8 +614,11 @@ def door_customizer_page(
             _data = create_door_dict(door)
             x1, y1 = get_final_door_coords(self, _data, "source", x_offset, y_offset)
             if door in self.special_doors:
-                icon_queue.append((self.special_doors[door], x1, y1, door))
-            if door == "Sanctuary Mirror Route":
+                if 'Drop' in door:
+                    icon_queue.append(('Drop', x1, y1, door))
+                else:
+                    icon_queue.append((self.special_doors[door], x1, y1, door))
+            if door == "Sanctuary Mirror Route" or door.startswith("Skull Drop Entrance") or door == 'Sewer Drop':
                 continue
             self.door_buttons[door] = self.canvas.create_oval(
                 x1 - self.spotsize,
@@ -663,7 +671,11 @@ def door_customizer_page(
 
         for n, lobby in enumerate(self.lobby_doors):
             x1, y1 = get_final_door_coords(self, lobby, "source", x_offset, y_offset)
-            icon_queue.append((lobby["lobby"], x1, y1, lobby["door"]))
+            if 'Drop' in lobby['lobby']:
+                lobby_icon = 'Drop'
+            else:
+                lobby_icon = lobby["lobby"]
+            icon_queue.append((lobby_icon, x1, y1, lobby["door"]))
             doors_linked.add(lobby["door"])
             doors_linked.add(lobby["lobby"])
 
@@ -718,18 +730,19 @@ def door_customizer_page(
         door = self.canvas.find_closest(event.x, event.y)
         loc_name = get_loc_by_button(self, door)
         selected_item = doors_sprite_data.show_sprites(self, top, event, tab_world)
-        if selected_item in doors_sprite_data.all_dungeon_lobbies:
+        if selected_item in doors_sprite_data.all_dungeon_lobbies or selected_item == "Drop":
             lobby = selected_item
-            print(f"Adding lobby door for {loc_name} to {lobby}")
             add_lobby_door(self, loc_name, lobby)
 
             x_loc, y_loc = get_final_door_coords(self, self.lobby_doors[-1], "source", self.x_offset, self.y_offset)
-            self.special_doors[loc_name] = lobby
+            if 'Drop' in loc_name:
+                self.special_doors[loc_name] = 'Drop'
+            else:
+                self.special_doors[loc_name] = lobby
         else:
             _data = create_door_dict(loc_name)
             x_loc, y_loc = get_final_door_coords(self, _data, "source", self.x_offset, self.y_offset)
             self.special_doors[loc_name] = selected_item
-
         place_door_icon(self, selected_item, x_loc, y_loc, loc_name)
 
     def place_door_icon(self: DoorPage, placed_icon, x_loc, y_loc, loc_name):
@@ -835,15 +848,21 @@ def door_customizer_page(
         current_lobby_doors = [x['door'] for x in self.lobby_doors]
         if door in current_lobby_doors or door == None:
             return
-        if 'Sanctuary Mirror Route' in current_lobby_doors:
-            lobby_idx -= 1
+        for ld in current_lobby_doors:
+            if ld == 'Sanctuary Mirror Route' or 'Drop' in ld:
+                lobby_idx -= 1
         lobby = dungeon_lobbies[tab_world][lobby_idx]
+        if 'Drop' in door:
+            lobby_icon = 'Drop'
+        elif 'Sanctuary Mirror Route' in door:
+            lobby_icon = 'Sanctuary_Mirror'
+        else:
+            lobby_icon = lobby
         add_lobby_door(self, door, lobby)
         x_loc, y_loc = get_final_door_coords(self, self.lobby_doors[-1], "source", self.x_offset, self.y_offset)
         # Find used lobbies
         
-
-        place_door_icon(self, lobby, x_loc, y_loc, lobby)
+        place_door_icon(self, lobby_icon, x_loc, y_loc, lobby)
 
         self.lobby_doors.append({"door": door, "lobby": lobby})
         redraw_canvas(self)
@@ -858,7 +877,6 @@ def door_customizer_page(
         return loc_name in linked_doors
 
     def return_connections(door_links, lobby_doors, special_doors):
-        # print(lobby_doors)
         final_connections = {"doors": {}, "lobbies": {}}
         doors_type = "vanilla" if len(door_links) > 0 else False
         special_doors_remaining = special_doors.copy()
@@ -1009,12 +1027,20 @@ def door_customizer_page(
                     continue
                 if door.startswith("Sanctuary") and not self.sanc_dungeon:
                     self.sanc_dungeon = True
-                    print("Adding Sanctuary Mirror Route")
                     add_lobby_door(self, "Sanctuary Mirror Route", "Sanctuary_Mirror")
                     x1, y1 = get_final_door_coords(
                         self, self.lobby_doors[-1], "source", self.x_offset, self.y_offset
                     )
                     place_door_icon(self, "Sanctuary_Mirror", x1, y1, "Sanctuary Mirror Route")
+                    if door == 'Sanctuary Mirror Route':
+                        continue
+
+            
+                if 'Drop' in door and door in dungeon_lobbies[tab_world]:
+                    add_lobby_door(self, door, door)
+                    x1, y1 = get_final_door_coords(self, self.lobby_doors[-1], "source", self.x_offset, self.y_offset)
+                    place_door_icon(self, 'Drop', x1, y1, door)
+                    continue
 
                 _data = create_door_dict(door)
 
@@ -1127,6 +1153,7 @@ def door_customizer_page(
     if self.eg_selection_mode:
         draw_vanilla_eg_map(self, top)
     else:
+        redraw_canvas(self)
         redraw_canvas(self)
         # draw_map(self)
 

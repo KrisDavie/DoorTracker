@@ -299,10 +299,8 @@ mem_addresses = {
         'dungeon': (0xF5040C, 0x1),
         'dungeon_room': (0xF5048E, 0x1),
         'transitioning': (0xF500B0, 0x1),
-        'scrolling': (0xF50126, 0x1),
         'falling': (0xF5005B, 0x1),
         'dead': (0xF5010A, 0x1),
-        'stairs': (0xF50464, 0x1),
         'lampcone': (0xF50458, 0x1),
         'torches': (0xF5045A, 0x1),
     }
@@ -339,7 +337,7 @@ def find_closest_door(x, y, tile):
     except KeyError:
         return None
     closest_door = None
-    closest_distance = 512
+    closest_distance = 48 # max distance between player and door
     for door in doors:
         distance = math.sqrt((x - door['x'])**2 + (y - door['y'])**2)
         if distance < closest_distance:
@@ -410,11 +408,27 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
                     await asyncio.sleep(0.1)
                     continue
 
+                # Both dying and falling can change supertile with no real doors
+                if data['dead'] == '01':
+                    previous_tile = current_tile = None
+                    was_dead = True
+                    continue 
+
+                if data['falling'] != '00':
+                    previous_tile = current_tile = None
+                    was_falling = True
+                    continue
+
                 # TODO: Check doors to see if they're entrances and add lobbies?                
 
                 eg_tile = (int(data['dungeon_room'], 16) % 16, int(data['dungeon_room'], 16) // 16)
+                current_x_supertile = int(data['link_x'][2:], 16) // 2
+                current_y_supertile = int(data['link_y'][2:], 16) // 2
+                if eg_tile != (current_x_supertile, current_y_supertile):
+                    continue
                 dp_content = mainWindow.pages['doors'].pages[dungeon_ids[data["dungeon"]]].content
                 if 'map_tile' not in dp_content.tiles[eg_tile]:
+                    print(f"Adding tile {eg_tile}")
                     dp_content.auto_add_tile(dp_content, eg_tile)
 
                 previous_x = current_x
@@ -427,17 +441,8 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
                 if eg_tile not in dark_tiles or darkpos or (eg_tile in dark_tiles and (data['lampcone'] != '00' or data['torches'] != '00')):
                     dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
 
-                # Both dying and falling can change supertile with no real doors
-                if data['dead'] == '01':
-                    previous_tile = current_tile = None
-                    was_dead = True
-                    continue 
 
-                if data['falling'] != '00':
-                    previous_tile = current_tile = None
-                    was_falling = True
-                    continue
-
+                # TODO: Check layer of player and door to see if they match
                 if current_tile != eg_tile and current_tile == None:
                     previous_tile = eg_tile
                     current_tile = eg_tile
