@@ -15,7 +15,7 @@ from gui.Entrances.overview import entrance_customizer_page
 from gui.Items.overview import item_customizer_page
 from SpoilerToYaml import parse_dr_spoiler
 from data.worlds_data import dungeon_worlds
-from data.doors_data import eg_tile_multiuse, door_coordinates, dark_tiles
+from data.doors_data import eg_tile_multiuse, door_coordinates, dark_tiles, doors_data
 
 import os
 import yaml
@@ -295,6 +295,7 @@ def customizerGUI(mainWindow, args=None):
 mem_addresses = {
         'link_y': (0xF50020, 0x2),
         'link_x': (0xF50022, 0x2),
+        'layer': (0xF500EE, 0x1),
         'indoors': (0xF5001B, 0x1),
         'dungeon': (0xF5040C, 0x1),
         'dungeon_room': (0xF5048E, 0x1),
@@ -331,13 +332,18 @@ def get_cur_page(nb):
 def get_named_page(nb, pages, name):
     return nb.index(pages[name])
 
-def find_closest_door(x, y, tile):
+def find_closest_door(x, y, tile, layer):
     try:
         doors = door_coordinates[tile] # dict of door coordinates
+        # Filter by layer
+        doors = [door for door in doors if doors_data[door['name']][2] == layer]
+        if len(doors) == 0:
+            print(f'No doors found for {tile} layer {layer}')
+            doors = door_coordinates[tile]
     except KeyError:
         return None
     closest_door = None
-    closest_distance = 48 # max distance between player and door
+    closest_distance = 128 # max distance between player and door
     for door in doors:
         distance = math.sqrt((x - door['x'])**2 + (y - door['y'])**2)
         if distance < closest_distance:
@@ -372,6 +378,7 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
             current_y = None
             previous_x = None
             previous_y = None
+            previous_layer = None
             was_transitioning = False
             was_falling = False
             was_dead = False
@@ -393,6 +400,7 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
                     current_y = None
                     previous_x = None
                     previous_y = None
+                    previous_layer = None
                     await asyncio.sleep(0.1)
                     continue
                 
@@ -424,15 +432,17 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
                 eg_tile = (int(data['dungeon_room'], 16) % 16, int(data['dungeon_room'], 16) // 16)
                 current_x_supertile = int(data['link_x'][2:], 16) // 2
                 current_y_supertile = int(data['link_y'][2:], 16) // 2
+
                 if eg_tile != (current_x_supertile, current_y_supertile):
+                    print(f"Supertile mismatch: {eg_tile} != {current_x_supertile}, {current_y_supertile}")
                     continue
+
                 dp_content = mainWindow.pages['doors'].pages[dungeon_ids[data["dungeon"]]].content
                 if 'map_tile' not in dp_content.tiles[eg_tile]:
                     print(f"Adding tile {eg_tile}")
                     dp_content.auto_add_tile(dp_content, eg_tile)
 
-                previous_x = current_x
-                previous_y = current_y
+                
                 current_x_subtile = int(data['link_x'][2:], 16) % 2
                 current_y_subtile = int(data['link_y'][2:], 16) % 2
                 current_x = (current_x_subtile * 255) + int(data['link_x'][:2], 16) 
@@ -443,7 +453,7 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
 
 
                 # TODO: Check layer of player and door to see if they match
-                if current_tile != eg_tile and current_tile == None:
+                if previous_tile != eg_tile and previous_tile == None:
                     previous_tile = eg_tile
                     current_tile = eg_tile
                     if was_falling or was_dead:
@@ -453,19 +463,23 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
                     # We just entered a new dungeon, add an entrance
                     if eg_tile == (2, 1):
                         continue
-                    new_door = find_closest_door(current_x, current_y, eg_tile)
+                    new_door = find_closest_door(current_x, current_y, eg_tile, data['layer'])
                     dp_content.auto_add_lobby(dp_content, new_door)
 
-                elif (current_tile != eg_tile and current_tile != None) or was_transitioning:     
+                elif (previous_tile != eg_tile and previous_tile != None) or was_transitioning:     
                     was_transitioning = False         
                     previous_tile = current_tile
                     current_tile = eg_tile
                     
-                    old_door = find_closest_door(previous_x, previous_y, previous_tile)
-                    new_door = find_closest_door(current_x, current_y, eg_tile)
+                    old_door = find_closest_door(previous_x, previous_y, previous_tile, previous_layer)
+                    new_door = find_closest_door(current_x, current_y, eg_tile, data['layer'])
                     if old_door == new_door:
                         continue
                     dp_content.auto_add_door_link(dp_content, old_door, new_door)
+
+                previous_x = current_x
+                previous_y = current_y
+                previous_layer = data['layer']
 
                 await asyncio.sleep(0.1)
 
