@@ -126,6 +126,8 @@ def get_tile_data_by_button(tiles: dict[Tuple[int, int], EGTileData], button: in
             return eg_tile
     return None
 
+disabled_tiles = {}
+
 def door_customizer_page(
     top,
     parent,
@@ -500,6 +502,22 @@ def door_customizer_page(
                     if _d in self.special_doors:
                         del(self.special_doors[_d])
 
+    def disable_eg_tile(self: DoorPage, event):
+        button = self.canvas.find_closest(event.x, event.y)[0]
+        eg_tile = get_tile_data_by_button(self.tiles, button)
+        if not eg_tile or eg_tile in mandatory_tiles[tab_world]:
+            return
+        disabled_tiles[eg_tile] = {}
+        redraw_canvas(self)
+
+    def reenable_eg_tile(self: DoorPage, event):
+        button = self.canvas.find_closest(event.x, event.y)[0]
+        for _tile, _data in disabled_tiles.items():
+            if _data == button:
+                del(disabled_tiles[_tile])
+                redraw_canvas(self)
+                return        
+
     def add_eg_tile_img(self: DoorPage, x, y, tile_x, tile_y, ci_kwargs={}):
         x1 = (tile_x * self.tile_size) + BORDER_SIZE + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE)
         y1 = (tile_y * self.tile_size) + BORDER_SIZE + (((2 * tile_y + 1) - 1) * TILE_BORDER_SIZE)
@@ -510,8 +528,20 @@ def door_customizer_page(
             )
         )
         map = self.canvas.create_image(x1, y1, image=img, anchor=NW, **ci_kwargs)
+        if (x, y) in disabled_tiles:
+            rect = self.canvas.create_rectangle(
+                x1,
+                y1,
+                x1 + self.tile_size,
+                y1 + self.tile_size,
+                fill="#888",
+                stipple="gray25",
+            )
+            disabled_tiles[(x, y)] = rect
+            self.canvas.tag_bind(rect, "<Button-2>", lambda event: reenable_eg_tile(self, event))
         if not self.eg_selection_mode:
             self.canvas.tag_bind(map, "<Control-Button-3>", lambda event: remove_eg_tile(self, event))
+            self.canvas.tag_bind(map, "<Button-2>", lambda event: disable_eg_tile(self, event))
         else:
             self.canvas.tag_bind(map, "<Button-1>", lambda event: select_eg_tile(self, top, event, plando_window))
         self.tiles[(x, y)]["img_obj"] = img
