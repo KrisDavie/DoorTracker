@@ -7,7 +7,8 @@ This tracker will auto-track dungeon layouts from the Doors branch of ALttPR usi
 * When visiting a dungeon, that dungeons tab will be auto-selected
 * Players position is displayed as a red 'x'
 * Unvisited supertiles are automatically added to the map
-* Entering a dungeon will automatically add a lobby to the entered door
+* Entering or exiting a dungeon will automatically add a lobby to the door
+* Mirroring will add a lobby to the door mirrored to
 
 ## Usage
 Start SNI and launch the tracker. The tracker will automatically connect to SNI and start tracking.
@@ -32,4 +33,3 @@ In the meantime use the requirements from the Doors branch and add `Pillow`, `gr
 
 ## Known Issues
 * Lots of old code leftover from plando tool
-* Sometimes the auto-tracking will stop working and you'll have to restart the tracker (losing all of the maps) - let me know if you come across this

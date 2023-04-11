@@ -304,6 +304,7 @@ mem_addresses = {
         'dead': (0xF5010A, 0x1),
         'lampcone': (0xF50458, 0x1),
         'torches': (0xF5045A, 0x1),
+        'mirror': (0xF50095, 0x1),
     }
 
 def build_multi_request(add_space, mem_mapping):
@@ -332,7 +333,8 @@ def get_cur_page(nb):
 def get_named_page(nb, pages, name):
     return nb.index(pages[name])
 
-def find_closest_door(x, y, tile, layer):
+def find_closest_door(x, y, tile, layer, closest_distance=128):
+    #  X and Y are none when dropping in a hole
     try:
         doors = door_coordinates[tile] # dict of door coordinates
         # Filter by layer
@@ -343,7 +345,6 @@ def find_closest_door(x, y, tile, layer):
     except KeyError:
         return None
     closest_door = None
-    closest_distance = 128 # max distance between player and door
     for door in doors:
         distance = math.sqrt((x - door['x'])**2 + (y - door['y'])**2)
         if distance < closest_distance:
@@ -355,139 +356,164 @@ def find_closest_door(x, y, tile, layer):
 
 async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: bool = False):
     # While loop to auto reconnect if the channel is closed?
+    channel = grpc.aio.insecure_channel(f'localhost:{port}') 
+    stub = sni.DevicesStub(channel)
+    response = await stub.ListDevices(sni_pb2.DevicesRequest(kinds=''))
+    print("Found device: " + response.devices[0].uri)
+    dev_uri = response.devices[0].uri
+    dev_addrspace = response.devices[0].defaultAddressSpace
+    mem_stub = sni.DeviceMemoryStub(channel)
+    mem_mapping = await mem_stub.MappingDetect(sni_pb2.DetectMemoryMappingRequest(uri=dev_uri))
+    mem_mapping = mem_mapping.memoryMapping
+    mem_request = build_multi_request(dev_addrspace, mem_mapping)
+    mem_request_names = list(mem_request.keys())
+
+    main_nb = mainWindow.notebook
+    doors_page = get_named_page(main_nb, mainWindow.pages, 'doors')
+    doors_nb = mainWindow.pages['doors'].notebook
+
+    current_tile = None
+    previous_tile = None
+    current_x = None
+    current_y = None
+    previous_x = None
+    previous_y = None
+    previous_layer = None
+    was_transitioning = False
+    was_falling = False
+    was_dead = False
+    cycle_skipped = False
+    was_mirroring = False
+    previous_dungeon = False
+    old_data = {k: None for k in mem_request_names}
+        
+        # Main loop for data collection
     while True:
-        async with grpc.aio.insecure_channel(f'localhost:{port}') as channel:
-            stub = sni.DevicesStub(channel)
-            response = await stub.ListDevices(sni_pb2.DevicesRequest(kinds=''))
-            print("Found device: " + response.devices[0].uri)
-            dev_uri = response.devices[0].uri
-            dev_addrspace = response.devices[0].defaultAddressSpace
-            mem_stub = sni.DeviceMemoryStub(channel)
-            mem_mapping = await mem_stub.MappingDetect(sni_pb2.DetectMemoryMappingRequest(uri=dev_uri))
-            mem_mapping = mem_mapping.memoryMapping
-            mem_request = build_multi_request(dev_addrspace, mem_mapping)
-            mem_request_names = list(mem_request.keys())
+        # Lazy error handling - won't actually catch disconnects
+        try:
+            mem_req = sni_pb2.MultiReadMemoryRequest(uri=dev_uri, requests=list(mem_request.values()))
+            mem_data = await mem_stub.MultiRead(mem_req)
+            data = des_data(mem_request_names, mem_data)
+            data_diff = {k: v for k, v in data.items() if v != old_data[k]}
+            old_data = data
+            if len(data_diff) != 0 and args.debug:
+                print(data_diff)
 
-            main_nb = mainWindow.notebook
-            doors_page = get_named_page(main_nb, mainWindow.pages, 'doors')
-            doors_nb = mainWindow.pages['doors'].notebook
-
-            current_tile = None
-            previous_tile = None
-            current_x = None
-            current_y = None
-            previous_x = None
-            previous_y = None
-            previous_layer = None
-            was_transitioning = False
-            was_falling = False
-            was_dead = False
-            cycle_skipped = False
-            old_data = {k: None for k in mem_request_names}
-
-            while True:
-                mem_req = sni_pb2.MultiReadMemoryRequest(uri=dev_uri, requests=list(mem_request.values()))
-                mem_data = await mem_stub.MultiRead(mem_req)
-                data = des_data(mem_request_names, mem_data)
-                data_diff = {k: v for k, v in data.items() if v != old_data[k]}
-                old_data = data
-                if len(data_diff) != 0 and args.debug:
-                    print(data_diff)
-
-                if data['dungeon'] not in dungeon_ids.keys() or data['indoors'] != '01':
-                    current_tile = None
-                    previous_tile = None
-                    current_x = None
-                    current_y = None
-                    previous_x = None
-                    previous_y = None
-                    previous_layer = None
-                    cycle_skipped = False
-                    await asyncio.sleep(0.1)
-                    continue
-                
-                # Select the doors tab and the dungeon page
-                if get_cur_page(main_nb) != doors_page:
-                    mainWindow.notebook.select(doors_page)
-                dungeon_page = get_named_page(doors_nb, mainWindow.pages['doors'].pages, dungeon_ids[data["dungeon"]])
-                if get_cur_page(doors_nb) != dungeon_page:
-                    doors_nb.select(dungeon_page)
-
-                if data['transitioning'] != '00':
-                    was_transitioning = True
-                    await asyncio.sleep(0.1)
-                    continue
-
-                # Both dying and falling can change supertile with no real doors
-                if data['dead'] == '01':
-                    previous_tile = current_tile = None
-                    was_dead = True
-                    continue 
-
-                if data['falling'] != '00' and data['falling'] != '01':
-                    previous_tile = current_tile = None
-                    was_falling = True
-                    continue
-                    
-                if not cycle_skipped and (was_transitioning or was_falling or was_dead):
-                    cycle_skipped = True
-                    continue
-
-                cycle_skipped = False
-
-                # TODO: Check doors to see if they're entrances and add lobbies?                
-
-                eg_tile = (int(data['dungeon_room'], 16) % 16, int(data['dungeon_room'], 16) // 16)
-                current_x_supertile = int(data['link_x'][2:], 16) // 2
-                current_y_supertile = int(data['link_y'][2:], 16) // 2
-
-                if eg_tile != (current_x_supertile, current_y_supertile):
-                    print(f"Supertile mismatch: {eg_tile} != {current_x_supertile}, {current_y_supertile}")
-                    continue
-
-                dp_content = mainWindow.pages['doors'].pages[dungeon_ids[data["dungeon"]]].content
-                if 'map_tile' not in dp_content.tiles[eg_tile]:
-                    print(f"Adding tile {eg_tile}")
-                    dp_content.auto_add_tile(dp_content, eg_tile)
-
-                
-                current_x_subtile = int(data['link_x'][2:], 16) % 2
-                current_y_subtile = int(data['link_y'][2:], 16) % 2
-                current_x = (current_x_subtile * 255) + int(data['link_x'][:2], 16) 
-                current_y = (current_y_subtile * 255) + int(data['link_y'][:2], 16)
-
-                if eg_tile not in dark_tiles or darkpos or (eg_tile in dark_tiles and (data['lampcone'] != '00' or data['torches'] != '00')):
-                    dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
-
-                if previous_tile != eg_tile and previous_tile == None:
-                    previous_tile = eg_tile
-                    current_tile = eg_tile
-                    if was_falling or was_dead:
-                        was_falling = False
-                        was_dead = False
-                        continue
-                    # We just entered a new dungeon, add an entrance
-                    if eg_tile == (2, 1):
-                        continue
-                    new_door = find_closest_door(current_x, current_y, eg_tile, data['layer'])
+            if data['dungeon'] not in dungeon_ids.keys() or data['indoors'] != '01':
+                if previous_dungeon in dungeon_ids.keys() and data['indoors'] == '00':
+                    # Just left a dungeon, add the last door as a lobby
+                    new_door = find_closest_door(current_x, current_y, eg_tile, previous_layer)
                     dp_content.auto_add_lobby(dp_content, new_door)
-
-                elif (previous_tile != eg_tile and previous_tile != None) or was_transitioning:     
-                    was_transitioning = False         
-                    previous_tile = current_tile
-                    current_tile = eg_tile
-                    
-                    old_door = find_closest_door(previous_x, previous_y, previous_tile, previous_layer)
-                    new_door = find_closest_door(current_x, current_y, eg_tile, data['layer'])
-                    if old_door == new_door:
-                        continue
-                    dp_content.auto_add_door_link(dp_content, old_door, new_door)
-
-                previous_x = current_x
-                previous_y = current_y
-                previous_layer = data['layer']
-
+                current_tile = None
+                previous_tile = None
+                current_x = None
+                current_y = None
+                previous_x = None
+                previous_y = None
+                previous_layer = None
+                cycle_skipped = False
+                was_mirroring = False
+                previous_dungeon = False
                 await asyncio.sleep(0.1)
+                continue
+
+            previous_dungeon = data['dungeon']
+            
+            # Select the doors tab and the dungeon page
+            if get_cur_page(main_nb) != doors_page:
+                mainWindow.notebook.select(doors_page)
+            dungeon_page = get_named_page(doors_nb, mainWindow.pages['doors'].pages, dungeon_ids[data["dungeon"]])
+            if get_cur_page(doors_nb) != dungeon_page:
+                doors_nb.select(dungeon_page)
+
+            if data['transitioning'] != '00':
+                was_transitioning = True
+                await asyncio.sleep(0.1)
+                continue
+
+            # Both dying and falling can change supertile with no real doors
+            if data['dead'] == '01':
+                previous_tile = current_tile = None
+                was_dead = True
+                continue 
+
+            if data['falling'] != '00' and data['falling'] != '01':
+                previous_tile = current_tile = None
+                was_falling = True
+                continue
+                
+            if not cycle_skipped and (was_transitioning or was_falling or was_dead):
+                cycle_skipped = True
+                continue
+
+            cycle_skipped = False
+
+            # TODO: Check doors to see if they're entrances and add lobbies?                
+
+            eg_tile = (int(data['dungeon_room'], 16) % 16, int(data['dungeon_room'], 16) // 16)
+            current_x_supertile = int(data['link_x'][2:], 16) // 2
+            current_y_supertile = int(data['link_y'][2:], 16) // 2
+
+            if eg_tile != (current_x_supertile, current_y_supertile):
+                print(f"Supertile mismatch: {eg_tile} != {current_x_supertile}, {current_y_supertile}")
+                continue
+
+            dp_content = mainWindow.pages['doors'].pages[dungeon_ids[data["dungeon"]]].content
+            if 'map_tile' not in dp_content.tiles[eg_tile]:
+                print(f"Adding tile {eg_tile}")
+                dp_content.auto_add_tile(dp_content, eg_tile)
+
+            
+            current_x_subtile = int(data['link_x'][2:], 16) % 2
+            current_y_subtile = int(data['link_y'][2:], 16) % 2
+            current_x = (current_x_subtile * 255) + int(data['link_x'][:2], 16) 
+            current_y = (current_y_subtile * 255) + int(data['link_y'][:2], 16)
+
+            if eg_tile not in dark_tiles or darkpos or (eg_tile in dark_tiles and (data['lampcone'] != '00' or data['torches'] != '00')):
+                dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
+
+            if int(data['mirror'], 16) > 10:
+                # Mirroring, add a lobby when we stop 
+                was_mirroring = True
+                asyncio.sleep(0.1)
+
+            if (previous_tile != eg_tile and previous_tile == None) or was_mirroring:
+                previous_tile = eg_tile
+                current_tile = eg_tile
+                if was_falling or was_dead:
+                    was_falling = False
+                    was_dead = False
+                    continue
+                # We just entered a new dungeon, add an entrance
+                if eg_tile == (2, 1):
+                    continue
+                new_door = find_closest_door(current_x, current_y, eg_tile, data['layer'], closest_distance=32 if was_mirroring else 128)
+                dp_content.auto_add_lobby(dp_content, new_door)
+                was_mirroring = False
+
+            elif (previous_tile != eg_tile and previous_tile != None) or was_transitioning:     
+                was_transitioning = False         
+                previous_tile = current_tile
+                current_tile = eg_tile
+
+                new_door = find_closest_door(current_x, current_y, eg_tile, data['layer'])
+                try:
+                    old_door = find_closest_door(previous_x, previous_y, previous_tile, previous_layer)
+                except TypeError:
+                    # We likely fell in a hole to a dungeon, so we don't have a previous door
+                    continue
+                if old_door == new_door:
+                    continue
+                dp_content.auto_add_door_link(dp_content, old_door, new_door)
+
+            previous_x = current_x
+            previous_y = current_y
+            previous_layer = data['layer']
+
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            print(e)
+            await asyncio.sleep(1)
 
 if __name__ == "__main__":
     logging.basicConfig()
