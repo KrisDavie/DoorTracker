@@ -3309,9 +3309,15 @@ regions_to_doors = {'Sewer Drop': ['Sewer Drop'],
 }
 
 doors_to_regions = {}
+# Some doors are in multiple regions
 for region, doors in regions_to_doors.items():
     for door in doors:
-        doors_to_regions[door] = region
+        if door not in doors_to_regions:
+            doors_to_regions[door] = region
+        elif type(doors_to_regions[door]) == list:
+            doors_to_regions[door].append(region)
+        else:
+            doors_to_regions[door] = [doors_to_regions[door], region]
 
 
 # To add a manual entry, like a drop, it has to be added in all three structure

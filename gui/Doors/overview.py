@@ -190,6 +190,11 @@ def door_customizer_page(
         def queue_regions_doors(door: str, region=False):
             if not region:
                 if door in doors_to_regions:
+                    # Some doors are in multiple regions
+                    if type(doors_to_regions[door]) == list:
+                        for r in doors_to_regions[door]:
+                            queue_regions_doors(r, region=True)
+                        return
                     nd_region = doors_to_regions[door]
                 else:
                     # print("ERROR: Door not found in doors_to_regions", door)
@@ -386,12 +391,15 @@ def door_customizer_page(
             if next_door in dungeon_lobbies[tab_world]:
                 add_lobby_door(self, next_door, next_door)
 
+        links_made = set()
         for door in door_links_to_make:
-            if door in INTERIOR_DOORS:
-                continue
             try:
                 linked_door = self.doors[door] if door in self.doors else self.inverse_doors[door]
+                if linked_door in links_made or door in links_made:
+                    continue
                 add_door_link(self, door, linked_door)
+                links_made.add(door)
+                links_made.add(linked_door)
             except KeyError:
                 # Couldn't make link for {door}, possibly a lobby or unlinked
                 pass
@@ -399,7 +407,7 @@ def door_customizer_page(
             if tile not in self.tiles:
                 self.tiles[tile]['map_tile'] = find_first_unused_tile()
                     
-                            
+        self.doors_available = doors_processed                   
         draw_map(self)
     
     def find_first_unused_tile():
@@ -463,7 +471,7 @@ def door_customizer_page(
 
         # find doors in this tile:
         for door in door_coordinates[eg_tile]:
-            if door['name'] in INTERIOR_DOORS or door['name'] == 'Sanctuary Mirror Route':
+            if door['name'] == 'Sanctuary Mirror Route':
                 continue
             self.unlinked_doors.remove(door['name'])
             if door['name'] in self.special_doors:
@@ -604,7 +612,7 @@ def door_customizer_page(
             add_eg_tile_img(self, eg_x, eg_y, tile_x, tile_y)
 
         for door, data in doors_data.items():
-            if door in INTERIOR_DOORS:
+            if door not in self.doors_available:
                 continue
             d_eg_x = int(data[0]) % 16
             d_eg_y = int(data[0]) // 16
@@ -620,17 +628,19 @@ def door_customizer_page(
                     icon_queue.append((self.special_doors[door], x1, y1, door))
             if door == "Sanctuary Mirror Route" or door.startswith("Skull Drop Entrance") or door == 'Sewer Drop':
                 continue
+            spotsize = self.spotsize * 0.75 if door in INTERIOR_DOORS else self.spotsize
             self.door_buttons[door] = self.canvas.create_oval(
-                x1 - self.spotsize,
-                y1 - self.spotsize,
-                x1 + self.spotsize,
-                y1 + self.spotsize,
-                fill="#0f0",
+                x1 - spotsize,
+                y1 - spotsize,
+                x1 + spotsize,
+                y1 + spotsize,
+                fill="#008" if door in INTERIOR_DOORS else "#0f0",
                 width=2,
                 activefill="red",
             )
             self.unlinked_doors.add(door)
-            self.canvas.tag_bind(self.door_buttons[door], "<Button-1>", lambda event: select_location(self, event))
+            if door not in INTERIOR_DOORS:
+                self.canvas.tag_bind(self.door_buttons[door], "<Button-1>", lambda event: select_location(self, event))
             self.canvas.tag_bind(self.door_buttons[door], "<Button-3>", lambda event: show_door_icons(self, event))
 
         # Display links between doors here
@@ -644,14 +654,16 @@ def door_customizer_page(
                 y1,
                 x2,
                 y2,
-                fill=link_colours[n],
-                width=self.linewidth,
+                fill='black' if door_link["door"] in INTERIOR_DOORS else link_colours[n],
+                width=self.linewidth * 0.5 if door_link["door"] in INTERIOR_DOORS else self.linewidth,
                 arrow=BOTH,
                 activefill="red",
+                dash=(2, 2) if door_link["door"] in INTERIOR_DOORS else (),
             )
-            self.canvas.tag_bind(
-                self.door_links[n]["button"], "<Button-3>", lambda event: remove_door_link(self, event)
-            )
+            if door_link["door"] not in INTERIOR_DOORS:
+                self.canvas.tag_bind(
+                    self.door_links[n]["button"], "<Button-3>", lambda event: remove_door_link(self, event)
+                )
 
             # TODO: Refactor this
             doors_linked.add(door_link["door"])
@@ -762,28 +774,39 @@ def door_customizer_page(
             )
         )
         self.placed_icons[(x_loc, y_loc)]["name"] = loc_name
-        self.placed_icons[(x_loc, y_loc)]["image"] = self.canvas.create_image(
+        image = self.canvas.create_image(
             x_loc,
             y_loc,
             image=self.placed_icons[(x_loc, y_loc)]["sprite"],
         )
+        self.placed_icons[(x_loc, y_loc)]["image"] = image
         if placed_icon == 'Sanctuary_Mirror':
             return
         self.canvas.tag_bind(
             self.placed_icons[(x_loc, y_loc)]["image"],
             "<Button-3>",
-            lambda event: remove_item(self, event),
+            lambda event: remove_item(self, event, image, loc_name),
         )
 
-    def remove_item(self: DoorPage, event):
-        item = self.canvas.find_closest(event.x, event.y)
-        self.canvas.delete(item)  # type: ignore
+    def remove_item(self: DoorPage, event, image, loc_name):
+        # item = self.canvas.find_closest(event.x, event.y)
+        # self.canvas.delete(item)  # type: ignore
+
+        # for loc, data in self.placed_icons.items():
+        #     if data["image"] == item[0]:
+        #         if self.special_doors[data["name"]] in doors_sprite_data.all_dungeon_lobbies:
+        #             _lobby_doors = [x['door'] for x in self.lobby_doors]
+        #             del(self.lobby_doors[_lobby_doors.index(data['name'])])
+        #         del self.special_doors[data["name"]]
+        #         del self.placed_icons[loc]
+        #         break
+        self.canvas.delete(image)
         for loc, data in self.placed_icons.items():
-            if data["image"] == item[0]:
-                if self.special_doors[data["name"]] in doors_sprite_data.all_dungeon_lobbies:
+            if data["name"] == loc_name:
+                if self.special_doors[loc_name] in doors_sprite_data.all_dungeon_lobbies:
                     _lobby_doors = [x['door'] for x in self.lobby_doors]
-                    del(self.lobby_doors[_lobby_doors.index(data['name'])])
-                del self.special_doors[data["name"]]
+                    del(self.lobby_doors[_lobby_doors.index(loc_name)])
+                del self.special_doors[loc_name]
                 del self.placed_icons[loc]
                 break
 
@@ -822,14 +845,16 @@ def door_customizer_page(
                 y1,
                 x2,
                 y2,
-                fill=distinct_colours(1)[0],
-                width=self.linewidth,
+                fill='black'if last_link["door"] in INTERIOR_DOORS else distinct_colours(1)[0],
+                width=self.linewidth * 0.5 if last_link["door"] in INTERIOR_DOORS else self.linewidth,
                 arrow=BOTH,
                 activefill="red",
+                dash=(2, 2) if last_link["door"] in INTERIOR_DOORS else (),
             )
-            self.canvas.tag_bind(
-                last_link["button"], "<Button-3>", lambda event: remove_door_link(self, event)
-            )
+            if last_link["door"] not in INTERIOR_DOORS:
+                self.canvas.tag_bind(
+                    last_link["button"], "<Button-3>", lambda event: remove_door_link(self, event)
+                )
             self.select_state = SelectState.NoneSelected
             self.canvas.itemconfigure(self.door_buttons[last_link["door"]], fill="grey")
             self.canvas.itemconfigure(self.door_buttons[last_link["linked_door"]], fill="grey")  # type: ignore
@@ -840,7 +865,7 @@ def door_customizer_page(
                 return
 
         add_door_link(self, door, linked_door)
-        draw_latest_door_link(self, linked_door)
+        # draw_latest_door_link(self, linked_door)
         redraw_canvas(self)
 
     def auto_add_lobby(self: DoorPage, door):
@@ -1012,8 +1037,6 @@ def door_customizer_page(
     def add_new_doors(self: DoorPage):
         # Draw any _new_ unlinked doors
         for door, data in doors_data.items():
-            if door in INTERIOR_DOORS:
-                continue
             if (
                 door
                 not in [dl["door"] for dl in self.door_links]
@@ -1045,17 +1068,19 @@ def door_customizer_page(
                 _data = create_door_dict(door)
 
                 x1, y1 = get_final_door_coords(self, _data, "source", self.x_offset, self.y_offset)
+                spotsize = self.spotsize * 0.75 if door in INTERIOR_DOORS else self.spotsize
                 self.door_buttons[door] = self.canvas.create_oval(
-                    x1 - self.spotsize,
-                    y1 - self.spotsize,
-                    x1 + self.spotsize,
-                    y1 + self.spotsize,
-                    fill="#0f0",
+                    x1 - spotsize,
+                    y1 - spotsize,
+                    x1 + spotsize,
+                    y1 + spotsize,
+                    fill="#008" if door in INTERIOR_DOORS else "#0f0",
                     width=2,
                     activefill="red",
                 )
                 self.unlinked_doors.add(door)
-                self.canvas.tag_bind(self.door_buttons[door], "<Button-1>", lambda event: select_location(self, event))
+                if door not in INTERIOR_DOORS:
+                    self.canvas.tag_bind(self.door_buttons[door], "<Button-1>", lambda event: select_location(self, event))
                 self.canvas.tag_bind(self.door_buttons[door], "<Button-3>", lambda event: show_door_icons(self, event))
 
     def create_door_dict(door, linked=False) -> DoorLink:
@@ -1096,7 +1121,7 @@ def door_customizer_page(
         origin = self.tiles[current_tile]["origin"]
         x = ((x / 512) * self.tile_size) + origin[0] + 4 
         y = ((y / 512) * self.tile_size) + origin[1] + 8
-        cross_size = self.spotsize / 1.5
+        cross_size = self.spotsize / 1.75
         # use create_line to draw an x
         self.canvas.create_line(
             x - cross_size,
@@ -1116,8 +1141,6 @@ def door_customizer_page(
             fill="red",
             tags="player",
         )
-
-
 
     self: DoorPage = typing.cast(DoorPage, ttk.Frame(parent))
     self.eg_selection_mode = eg_selection_mode

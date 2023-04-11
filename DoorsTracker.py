@@ -382,6 +382,7 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
             was_transitioning = False
             was_falling = False
             was_dead = False
+            cycle_skipped = False
             old_data = {k: None for k in mem_request_names}
 
             while True:
@@ -401,6 +402,7 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
                     previous_x = None
                     previous_y = None
                     previous_layer = None
+                    cycle_skipped = False
                     await asyncio.sleep(0.1)
                     continue
                 
@@ -422,10 +424,16 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
                     was_dead = True
                     continue 
 
-                if data['falling'] != '00':
+                if data['falling'] != '00' and data['falling'] != '01':
                     previous_tile = current_tile = None
                     was_falling = True
                     continue
+                    
+                if not cycle_skipped and (was_transitioning or was_falling or was_dead):
+                    cycle_skipped = True
+                    continue
+
+                cycle_skipped = False
 
                 # TODO: Check doors to see if they're entrances and add lobbies?                
 
@@ -451,8 +459,6 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
                 if eg_tile not in dark_tiles or darkpos or (eg_tile in dark_tiles and (data['lampcone'] != '00' or data['torches'] != '00')):
                     dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
 
-
-                # TODO: Check layer of player and door to see if they match
                 if previous_tile != eg_tile and previous_tile == None:
                     previous_tile = eg_tile
                     current_tile = eg_tile
