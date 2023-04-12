@@ -23,11 +23,12 @@ Start SNI and launch the tracker. The tracker will automatically connect to SNI 
 
 
 ## Requirements
-* Python 3.6+
-* grpcio
-* grpcio-tools
+* [SNI](https://github.com/alttpo/sni) is **required** to use this tracker - it will not work with (q)usb2snes
 
-* TODO...
+- Python 3.6+
+- grpcio
+- grpcio-tools
+- TODO...
 
 In the meantime use the requirements from the Doors branch and add `Pillow`, `grpcio` and `grpcio-tools` to it.
 
