@@ -2,6 +2,8 @@
 
 ## **Under the [current standard racing ruleset](http://alttp.mymm1.com/wiki/ALTTPR_Racing_Ruleset), this tracker is illegal to use while racing**
 
+** This tracker is currently very experimental and may not work as expected. Documentation is also lacking. **
+
 This tracker will auto-track dungeon layouts from the Doors branch of ALttPR using SNI.
 
 * When visiting a dungeon, that dungeons tab will be auto-selected
@@ -25,12 +27,12 @@ Start SNI and launch the tracker. The tracker will automatically connect to SNI 
 ## Requirements
 * [SNI](https://github.com/alttpo/sni) is **required** to use this tracker - it will not work with (q)usb2snes
 
-- Python 3.6+
+- Python 3.10+
 - grpcio
 - grpcio-tools
-- TODO...
+- PyYAML
+- Pillow
 
-In the meantime use the requirements from the Doors branch and add `Pillow`, `grpcio` and `grpcio-tools` to it.
 
 ## Known Issues
 * Lots of old code leftover from plando tool
