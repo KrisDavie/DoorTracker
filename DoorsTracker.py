@@ -407,7 +407,7 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
                 print(data_diff)
 
             if data['dungeon'] not in dungeon_ids.keys() or data['indoors'] != '01':
-                if previous_dungeon in dungeon_ids.keys() and data['indoors'] == '00':
+                if previous_dungeon in dungeon_ids.keys() and data['indoors'] == '00' and data['mirror'] != '0f':
                     # Just left a dungeon, add the last door as a lobby
                     new_door = find_closest_door(current_x, current_y, eg_tile, previous_layer)
                     dp_content.auto_add_lobby(dp_content, new_door)
@@ -484,7 +484,7 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
                 was_mirroring = True
                 asyncio.sleep(0.1)
 
-            if (previous_tile != eg_tile and previous_tile == None) or was_mirroring:
+            if (previous_tile != eg_tile and previous_tile == None) or (was_mirroring and data['mirror'] != '0f'):
                 previous_tile = eg_tile
                 current_tile = eg_tile
                 if was_falling or was_dead:
