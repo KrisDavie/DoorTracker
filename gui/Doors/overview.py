@@ -1151,7 +1151,7 @@ def door_customizer_page(
         origin = self.tiles[current_tile]["origin"]
         x = ((x / 512) * self.tile_size) + origin[0] + 4 
         y = ((y / 512) * self.tile_size) + origin[1] + 8
-        cross_size = self.spotsize / 1.75
+        cross_size = self.spotsize / 1.5
         # use create_line to draw an x
         self.canvas.create_line(
             x - cross_size,
