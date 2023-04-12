@@ -50,8 +50,6 @@ def customizerGUI(mainWindow, args=None):
 
     self = mainWindow
 
-    mainWindow.wm_title("Jank Door Tracker")
-
     def _save_vanilla(self):
         data = {}
         # Tile map, tile_size, map_dims
@@ -354,12 +352,15 @@ def find_closest_door(x, y, tile, layer, closest_distance=128):
 
 
 
-async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: bool = False):
-    # While loop to auto reconnect if the channel is closed?
+async def sni_probe(mainWindow, args: argparse.Namespace):
+    port=args.port
+    debug=args.debug
+    darkpos=args.darkpos
     channel = grpc.aio.insecure_channel(f'localhost:{port}') 
     stub = sni.DevicesStub(channel)
     response = await stub.ListDevices(sni_pb2.DevicesRequest(kinds=''))
-    print("Found device: " + response.devices[0].uri)
+    if debug:
+        print("Found device: " + response.devices[0].uri)
     dev_uri = response.devices[0].uri
     dev_addrspace = response.devices[0].defaultAddressSpace
     mem_stub = sni.DeviceMemoryStub(channel)
@@ -369,6 +370,8 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
     mem_request_names = list(mem_request.keys())
 
     main_nb = mainWindow.notebook
+    mainWindow.wm_title(f"Jank Door Tracker - Connected to {dev_uri}")
+
     doors_page = get_named_page(main_nb, mainWindow.pages, 'doors')
     doors_nb = mainWindow.pages['doors'].notebook
 
@@ -389,6 +392,10 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
         
         # Main loop for data collection
     while True:
+        if channel.get_state() in [grpc.ChannelConnectivity.SHUTDOWN, grpc.ChannelConnectivity.TRANSIENT_FAILURE, grpc.ChannelConnectivity.CONNECTING]:
+            mainWindow.wm_title(f"Jank Door Tracker - DISCONNECTED FROM SNI")
+            asyncio.sleep(1)
+            continue
         # Lazy error handling - won't actually catch disconnects
         try:
             mem_req = sni_pb2.MultiReadMemoryRequest(uri=dev_uri, requests=list(mem_request.values()))
@@ -518,11 +525,12 @@ async def sni_probe(mainWindow, port: int = 8191, debug: bool = False, darkpos: 
 if __name__ == "__main__":
     logging.basicConfig()
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--size", choices=['small', 'medium', 'large'], default='medium')
-    parser.add_argument('--port', type=int, default=8191)
-    parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--darkpos', action='store_true')
-    parser.add_argument('--help', action='store_true')
+    parser.add_argument("--size", choices=['small', 'medium', 'large'], default='medium', help="Set the window size")
+    parser.add_argument('--port', type=int, default=8191, help='SNI connection port')
+    parser.add_argument('--debug', action='store_true', default=False, help='Enable debug logging')
+    parser.add_argument('--darkpos', action='store_true', default=False, help='Show the players position in dark rooms even without a light source')
+    parser.add_argument('--help', action='store_true', help="Show this help message and exit")
+    parser.add_argument('--no-autotrack', action='store_true', default=False, help="Don't automatically track doors (No SNI connection - Race Legal)")
 
     args, _ = parser.parse_known_args()
     if args.help:
@@ -530,11 +538,13 @@ if __name__ == "__main__":
         sys.exit(0)
         
     mainWindow = Tk()
+    mainWindow.wm_title("Jank Door Tracker")
 
     customizerGUI(mainWindow, args=args)
 
     tkmain = asyncio.ensure_future(tk_main(mainWindow))
-    sn_probe = asyncio.ensure_future(sni_probe(mainWindow, port=args.port, debug=args.debug, darkpos=args.darkpos))
+    if not args.no_autotrack:
+        sn_probe = asyncio.ensure_future(sni_probe(mainWindow, args=args))
 
     loop = asyncio.get_event_loop()
     mainWindow.loop = loop
@@ -544,4 +554,5 @@ if __name__ == "__main__":
         pass
 
     tkmain.cancel()
-    sn_probe.cancel()
+    if not args.no_autotrack:
+        sn_probe.cancel()
