@@ -933,6 +933,19 @@ def door_customizer_page(
         self.lobby_doors.append({"door": door, "lobby": lobby})
         redraw_canvas(self)
 
+    def auto_add_lamp_icon(self: DoorPage, door, icon='Lamp'):
+        if door in INTERIOR_DOORS or door == None:
+            return
+        if door in self.special_doors:
+            icon_idx = [k for k, v in self.placed_icons.items() if v["name"] == door][0]
+            del self.placed_icons[icon_idx]
+            del self.special_doors[door]
+        _data = create_door_dict(door)
+        x_loc, y_loc = get_final_door_coords(self, _data, "source", self.x_offset, self.y_offset)
+        self.special_doors[door] = icon   
+        place_door_icon(self, icon, x_loc, y_loc, door)
+        
+
     def has_target(self: DoorPage, loc_name):
         linked_doors = set()
         for data in self.door_links:
@@ -1220,6 +1233,7 @@ def door_customizer_page(
     self.auto_draw_player = auto_draw_player
     self.auto_add_door_link = auto_add_door_link
     self.auto_add_lobby = auto_add_lobby
+    self.auto_add_lamp_icon = auto_add_lamp_icon
 
     #  If we're in eg selection mode, we need to use the special function to only draw tiles and not connections
     if self.eg_selection_mode:

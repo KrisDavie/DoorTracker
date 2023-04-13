@@ -409,9 +409,6 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
     doors_page = get_named_page(main_nb, mainWindow.pages, "doors")
     doors_nb = mainWindow.pages["doors"].notebook
 
-    doors_page = get_named_page(main_nb, mainWindow.pages, 'doors')
-    doors_nb = mainWindow.pages['doors'].notebook
-
     current_tile = None
     previous_tile = None
     current_x = None
@@ -426,6 +423,8 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
     was_mirroring = False
     previous_dungeon = False
     tab_changed = False
+    was_dark = False
+    is_dark = False
     old_data = {k: None for k in mem_request_names}
 
     # Main loop for data collection
@@ -469,6 +468,8 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
                 was_mirroring = False
                 previous_dungeon = False
                 tab_changed = False
+                was_dark = False
+                is_dark = False
                 await asyncio.sleep(0.1)
                 continue
 
@@ -514,27 +515,32 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
                 continue
 
             dp_content = mainWindow.pages["doors"].pages[dungeon_ids[data["dungeon"]]].content
-            if "map_tile" not in dp_content.tiles[eg_tile]:
-                print(f"Adding tile {eg_tile}")
-                dp_content.auto_add_tile(dp_content, eg_tile)
 
             current_x_subtile = int(data["link_x"][2:], 16) % 2
             current_y_subtile = int(data["link_y"][2:], 16) % 2
             current_x = (current_x_subtile * 255) + int(data["link_x"][:2], 16)
             current_y = (current_y_subtile * 255) + int(data["link_y"][:2], 16)
-
-            if (
-                eg_tile not in dark_tiles
-                or darkpos
-                or (eg_tile in dark_tiles and (data["lampcone"] != "00" or data["torches"] != "00"))
-            ):
-                dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
+            was_dark = is_dark
 
             if int(data["mirror"], 16) > 10:
                 # Mirroring, add a lobby when we stop
                 was_mirroring = True
                 await asyncio.sleep(0.1)
                 continue
+
+            if (
+                eg_tile not in dark_tiles
+                or darkpos
+                or (eg_tile in dark_tiles and (data["lampcone"] != "00" or data["torches"] != "00"))
+                or eg_tile == (2, 2)
+            ):
+                if "map_tile" not in dp_content.tiles[eg_tile]:
+                    print(f"Adding tile {eg_tile}")
+                    dp_content.auto_add_tile(dp_content, eg_tile)
+                dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
+                is_dark = False
+            else:
+                is_dark = True
 
             if (previous_tile != eg_tile and previous_tile == None) or (was_mirroring and data["mirror"] != "0f"):
                 previous_tile = eg_tile
@@ -546,10 +552,11 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
                 # We just entered a new dungeon, add an entrance
                 if eg_tile == (2, 1):
                     continue
-                new_door = find_closest_door(
-                    current_x, current_y, eg_tile, data["layer"], closest_distance=32 if was_mirroring else 128
-                )
-                dp_content.auto_add_lobby(dp_content, new_door)
+                if not is_dark:
+                    new_door = find_closest_door(
+                        current_x, current_y, eg_tile, data["layer"], closest_distance=32 if was_mirroring else 128
+                    )
+                    dp_content.auto_add_lobby(dp_content, new_door)
                 was_mirroring = False
 
             elif (previous_tile != eg_tile and previous_tile != None) or was_transitioning:
@@ -565,7 +572,14 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
                     continue
                 if old_door == new_door:
                     continue
-                dp_content.auto_add_door_link(dp_content, old_door, new_door)
+                if is_dark:
+                    # We're now in a dark look, mark old door as lamp
+                    dp_content.auto_add_lamp_icon(dp_content, old_door)
+                if was_dark:
+                    # We're now out of a dark room, mark new door as lamp
+                    dp_content.auto_add_lamp_icon(dp_content, new_door)
+                if not is_dark and not was_dark:
+                    dp_content.auto_add_door_link(dp_content, old_door, new_door)
 
             previous_x = current_x
             previous_y = current_y
@@ -615,7 +629,7 @@ if __name__ == "__main__":
 
     mainWindow = Tk()
     mainWindow.wm_title("Jank Door Tracker")
-    
+
     customizerGUI(mainWindow, args=args)
 
     tkmain = asyncio.ensure_future(tk_main(mainWindow))
