@@ -447,12 +447,16 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
             if len(data_diff) != 0 and args.debug:
                 print(data_diff)
 
+            # Are we even in game?
+            if int(data["gamemode"], 16) <= 0x5 or int(data["gamemode"], 16) >= 0x0B:
+                await asyncio.sleep(0.1)
+                continue
+
             if (
                 data["dungeon"] not in dungeon_ids.keys()
                 or data["indoors"] != "01"
-                or (0x18 <= int(data["gamemode"], 16) <= 0x5)
             ):
-                if previous_dungeon in dungeon_ids.keys() and data["indoors"] == "00" and data["mirror"] != "0f":
+                if previous_dungeon in dungeon_ids.keys() and data["indoors"] == "00" and data["mirror"] != "0f" and not was_dark:
                     reset_dungeon_names(mainWindow)
                     # Just left a dungeon, add the last door as a lobby
                     new_door = find_closest_door(current_x, current_y, eg_tile, previous_layer)
