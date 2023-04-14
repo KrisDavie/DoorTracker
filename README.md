@@ -1,6 +1,6 @@
 # Muffins' Jank (Auto)Door Tracker
 
-## **Under the [current standard racing ruleset](http://alttp.mymm1.com/wiki/ALTTPR_Racing_Ruleset), this tracker is illegal to use while racing**
+## **Under the [current standard racing ruleset](http://alttp.mymm1.com/wiki/ALTTPR_Racing_Ruleset), auto-tracking using this tracker is illegal to use while racing**
 
 **This tracker is currently very experimental and may not work as expected. Documentation is also lacking**
 
@@ -14,7 +14,7 @@ This tracker will auto-track dungeon layouts from the Doors branch of ALttPR usi
 
 
 ## Basic Usage
-Autotracking will track supertiles, links between doors and lobbies. Dark rooms are only tracked if the player has a lamp or a torch lit. Entering a dungeon into a dark room will not mark the lobby (this can cause issues with links past that room). 
+Auto-tracking will track supertiles, links between doors and lobbies. Dark rooms are only tracked if the player has a lamp or a torch lit. Entering a dungeon into a dark room will not mark the lobby (this can cause issues with links past that room). 
 
 Manually link doors with left click. Right click a line to remove a link.
 
