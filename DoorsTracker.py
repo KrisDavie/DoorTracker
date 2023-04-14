@@ -423,7 +423,8 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
     if debug:
         print("Found device: " + response.devices[0].uri)
     dev_uri = response.devices[0].uri
-    dev_addrspace = response.devices[0].defaultAddressSpace
+    # dev_addrspace = response.devices[0].defaultAddressSpace
+    dev_addrspace = 0
     mem_stub = sni.DeviceMemoryStub(channel)
     mem_mapping = await mem_stub.MappingDetect(sni_pb2.DetectMemoryMappingRequest(uri=dev_uri))
     mem_mapping = mem_mapping.memoryMapping
@@ -626,6 +627,10 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
             previous_layer = data["layer"]
 
             await asyncio.sleep(0.1)
+        except grpc.aio.AioRpcError as e:
+            mainWindow.wm_title(f"Jank Door Tracker - DISCONNECTED FROM SNI")
+            print(e)
+            break
         except Exception as e:
             print(e)
             await asyncio.sleep(1)
