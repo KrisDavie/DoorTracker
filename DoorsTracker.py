@@ -38,6 +38,39 @@ dungeon_ids = {
 }
 
 
+def reconnect(mainWindow, forced=False):
+    kill_sni_tracking(mainWindow.sni_task)
+    mainWindow.sni_task = start_sni_tracking(mainWindow, mainWindow.args, forced_autotrack=forced)
+
+
+def race_rom_warning(self):
+    main_x = self.winfo_rootx()
+    main_y = self.winfo_rooty()
+    main_width = self.winfo_width()
+    main_height = self.winfo_height()
+    top = Toplevel(self)
+    top.geometry(f"700x175+{(main_x + main_width // 2) - 700 // 2}+{(main_y + main_height // 2) - 175 // 2}")
+    top.title("Warning - Race Rom Detected")
+    top.resizable(False, False)
+    top.grab_set()
+    top.focus_set()
+    button_frame = ttk.Frame(top)
+
+    def force_autotracking():
+        self.autotracking_forced = True
+        reconnect(mainWindow, forced=True)
+        top.destroy()
+
+    ttk.Label(
+        top,
+        text="A Race Rom has been detected, auto-tracking has been automatically disabled.\n\nWhen auto-tracking is enabled, this tracker does not abide by the current auto-tracking rules set by the racing council.\nYou can continue to use this tracker, but you will need to manually track layouts.\n\nIf you would like to continue using auto-tracking, you can force it to be enabled by clicking the button below.",
+        justify="center",
+    ).pack(padx=20, pady=20)
+    ttk.Button(button_frame, text="OK", command=top.destroy).pack(side="left")
+    ttk.Button(button_frame, text="Force Auto-Tracking", command=force_autotracking).pack(side="left")
+    button_frame.pack()
+
+
 def customizerGUI(mainWindow, args=None):
     window_size = (1548, 768)
 
@@ -298,27 +331,21 @@ def customizerGUI(mainWindow, args=None):
     doors_page = get_named_page(mainWindow.notebook, mainWindow.pages, "doors")
     mainWindow.notebook.select(doors_page)
 
-
-def reconnect(mainWindow):
-    kill_sni_tracking(mainWindow.sni_task)
-    mainWindow.sni_task = start_sni_tracking(mainWindow, mainWindow.args)
-
-
 mem_addresses = {
+    "race": (0x180213, 0x1),
+    "gamemode": (0xF50010, 0x1),
+    "indoors": (0xF5001B, 0x1),
     "link_y": (0xF50020, 0x2),
     "link_x": (0xF50022, 0x2),
-    "layer": (0xF500EE, 0x1),
-    "indoors": (0xF5001B, 0x1),
-    "dungeon": (0xF5040C, 0x1),
-    "dungeon_room": (0xF5048E, 0x1),
-    "transitioning": (0xF500B0, 0x1),
     "falling": (0xF5005B, 0x1),
+    "mirror": (0xF50095, 0x1),
+    "transitioning": (0xF500B0, 0x1),
+    "layer": (0xF500EE, 0x1),
     "dead": (0xF5010A, 0x1),
+    "dungeon": (0xF5040C, 0x1),
     "lampcone": (0xF50458, 0x1),
     "torches": (0xF5045A, 0x1),
-    "mirror": (0xF50095, 0x1),
-    "gamemode": (0xF50010, 0x1),
-    "subgamemode": (0xF50011, 0x1),
+    "dungeon_room": (0xF5048E, 0x1),
 }
 
 
@@ -386,7 +413,7 @@ def highlight_dungeon_name(mainWindow, dungeon_name):
     doors_nb.tab(dungeon_page, underline=0)
 
 
-async def sni_probe(mainWindow, args: argparse.Namespace):
+async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool = False):
     port = args.port
     debug = args.debug
     darkpos = args.darkpos
@@ -404,7 +431,11 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
     mem_request_names = list(mem_request.keys())
 
     main_nb = mainWindow.notebook
-    mainWindow.wm_title(f"Jank Door Tracker - Connected to {dev_uri}")
+    if not forced_autotrack:
+        mainWindow.wm_title(f"Jank Door Tracker - Auto-tracking Enabled (Connected to {dev_uri})")
+    else:
+        mainWindow.wm_title(f"Jank Door Tracker - Auto-tracking Forced (!! Race Rom Detected !!) (Connected to {dev_uri})")
+
 
     doors_page = get_named_page(main_nb, mainWindow.pages, "doors")
     doors_nb = mainWindow.pages["doors"].notebook
@@ -451,6 +482,11 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
             if int(data["gamemode"], 16) <= 0x5 or int(data["gamemode"], 16) >= 0x0B:
                 await asyncio.sleep(0.1)
                 continue
+
+            if data['race'] == '01' and not forced_autotrack:
+                race_rom_warning(mainWindow)
+                mainWindow.wm_title(f"Jank Door Tracker - Auto-tracking Disabled")
+                break
 
             if (
                 data["dungeon"] not in dungeon_ids.keys()
@@ -595,8 +631,8 @@ async def sni_probe(mainWindow, args: argparse.Namespace):
             await asyncio.sleep(1)
 
 
-def start_sni_tracking(mainWindow, args):
-    sn_probe = asyncio.ensure_future(sni_probe(mainWindow, args=args))
+def start_sni_tracking(mainWindow, args, forced_autotrack=False):
+    sn_probe = asyncio.ensure_future(sni_probe(mainWindow, args=args, forced_autotrack=forced_autotrack))
     return sn_probe
 
 
