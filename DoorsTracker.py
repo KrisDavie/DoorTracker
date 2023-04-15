@@ -324,6 +324,8 @@ def customizerGUI(mainWindow, args=None):
     fileMenu.add_separator()
     fileMenu.add_command(label="Reconnect to SNI", command=lambda: reconnect(self))
     fileMenu.add_separator()
+    fileMenu.add_command(label="Reset Tracker", command=lambda: reset_tracker(self))
+    fileMenu.add_separator()
     fileMenu.add_command(label="Exit", command=lambda: self.destroy())
 
     aspectRatioMenu = Menu(viewMenu, tearoff="off")
@@ -349,6 +351,37 @@ def customizerGUI(mainWindow, args=None):
     mainWindow.protocol("WM_DELETE_WINDOW", close_window)
     doors_page = get_named_page(mainWindow.notebook, mainWindow.pages, "doors")
     mainWindow.notebook.select(doors_page)
+
+
+
+def reset_tracker(self):
+    main_x = self.winfo_rootx()
+    main_y = self.winfo_rooty()
+    main_width = self.winfo_width()
+    main_height = self.winfo_height()
+    top = Toplevel(self)
+    top.geometry(f"300x110+{(main_x + main_width // 2) - 300 // 2}+{(main_y + main_height // 2) - 110 // 2}")
+    top.title("Reset?")
+    top.resizable(False, False)
+    top.grab_set()
+    top.focus_set()
+    button_frame = ttk.Frame(top)
+    
+    def force_reset():
+        for world in self.pages["doors"].pages:
+            content = self.pages["doors"].pages[world].content
+            content.init_page(content)
+            content.redraw_canvas(content)
+        top.destroy()
+
+    ttk.Label(
+        top,
+        text="This will reset your tracker, losing all connections etc.\nAre you sure you want to continue?",
+        justify="center",
+    ).pack(padx=20, pady=20)
+    ttk.Button(button_frame, text="Cancel", command=top.destroy).pack(side="left")
+    ttk.Button(button_frame, text="Reset", command=force_reset).pack(side="left")
+    button_frame.pack()
 
 def set_aspect_ratio(self, ratio):
     if self.aspect_ratio == ratio:

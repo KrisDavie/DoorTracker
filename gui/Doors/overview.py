@@ -1236,6 +1236,7 @@ def door_customizer_page(
     init_page(self)
 
     self.load_yaml = load_yaml
+    self.init_page = init_page
     self.return_connections = return_connections
     self.deactivate_tiles = deactivate_tiles
     self.redraw_canvas = redraw_canvas
