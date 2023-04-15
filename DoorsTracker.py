@@ -41,7 +41,7 @@ MAIN_X_PAD = 40
 MAIN_Y_PAD = 120
 
 def reconnect(mainWindow, forced=False):
-    kill_sni_tracking(mainWindow.sni_task)
+    kill_sni_tracking(mainWindow)
     mainWindow.sni_task = start_sni_tracking(mainWindow, mainWindow.args, forced_autotrack=forced)
 
 
@@ -322,6 +322,7 @@ def customizerGUI(mainWindow, args=None):
     fileMenu.add_command(label="Load Tracker Data", command=lambda: load_yaml(self))
     fileMenu.add_command(label="Save Tracker Data", command=lambda: save_yaml(self))
     fileMenu.add_separator()
+    fileMenu.add_command(label="Stop Auto-tracking", command=lambda: kill_sni_tracking(self))
     fileMenu.add_command(label="Reconnect to SNI", command=lambda: reconnect(self))
     fileMenu.add_separator()
     fileMenu.add_command(label="Reset Tracker", command=lambda: reset_tracker(self))
@@ -724,7 +725,9 @@ def start_sni_tracking(mainWindow, args, forced_autotrack=False):
     return sn_probe
 
 
-def kill_sni_tracking(sn_probe):
+def kill_sni_tracking(mainWindow):
+    mainWindow.wm_title(f"Jank Door Tracker - Auto-tracking disabled")
+    sn_probe = mainWindow.sni_task
     if sn_probe:
         sn_probe.cancel()
 
