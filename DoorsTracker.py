@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 import pickle
 import sys
-from tkinter import Tk, TOP, BOTH, Toplevel, ttk, filedialog
+from tkinter import Menu, Tk, TOP, BOTH, Toplevel, ttk, filedialog
 from PIL import Image
 import logging
 import grpc.aio
@@ -37,6 +37,8 @@ dungeon_ids = {
     "1a": "Ganons_Tower",
 }
 
+MAIN_X_PAD = 40
+MAIN_Y_PAD = 120
 
 def reconnect(mainWindow, forced=False):
     kill_sni_tracking(mainWindow.sni_task)
@@ -70,15 +72,17 @@ def race_rom_warning(self):
     ttk.Button(button_frame, text="Force Auto-Tracking", command=force_autotracking).pack(side="left")
     button_frame.pack()
 
+window_sizes = {
+    "small": (1024, 512),
+    "medium": (1548, 768),
+    "large": (2048, 1024),
+}
 
 def customizerGUI(mainWindow, args=None):
     window_size = (1548, 768)
 
-    if args:
-        if args.size == "small":
-            window_size = (1024, 512)
-        elif args.size == "large":
-            window_size = (2048, 1024)
+    if args and args.size:
+        window_size = window_sizes[args.size]
 
     self = mainWindow
     self.args = args
@@ -307,19 +311,34 @@ def customizerGUI(mainWindow, args=None):
     self.pages["pots"].notebook.pack()
     self.pages["doors"].notebook.pack()
     self.eg_tile_window.notebook.pack()
-    button_frame = ttk.Frame(self)
-    button_frame.pack()
-    save_data_button = ttk.Button(button_frame, text="Save Tracker Data", command=lambda: save_yaml(self))
-    save_data_button.pack(side="left")
-    load_data_button = ttk.Button(button_frame, text="Load Tracker Data", command=lambda: load_yaml(self))
-    load_data_button.pack(side="left")
-    reconnect_button = ttk.Button(self, text="Reconnect to SNI", command=lambda: reconnect(self))
-    reconnect_button.pack()
+
+    menu = Menu(self)
+    self.config(menu=menu)
+    fileMenu = Menu(menu, tearoff="off")
+    menu.add_cascade(label="File", menu=fileMenu)
+    viewMenu = Menu(menu, tearoff="off")
+    menu.add_cascade(label="View", menu=viewMenu)
+
+    fileMenu.add_command(label="Load Tracker Data", command=lambda: load_yaml(self))
+    fileMenu.add_command(label="Save Tracker Data", command=lambda: save_yaml(self))
+    fileMenu.add_separator()
+    fileMenu.add_command(label="Reconnect to SNI", command=lambda: reconnect(self))
+    fileMenu.add_separator()
+    fileMenu.add_command(label="Exit", command=lambda: self.destroy())
+
+    aspectRatioMenu = Menu(viewMenu, tearoff="off")
+    viewMenu.add_cascade(label="Aspect Ratio", menu=aspectRatioMenu)
+    aspectRatioMenu.add_radiobutton(label="2:1", command=lambda: set_aspect_ratio(self, (1, 2)))
+    aspectRatioMenu.add_radiobutton(label="4:3", command=lambda: set_aspect_ratio(self, (3, 4)))
+    aspectRatioMenu.invoke(0)
+
+    sizeMenu = Menu(viewMenu, tearoff="off")
+    viewMenu.add_cascade(label="Size", menu=sizeMenu)
+    for size in window_sizes:
+        sizeMenu.add_radiobutton(label=size.capitalize(), command=lambda size=size: set_size(self, size))
+    sizeMenu.invoke(1)
 
     self.eg_tile_window.withdraw()
-
-    # save_vanilla_button = ttk.Button(self, text="Save Vanilla Data", command=lambda: _save_vanilla(self))
-    # save_vanilla_button.pack()
 
     def close_window():
         self.eg_tile_window.destroy()
@@ -330,6 +349,37 @@ def customizerGUI(mainWindow, args=None):
     mainWindow.protocol("WM_DELETE_WINDOW", close_window)
     doors_page = get_named_page(mainWindow.notebook, mainWindow.pages, "doors")
     mainWindow.notebook.select(doors_page)
+
+def set_aspect_ratio(self, ratio):
+    if self.aspect_ratio == ratio:
+        return
+    self.aspect_ratio = ratio
+    new_height = window_sizes[self.size][1]
+    new_width = int(new_height * ratio[1] / ratio[0])
+    sc_width = mainWindow.winfo_screenwidth()
+    sc_height = mainWindow.winfo_screenheight()
+    for world in self.pages["doors"].pages:
+        # Update canvas dimensions, aspect ratio, and redraw
+        self.pages["doors"].pages[world].content.aspect_ratio = ratio
+        self.pages["doors"].pages[world].content.cwidth = new_width
+        self.pages["doors"].pages[world].content.cheight = new_height
+        self.pages["doors"].pages[world].content.redraw_canvas(self.pages["doors"].pages[world].content)
+    self.geometry(f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}")
+
+def set_size(self, size):
+    if self.size == size:
+        return
+    self.size = size
+    new_height = window_sizes[size][1]
+    new_width = int(new_height * self.aspect_ratio[1] / self.aspect_ratio[0])
+    sc_width = mainWindow.winfo_screenwidth()
+    sc_height = mainWindow.winfo_screenheight()
+    for world in self.pages["doors"].pages:
+        self.pages["doors"].pages[world].content.cheight = new_height
+        self.pages["doors"].pages[world].content.cwidth = new_width
+        self.pages["doors"].pages[world].content.redraw_canvas(self.pages["doors"].pages[world].content)
+    self.geometry(f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}")
+        
 
 mem_addresses = {
     "race": (0x180213, 0x1),
@@ -674,7 +724,13 @@ if __name__ == "__main__":
 
     mainWindow = Tk()
     mainWindow.wm_title("Jank Door Tracker")
-
+    sc_width = mainWindow.winfo_screenwidth()
+    sc_height = mainWindow.winfo_screenheight()
+    window_size = window_sizes[args.size]
+    window_size = (window_size[0] + MAIN_X_PAD, window_size[1] + MAIN_Y_PAD)
+    mainWindow.geometry(f"{window_size[0]}x{window_size[1]}+{int(sc_width/2 - window_size[0]/2)}+{int(sc_height/2 - window_size[1]/2)}")
+    mainWindow.aspect_ratio = (1, 2)
+    mainWindow.size = args.size
     customizerGUI(mainWindow, args=args)
 
     tkmain = asyncio.ensure_future(tk_main(mainWindow))

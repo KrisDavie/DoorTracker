@@ -24,7 +24,7 @@ from data.doors_data import (
 from pathlib import Path
 
 
-BORDER_SIZE = 20
+BORDER_SIZE = 25
 TILE_BORDER_SIZE = 3
 MANUAL_REGIONS_ADDED = {
     # "Sewers Secret Room Up Stairs": "Sewers Rat Path",  # Sewer Drop
@@ -33,6 +33,7 @@ MANUAL_REGIONS_ADDED = {
     # "Skull Left Drop ES": "Skull Left Drop",  # Skull Left Drop
     # "Skull Pinball NE": "Skull Pinball",  # Skull Pinball
     "Eastern Hint Tile WN": "Eastern Hint Tile Blocked Path",  # Eastern Hint Tile
+    "Ice Dead End WS": "Ice Big Key", # Icebreaker
 }
 
 INTERIOR_DOORS = set()
@@ -145,6 +146,7 @@ def door_customizer_page(
     vanilla_data=None,
     plando_window=None,
     cdims=(2048, 1024),
+    aspect_ratio=(1, 2),
 ) -> DoorPage:
     def init_page(self: DoorPage, redraw=False) -> None:
         self.select_state = SelectState.NoneSelected
@@ -152,8 +154,10 @@ def door_customizer_page(
         # Do we have a canvas already? If so, destroy it and make a new one
         if hasattr(self, "canvas"):
             self.canvas.destroy()
-        self.canvas = Canvas(self, width=self.cwidth + (BORDER_SIZE * 2), height=self.cheight + (BORDER_SIZE * 2))
+        self.canvas = Canvas(self, width=self.cwidth + (BORDER_SIZE * 2), height=self.cheight + (BORDER_SIZE * 2), background='white')
         self.canvas.pack()
+        dungeon_name = [k for k, v in dungeon_worlds.items() if v == tab_world][0]
+        self.canvas.create_text(((self.cwidth + (BORDER_SIZE * 2)) // 2), 12, text=dungeon_name.replace("_", " "), anchor='center', font=("TkDefaultFont", 12, 'bold'))
         self.disabled_tiles = {}
 
         # Initialise the variables we need
@@ -165,6 +169,7 @@ def door_customizer_page(
         self.unlinked_doors = set()
         self.door_buttons = {}
         self.sanc_dungeon = False
+        self.x_center_align = 0
 
         #  If we're redrawing, we need to keep tiles with no current connections, we store them temporarily in old_tiles
         if redraw:
@@ -524,7 +529,7 @@ def door_customizer_page(
                 return
 
     def add_eg_tile_img(self: DoorPage, x, y, tile_x, tile_y, ci_kwargs={}):
-        x1 = (tile_x * self.tile_size) + BORDER_SIZE + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE)
+        x1 = (tile_x * self.tile_size) + BORDER_SIZE + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE) + self.x_center_align
         y1 = (tile_y * self.tile_size) + BORDER_SIZE + (((2 * tile_y + 1) - 1) * TILE_BORDER_SIZE)
 
         img = ImageTk.PhotoImage(
@@ -571,7 +576,7 @@ def door_customizer_page(
                 if get_tile_data_by_map_tile(self.tiles, (col - self.x_offset, row - self.y_offset)):
                     continue
 
-                x1 = (col * self.tile_size) + BORDER_SIZE + (((2 * col + 1) - 1) * TILE_BORDER_SIZE)
+                x1 = (col * self.tile_size) + BORDER_SIZE + (((2 * col + 1) - 1) * TILE_BORDER_SIZE) + self.x_center_align
                 y1 = (row * self.tile_size) + BORDER_SIZE + (((2 * row + 1) - 1) * TILE_BORDER_SIZE)
                 tile = self.canvas.create_rectangle(
                     x1,
@@ -626,7 +631,11 @@ def door_customizer_page(
         self.y_offset = y_offset
         self.x_offset = x_offset
 
-        self.tile_size = (self.cwidth // (self.map_dims[1])) - (TILE_BORDER_SIZE * 2)
+        self.tile_size = min((self.cwidth // (self.map_dims[1])), (self.cheight // (self.map_dims[0]))) - (TILE_BORDER_SIZE * 2)
+        # recorrect x_offset to center map with unsual aspect ratios
+        total_tile_width =  (self.tile_size + (TILE_BORDER_SIZE * 2)) * self.map_dims[1] + x_offset
+        if total_tile_width < self.cwidth:
+            self.x_center_align += (self.cwidth - total_tile_width) // 2
 
         # This stores the x, y coords that we're plotting to and the eg x,y coords of the tile we're plotting
         self.tile_map = []
@@ -651,7 +660,7 @@ def door_customizer_page(
             add_eg_tile_img(self, eg_x, eg_y, tile_x, tile_y)
 
         for door, data in doors_data.items():
-            if door not in self.doors_available and len(self.lobby_doors) > 0:
+            if hasattr(self, 'doors_available') and door not in self.doors_available and len(self.lobby_doors) > 0:
                 continue
             d_eg_x = int(data[0]) % 16
             d_eg_y = int(data[0]) // 16
@@ -751,7 +760,7 @@ def door_customizer_page(
         door_tile_y = door[tile][1] + (min_y)
         x = ((door[coords][0] / 512) * self.tile_size) + (
             (door_tile_x * self.tile_size) + BORDER_SIZE + (((2 * door_tile_x + 1) - 1) * TILE_BORDER_SIZE)
-        )
+        ) + self.x_center_align
         y = ((door[coords][1] / 512) * self.tile_size) + (
             (door_tile_y * self.tile_size) + BORDER_SIZE + (((2 * door_tile_y + 1) - 1) * TILE_BORDER_SIZE)
         )
@@ -1020,7 +1029,7 @@ def door_customizer_page(
             tile_x += self.x_offset
             tile_y += self.y_offset
 
-            x1 = (tile_x * self.tile_size) + BORDER_SIZE + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE)
+            x1 = (tile_x * self.tile_size) + BORDER_SIZE + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE) + self.x_center_align
             y1 = (tile_y * self.tile_size) + BORDER_SIZE + (((2 * tile_y + 1) - 1) * TILE_BORDER_SIZE)
             x2 = x1 + self.tile_size
             y2 = y1 + self.tile_size
@@ -1208,7 +1217,7 @@ def door_customizer_page(
 
     self.cwidth = cdims[0]
     self.cheight = cdims[1]
-    self.aspect_ratio = (1, 2)
+    self.aspect_ratio = aspect_ratio
     self.cwidth = int(cdims[1] * self.aspect_ratio[1] / self.aspect_ratio[0])
 
     self.spotsize = int((self.cheight // 50) / 2)
@@ -1216,7 +1225,7 @@ def door_customizer_page(
     self.select_state = SelectState.NoneSelected
     if not eg_selection_mode:
         redraw_canvas_button = ttk.Button(self, text="Redraw Canvas", command=lambda: redraw_canvas(self))
-        redraw_canvas_button.pack()
+        redraw_canvas_button.pack(side='bottom')
     if vanilla_data:
         # Original vanilla data was stored at 2048x1024, so we need to scale it down to the current size
         self.tile_size = int(vanilla_data["tile_size"] / 2048 * self.cwidth)
@@ -1229,6 +1238,7 @@ def door_customizer_page(
     self.load_yaml = load_yaml
     self.return_connections = return_connections
     self.deactivate_tiles = deactivate_tiles
+    self.redraw_canvas = redraw_canvas
     self.auto_add_tile = auto_add_tile
     self.auto_draw_player = auto_draw_player
     self.auto_add_door_link = auto_add_door_link
