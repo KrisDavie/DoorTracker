@@ -29,10 +29,18 @@ You can save the current state of the tracker with File -> Save Tracker Data. Th
 The size and aspect ratio of the tracker can be modified under the view menu.
 
 
+## Installation
+### Windows users
+Download the latest release from the releases page. Run the `DoorsTracker.exe` file.
+
+### Other users
+Clone the repo and install the requirements.
+`python DoorsTracker.py`
+
+
 ## Usage
 Start SNI and launch the tracker. The tracker will automatically connect to SNI and start tracking.
 
-`python DoorsTracker.py`
 
 ## Arguments
 * `--size` - Size of the tracker window ('small', 'medium', 'large')
@@ -54,3 +62,5 @@ Start SNI and launch the tracker. The tracker will automatically connect to SNI 
 ## Known Issues
 * Lots of old code leftover from plando tool
 * Tabs other than `doors` will not be usable if using a 4:3 aspect ratio
+* Sometimes a lobby is created after killing a boss (remove with right click)
+* Sometimes a dark room is not properly obscured

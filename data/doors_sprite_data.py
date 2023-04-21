@@ -3,7 +3,7 @@ from tkinter import Canvas, Toplevel, NW
 from PIL import ImageTk, Image
 from data.worlds_data import World
 
-ITEM_SHEET_PATH = Path("data") / "Doors_Sheet.png"
+ITEM_SHEET_PATH = Path(__file__).parent / "Doors_Sheet.png"
 
 BORDER_SIZE = 20
 TILE_BORDER_SIZE = 3

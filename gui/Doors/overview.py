@@ -8,6 +8,7 @@ from gui.Entrances.overview import SelectState
 from data.worlds_data import dungeon_worlds
 from data.doors_data import (
     doors_data,
+    dark_tiles,
     dungeon_lobbies,
     door_coordinates,
     doors_to_regions,
@@ -41,7 +42,7 @@ for door_pair in interior_doors:
     INTERIOR_DOORS.add(door_pair[0])
     INTERIOR_DOORS.add(door_pair[1])
 
-item_sheet_path = Path("data") / "Doors_Sheet.png"
+item_sheet_path = Path(__file__).parent.parent.parent / "data" / "Doors_Sheet.png"
 
 
 class DoorData(TypedDict):
@@ -528,7 +529,7 @@ def door_customizer_page(
                 redraw_canvas(self)
                 return
 
-    def add_eg_tile_img(self: DoorPage, x, y, tile_x, tile_y, ci_kwargs={}):
+    def add_eg_tile_img(self: DoorPage, x, y, tile_x, tile_y, dark_tile=False, ci_kwargs={}):
         x1 = (tile_x * self.tile_size) + BORDER_SIZE + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE) + self.x_center_align
         y1 = (tile_y * self.tile_size) + BORDER_SIZE + (((2 * tile_y + 1) - 1) * TILE_BORDER_SIZE)
 
@@ -537,6 +538,14 @@ def door_customizer_page(
                 (self.tile_size, self.tile_size), Image.ANTIALIAS
             )
         )
+        if dark_tile:
+            self.canvas.create_rectangle(
+                x1 - TILE_BORDER_SIZE,
+                y1 - TILE_BORDER_SIZE,
+                x1 + self.tile_size + TILE_BORDER_SIZE,
+                y1 + self.tile_size + TILE_BORDER_SIZE,
+                fill="#f00",
+            )            
         map = self.canvas.create_image(x1, y1, image=img, anchor=NW, **ci_kwargs)
         if (x, y) in disabled_tiles:
             rect = self.canvas.create_rectangle(
@@ -564,7 +573,10 @@ def door_customizer_page(
             if tile_data["map_tile"] == None:
                 continue
             x, y = tile_data["map_tile"]
-            add_eg_tile_img(self, eg_tile_x, eg_tile_y, x + self.x_offset, y + self.y_offset)
+            if (eg_tile_x, eg_tile_y) in dark_tiles:
+                add_eg_tile_img(self, eg_tile_x, eg_tile_y, x + self.x_offset, y + self.y_offset, dark_tile=True)
+            else:
+                add_eg_tile_img(self, eg_tile_x, eg_tile_y, x + self.x_offset, y + self.y_offset)
 
     def get_door_coords(door):
         eg_tile, list_pos = door_coordinates_key[door]

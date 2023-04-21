@@ -1,2 +1,5 @@
 **/__pycache__
 **/*.psd
+build/*
+dist/*
+upx*/*

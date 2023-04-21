@@ -251,7 +251,7 @@ def customizerGUI(mainWindow, args=None):
     self.pages["entrances"].content = entrance_customizer_page(self, self.pages["entrances"], cdims=window_size)
     self.pages["entrances"].content.pack(side=TOP, fill=BOTH, expand=True)
 
-    eg_map = Path("data") / "maps" / "egmap.png"
+    eg_map = Path(__file__).parent / "data" / "maps" / "egmap.png"
     eg_img = Image.open(eg_map)
 
     self.eg_tile_window = Toplevel(self)
@@ -260,7 +260,7 @@ def customizerGUI(mainWindow, args=None):
     self.eg_tile_window.protocol("WM_DELETE_WINDOW", lambda: hide_dont_close(self))
     self.eg_tile_window.notebook = ttk.Notebook(self.eg_tile_window)
     self.eg_tile_window.pages = {}
-    with open(Path("data/vanilla_layout.pickle"), "rb") as f:
+    with open(Path(__file__).parent / "data" / "vanilla_layout.pickle", "rb") as f:
         vanilla_layout = pickle.load(f)
 
     self.eg_tile_multiuse = eg_tile_multiuse.copy()

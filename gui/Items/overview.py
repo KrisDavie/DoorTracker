@@ -16,7 +16,7 @@ class SelectState(Enum):
 
 BORDER_SIZE = 20
 
-item_sheet_path = Path("data") / "Item_Sheet.png"
+item_sheet_path =  Path(__file__).parent.parent.parent / "data" / "Item_Sheet.png"
 
 def item_customizer_page(top, parent, tab_world, tab_item_type="standard", eg_img=None, cdims=(1548, 768)):
     def load_yaml(self, yaml_data):

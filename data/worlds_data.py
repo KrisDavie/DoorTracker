@@ -42,7 +42,7 @@ dungeon_worlds = {
     "Ganons_Tower": World.GanonsTower,
 }
 
-MAPS_DIR = Path("data") / "maps"
+MAPS_DIR = Path(__file__).parent / "maps"
 
 
 worlds_data = {
