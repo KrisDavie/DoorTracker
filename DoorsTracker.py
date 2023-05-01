@@ -541,6 +541,7 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
     tab_changed = False
     was_dark = False
     is_dark = False
+    boss_just_killed = False
     old_data = {k: None for k in mem_request_names}
 
     # Main loop for data collection
@@ -565,6 +566,10 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
 
             # Are we even in game?
             if int(data["gamemode"], 16) <= 0x5 or int(data["gamemode"], 16) >= 0x0B:
+                if data['mirror'] == 'f7':
+                    was_mirroring = True
+                if data['gamemode'] == '13':
+                    boss_just_killed = True
                 await asyncio.sleep(0.1)
                 continue
 
@@ -577,7 +582,7 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
                 data["dungeon"] not in dungeon_ids.keys()
                 or data["indoors"] != "01"
             ):
-                if previous_dungeon in dungeon_ids.keys() and data["indoors"] == "00" and data["mirror"] != "0f" and not was_dark:
+                if previous_dungeon in dungeon_ids.keys() and data["indoors"] == "00" and data["mirror"] != "0f" and not was_dark and not boss_just_killed:
                     reset_dungeon_names(mainWindow)
                     # Just left a dungeon, add the last door as a lobby
                     new_door = find_closest_door(current_x, current_y, eg_tile, previous_layer)
@@ -595,6 +600,7 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
                 tab_changed = False
                 was_dark = False
                 is_dark = False
+                boss_just_killed = False
                 await asyncio.sleep(0.1)
                 continue
 
@@ -646,12 +652,6 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
             current_x = (current_x_subtile * 255) + int(data["link_x"][:2], 16)
             current_y = (current_y_subtile * 255) + int(data["link_y"][:2], 16)
             was_dark = is_dark
-
-            if int(data["mirror"], 16) > 10:
-                # Mirroring, add a lobby when we stop
-                was_mirroring = True
-                await asyncio.sleep(0.1)
-                continue
 
             if (
                 eg_tile not in dark_tiles

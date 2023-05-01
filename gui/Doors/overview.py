@@ -920,7 +920,19 @@ def door_customizer_page(
         for d in [door, linked_door]:
             if has_target(self, d) or d in INTERIOR_DOORS or d in [x["door"] for x in self.lobby_doors] or d == None:
                 return
-
+       
+        _valid_links = [
+            {'So', 'No'},
+            {'Ea', 'We'},
+            {'Up', 'Dn'},
+            {'Up', 'Up'},
+            {'Dn', 'Dn'},
+        ]
+        directions = {doors_data[door][1], doors_data[linked_door][1]}
+       
+        if directions not in _valid_links:
+            return
+        
         add_door_link(self, door, linked_door)
         # draw_latest_door_link(self, linked_door)
         redraw_canvas(self)
