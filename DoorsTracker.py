@@ -40,9 +40,12 @@ dungeon_ids = {
 MAIN_X_PAD = 40
 MAIN_Y_PAD = 120
 
+
 def reconnect(mainWindow, forced=False):
     kill_sni_tracking(mainWindow)
-    mainWindow.sni_task = start_sni_tracking(mainWindow, mainWindow.args, forced_autotrack=forced)
+    mainWindow.sni_task = start_sni_tracking(
+        mainWindow, mainWindow.args, forced_autotrack=forced
+    )
 
 
 def race_rom_warning(self):
@@ -51,7 +54,9 @@ def race_rom_warning(self):
     main_width = self.winfo_width()
     main_height = self.winfo_height()
     top = Toplevel(self)
-    top.geometry(f"700x175+{(main_x + main_width // 2) - 700 // 2}+{(main_y + main_height // 2) - 175 // 2}")
+    top.geometry(
+        f"700x175+{(main_x + main_width // 2) - 700 // 2}+{(main_y + main_height // 2) - 175 // 2}"
+    )
     top.title("Warning - Race Rom Detected")
     top.resizable(False, False)
     top.grab_set()
@@ -69,14 +74,18 @@ def race_rom_warning(self):
         justify="center",
     ).pack(padx=20, pady=20)
     ttk.Button(button_frame, text="OK", command=top.destroy).pack(side="left")
-    ttk.Button(button_frame, text="Force Auto-Tracking", command=force_autotracking).pack(side="left")
+    ttk.Button(
+        button_frame, text="Force Auto-Tracking", command=force_autotracking
+    ).pack(side="left")
     button_frame.pack()
+
 
 window_sizes = {
     "small": (1024, 512),
     "medium": (1548, 768),
     "large": (2048, 1024),
 }
+
 
 def customizerGUI(mainWindow, args=None):
     window_size = (1548, 768)
@@ -109,7 +118,8 @@ def customizerGUI(mainWindow, args=None):
 
     def load_yaml(self):
         file = filedialog.askopenfilename(
-            filetypes=[("Yaml Files", (".yaml", ".yml")), ("All Files", "*")], initialdir=os.path.join(".")
+            filetypes=[("Yaml Files", (".yaml", ".yml")), ("All Files", "*")],
+            initialdir=os.path.join("."),
         )
         with open(file, mode="r") as fh:
             try:
@@ -143,8 +153,13 @@ def customizerGUI(mainWindow, args=None):
                 )
 
         if "entrances" in yaml_data:
-            all_entrances = {**yaml_data["entrances"][1]["entrances"], **yaml_data["entrances"][1]["two-way"]}
-            self.pages["entrances"].content.load_yaml(self.pages["entrances"].content, all_entrances)
+            all_entrances = {
+                **yaml_data["entrances"][1]["entrances"],
+                **yaml_data["entrances"][1]["two-way"],
+            }
+            self.pages["entrances"].content.load_yaml(
+                self.pages["entrances"].content, all_entrances
+            )
 
     def save_yaml(self, save=True):
         yaml_data = {}
@@ -154,7 +169,12 @@ def customizerGUI(mainWindow, args=None):
         if er_type:
             yaml_data["settings"] = {1: {"shuffle": er_type}}
 
-        if len(entrances["entrances"]) + len(entrances["two-way"]) + len(entrances["exits"]) > 0:
+        if (
+            len(entrances["entrances"])
+            + len(entrances["two-way"])
+            + len(entrances["exits"])
+            > 0
+        ):
             yaml_data["entrances"] = {1: entrances}
 
         # Save doors
@@ -183,7 +203,9 @@ def customizerGUI(mainWindow, args=None):
             for loc, item in (
                 self.pages["items"]
                 .pages[item_world]
-                .content.return_placements(self.pages["items"].pages[item_world].content.placed_items)
+                .content.return_placements(
+                    self.pages["items"].pages[item_world].content.placed_items
+                )
                 .items()
             ):
                 yaml_data["placements"][1].update({loc: item})
@@ -198,7 +220,9 @@ def customizerGUI(mainWindow, args=None):
             for loc, item in (
                 self.pages["pots"]
                 .pages[pot_world]
-                .content.return_placements(self.pages["pots"].pages[pot_world].content.placed_items)
+                .content.return_placements(
+                    self.pages["pots"].pages[pot_world].content.placed_items
+                )
                 .items()
             ):
                 yaml_data["placements"][1].update({loc: item})
@@ -211,7 +235,8 @@ def customizerGUI(mainWindow, args=None):
             else:
                 return yaml_data
         file = filedialog.asksaveasfilename(
-            filetypes=[("Yaml Files", (".yaml", ".yml")), ("All Files", "*")], initialdir=os.path.join(".")
+            filetypes=[("Yaml Files", (".yaml", ".yml")), ("All Files", "*")],
+            initialdir=os.path.join("."),
         )
         with open(file, mode="w") as fh:
             yaml.dump(yaml_data, fh)
@@ -239,17 +264,19 @@ def customizerGUI(mainWindow, args=None):
     self.notebook.add(self.pages["doors"], text="Doors")
     self.notebook.pack()
 
-    self.pages["items"].notebook = ttk.Notebook(self.pages["items"])
-    self.pages["items"].pages = {}
+    self.pages["items"].notebook = ttk.Notebook(self.pages["items"])  # type: ignore
+    self.pages["items"].pages = {}  # type: ignore
 
-    self.pages["pots"].notebook = ttk.Notebook(self.pages["pots"])
-    self.pages["pots"].pages = {}
+    self.pages["pots"].notebook = ttk.Notebook(self.pages["pots"])  # type: ignore
+    self.pages["pots"].pages = {}  # type: ignore
 
-    self.pages["doors"].notebook = ttk.Notebook(self.pages["doors"])
-    self.pages["doors"].pages = {}
+    self.pages["doors"].notebook = ttk.Notebook(self.pages["doors"])  # type: ignore
+    self.pages["doors"].pages = {}  # type: ignore
 
-    self.pages["entrances"].content = entrance_customizer_page(self, self.pages["entrances"], cdims=window_size)
-    self.pages["entrances"].content.pack(side=TOP, fill=BOTH, expand=True)
+    self.pages["entrances"].content = entrance_customizer_page(  # type: ignore
+        self, self.pages["entrances"], cdims=window_size
+    )
+    self.pages["entrances"].content.pack(side=TOP, fill=BOTH, expand=True)  # type: ignore
 
     eg_map = Path(__file__).parent / "data" / "maps" / "egmap.png"
     eg_img = Image.open(eg_map)
@@ -258,87 +285,127 @@ def customizerGUI(mainWindow, args=None):
     self.eg_tile_window.wm_title("EG Tiles")
     self.eg_tile_window.title("EG Map Window")
     self.eg_tile_window.protocol("WM_DELETE_WINDOW", lambda: hide_dont_close(self))
-    self.eg_tile_window.notebook = ttk.Notebook(self.eg_tile_window)
-    self.eg_tile_window.pages = {}
+    self.eg_tile_window.notebook = ttk.Notebook(self.eg_tile_window)  # type: ignore
+    self.eg_tile_window.pages = {}  # type: ignore
+    self.show_all_doors = False
     with open(Path(__file__).parent / "data" / "vanilla_layout.pickle", "rb") as f:
         vanilla_layout = pickle.load(f)
 
     self.eg_tile_multiuse = eg_tile_multiuse.copy()
     self.disabled_eg_tiles = {}
     for dungeon, world in dungeon_worlds.items():
-        self.pages["items"].pages[dungeon] = ttk.Frame(self.pages["items"].notebook)
-        self.pages["items"].notebook.add(self.pages["items"].pages[dungeon], text=dungeon.replace("_", " "))
-        self.pages["items"].pages[dungeon].content = item_customizer_page(
-            self, self.pages["items"].pages[dungeon], world, tab_item_type="standard", eg_img=eg_img, cdims=window_size
+        self.pages["items"].pages[dungeon] = ttk.Frame(self.pages["items"].notebook)  # type: ignore
+        self.pages["items"].notebook.add(  # type: ignore
+            self.pages["items"].pages[dungeon], text=dungeon.replace("_", " ")  # type: ignore
         )
-        self.pages["items"].pages[dungeon].content.pack(side=TOP, fill=BOTH, expand=True)
+        self.pages["items"].pages[dungeon].content = item_customizer_page(  # type: ignore
+            self,
+            self.pages["items"].pages[dungeon],  # type: ignore
+            world,
+            tab_item_type="standard",
+            eg_img=eg_img,
+            cdims=window_size,
+        )
+        self.pages["items"].pages[dungeon].content.pack(  # type: ignore
+            side=TOP, fill=BOTH, expand=True
+        )
 
         if dungeon == "Overworld":
             continue
 
-        self.pages["pots"].pages[dungeon] = ttk.Frame(self.pages["pots"].notebook)
-        self.pages["pots"].notebook.add(self.pages["pots"].pages[dungeon], text=dungeon.replace("_", " "))
-        self.pages["pots"].pages[dungeon].content = item_customizer_page(
-            self, self.pages["pots"].pages[dungeon], world, tab_item_type="pot", eg_img=eg_img, cdims=window_size
+        self.pages["pots"].pages[dungeon] = ttk.Frame(self.pages["pots"].notebook)  # type: ignore
+        self.pages["pots"].notebook.add(  # type: ignore
+            self.pages["pots"].pages[dungeon], text=dungeon.replace("_", " ")  # type: ignore
         )
-        self.pages["pots"].pages[dungeon].content.pack(side=TOP, fill=BOTH, expand=True)
+        self.pages["pots"].pages[dungeon].content = item_customizer_page(  # type: ignore
+            self,
+            self.pages["pots"].pages[dungeon],  # type: ignore
+            world,
+            tab_item_type="pot",
+            eg_img=eg_img,
+            cdims=window_size,
+        )
+        self.pages["pots"].pages[dungeon].content.pack(side=TOP, fill=BOTH, expand=True)  # type: ignore
 
         if dungeon == "Underworld":
             continue
 
-        self.pages["doors"].pages[dungeon] = ttk.Frame(self.pages["doors"].notebook)
-        self.pages["doors"].notebook.add(self.pages["doors"].pages[dungeon], text=dungeon.replace("_", " "))
-        self.pages["doors"].pages[dungeon].content = door_customizer_page(
-            self, self.pages["doors"].pages[dungeon], world, eg_img=eg_img, cdims=window_size
+        self.pages["doors"].pages[dungeon] = ttk.Frame(self.pages["doors"].notebook)  # type: ignore
+        self.pages["doors"].notebook.add(  # type: ignore
+            self.pages["doors"].pages[dungeon], text=dungeon.replace("_", " ")  # type: ignore
         )
-        self.pages["doors"].pages[dungeon].content.pack(side=TOP, fill=BOTH, expand=True)
-
-        self.eg_tile_window.pages[dungeon] = ttk.Frame(self.eg_tile_window.notebook)
-        self.eg_tile_window.notebook.add(self.eg_tile_window.pages[dungeon], text=dungeon.replace("_", " "))
-        self.eg_tile_window.pages[dungeon].content = door_customizer_page(
+        self.pages["doors"].pages[dungeon].content = door_customizer_page(  # type: ignore
             self,
-            self.eg_tile_window.pages[dungeon],
+            self.pages["doors"].pages[dungeon],  # type: ignore
+            world,
+            eg_img=eg_img,
+            cdims=window_size,
+        )
+        self.pages["doors"].pages[dungeon].content.pack(  # type: ignore
+            side=TOP, fill=BOTH, expand=True
+        )
+
+        self.eg_tile_window.pages[dungeon] = ttk.Frame(self.eg_tile_window.notebook)  # type: ignore
+        self.eg_tile_window.notebook.add(  # type: ignore
+            self.eg_tile_window.pages[dungeon], text=dungeon.replace("_", " ")  # type: ignore
+        )
+        self.eg_tile_window.pages[dungeon].content = door_customizer_page(  # type: ignore
+            self,
+            self.eg_tile_window.pages[dungeon],  # type: ignore
             world,
             eg_img=eg_img,
             eg_selection_mode=True,
             vanilla_data=vanilla_layout[dungeon],
-            plando_window=self.pages["doors"].notebook,
+            plando_window=self.pages["doors"].notebook,  # type: ignore
             cdims=window_size,
         )
-        self.eg_tile_window.pages[dungeon].content.pack(side=TOP, fill=BOTH, expand=True)
+        self.eg_tile_window.pages[dungeon].content.pack(  # type: ignore
+            side=TOP, fill=BOTH, expand=True
+        )
 
-    self.pages["items"].notebook.pack()
-    self.pages["pots"].notebook.pack()
-    self.pages["doors"].notebook.pack()
-    self.eg_tile_window.notebook.pack()
+    self.pages["items"].notebook.pack()  # type: ignore
+    self.pages["pots"].notebook.pack()  # type: ignore
+    self.pages["doors"].notebook.pack()  # type: ignore
+    self.eg_tile_window.notebook.pack()  # type: ignore
 
     menu = Menu(self)
     self.config(menu=menu)
-    fileMenu = Menu(menu, tearoff="off")
+    fileMenu = Menu(menu, tearoff="off")  # type: ignore
     menu.add_cascade(label="File", menu=fileMenu)
-    viewMenu = Menu(menu, tearoff="off")
+    viewMenu = Menu(menu, tearoff="off")  # type: ignore
     menu.add_cascade(label="View", menu=viewMenu)
+    # Add a button to the top level menu to redraw all
+    menu.add_command(label="Redraw All", command=lambda: redraw_all(self))
+    menu.add_command(label="Show All Doors", command=lambda: show_all_doors(self, menu))
 
     fileMenu.add_command(label="Load Tracker Data", command=lambda: load_yaml(self))
     fileMenu.add_command(label="Save Tracker Data", command=lambda: save_yaml(self))
     fileMenu.add_separator()
-    fileMenu.add_command(label="Stop Auto-tracking", command=lambda: kill_sni_tracking(self))
+    fileMenu.add_command(
+        label="Stop Auto-tracking", command=lambda: kill_sni_tracking(self)
+    )
     fileMenu.add_command(label="Reconnect to SNI", command=lambda: reconnect(self))
     fileMenu.add_separator()
     fileMenu.add_command(label="Reset Tracker", command=lambda: reset_tracker(self))
     fileMenu.add_separator()
     fileMenu.add_command(label="Exit", command=lambda: self.destroy())
 
-    aspectRatioMenu = Menu(viewMenu, tearoff="off")
+    aspectRatioMenu = Menu(viewMenu, tearoff="off")  # type: ignore
     viewMenu.add_cascade(label="Aspect Ratio", menu=aspectRatioMenu)
-    aspectRatioMenu.add_radiobutton(label="2:1", command=lambda: set_aspect_ratio(self, (1, 2)))
-    aspectRatioMenu.add_radiobutton(label="4:3", command=lambda: set_aspect_ratio(self, (3, 4)))
+    aspectRatioMenu.add_radiobutton(
+        label="2:1", command=lambda: set_aspect_ratio(self, (1, 2))
+    )
+    aspectRatioMenu.add_radiobutton(
+        label="4:3", command=lambda: set_aspect_ratio(self, (3, 4))
+    )
     aspectRatioMenu.invoke(0)
 
-    sizeMenu = Menu(viewMenu, tearoff="off")
+    sizeMenu = Menu(viewMenu, tearoff="off")  # type: ignore
     viewMenu.add_cascade(label="Size", menu=sizeMenu)
     for size in window_sizes:
-        sizeMenu.add_radiobutton(label=size.capitalize(), command=lambda size=size: set_size(self, size))
+        sizeMenu.add_radiobutton(
+            label=size.capitalize(), command=lambda size=size: set_size(self, size)
+        )
     sizeMenu.invoke(1)
 
     self.eg_tile_window.withdraw()
@@ -354,20 +421,21 @@ def customizerGUI(mainWindow, args=None):
     mainWindow.notebook.select(doors_page)
 
 
-
 def reset_tracker(self):
     main_x = self.winfo_rootx()
     main_y = self.winfo_rooty()
     main_width = self.winfo_width()
     main_height = self.winfo_height()
     top = Toplevel(self)
-    top.geometry(f"300x110+{(main_x + main_width // 2) - 300 // 2}+{(main_y + main_height // 2) - 110 // 2}")
+    top.geometry(
+        f"300x110+{(main_x + main_width // 2) - 300 // 2}+{(main_y + main_height // 2) - 110 // 2}"
+    )
     top.title("Reset?")
     top.resizable(False, False)
     top.grab_set()
     top.focus_set()
     button_frame = ttk.Frame(top)
-    
+
     def force_reset():
         for world in self.pages["doors"].pages:
             content = self.pages["doors"].pages[world].content
@@ -384,6 +452,25 @@ def reset_tracker(self):
     ttk.Button(button_frame, text="Reset", command=force_reset).pack(side="left")
     button_frame.pack()
 
+
+def redraw_all(self):
+    for world in self.pages["doors"].pages:
+        content = self.pages["doors"].pages[world].content
+        content.redraw_canvas(content)
+
+
+def show_all_doors(self, menu):
+    self.show_all_doors = not self.show_all_doors
+    if self.show_all_doors:
+        menu.entryconfig(4, label="Show Reachable Doors")
+    else:
+        menu.entryconfig(4, label="Show All Doors")
+    for world in self.pages["doors"].pages:
+        content = self.pages["doors"].pages[world].content
+        content.show_all_doors = self.show_all_doors
+        content.redraw_canvas(content)
+
+
 def set_aspect_ratio(self, ratio):
     if self.aspect_ratio == ratio:
         return
@@ -397,8 +484,13 @@ def set_aspect_ratio(self, ratio):
         self.pages["doors"].pages[world].content.aspect_ratio = ratio
         self.pages["doors"].pages[world].content.cwidth = new_width
         self.pages["doors"].pages[world].content.cheight = new_height
-        self.pages["doors"].pages[world].content.redraw_canvas(self.pages["doors"].pages[world].content)
-    self.geometry(f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}")
+        self.pages["doors"].pages[world].content.redraw_canvas(
+            self.pages["doors"].pages[world].content
+        )
+    self.geometry(
+        f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}"
+    )
+
 
 def set_size(self, size):
     if self.size == size:
@@ -411,9 +503,13 @@ def set_size(self, size):
     for world in self.pages["doors"].pages:
         self.pages["doors"].pages[world].content.cheight = new_height
         self.pages["doors"].pages[world].content.cwidth = new_width
-        self.pages["doors"].pages[world].content.redraw_canvas(self.pages["doors"].pages[world].content)
-    self.geometry(f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}")
-        
+        self.pages["doors"].pages[world].content.redraw_canvas(
+            self.pages["doors"].pages[world].content
+        )
+    self.geometry(
+        f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}"
+    )
+
 
 mem_addresses = {
     "race": (0x180213, 0x1),
@@ -446,7 +542,9 @@ def build_multi_request(add_space, mem_mapping):
 
 
 def des_data(mem_request_names, mem_data):
-    data = {mem_request_names[n]: x.data.hex() for n, x in enumerate(mem_data.responses)}
+    data = {
+        mem_request_names[n]: x.data.hex() for n, x in enumerate(mem_data.responses)
+    }
     return data
 
 
@@ -469,7 +567,7 @@ def find_closest_door(x, y, tile, layer, closest_distance=128):
     try:
         doors = door_coordinates[tile]  # dict of door coordinates
         # Filter by layer
-        doors = [door for door in doors if doors_data[door["name"]][2] == layer]
+        doors = [door for door in doors if doors_data[door["name"]][2] == layer]  # type: ignore
         if len(doors) == 0:
             print(f"No doors found for {tile} layer {layer}")
             doors = door_coordinates[tile]
@@ -493,11 +591,15 @@ def reset_dungeon_names(mainWindow):
 def highlight_dungeon_name(mainWindow, dungeon_name):
     reset_dungeon_names(mainWindow)
     doors_nb = mainWindow.pages["doors"].notebook
-    dungeon_page = get_named_page(doors_nb, mainWindow.pages["doors"].pages, dungeon_name)
+    dungeon_page = get_named_page(
+        doors_nb, mainWindow.pages["doors"].pages, dungeon_name
+    )
     doors_nb.tab(dungeon_page, underline=0)
 
 
-async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool = False):
+async def sni_probe(
+    mainWindow, args: argparse.Namespace, forced_autotrack: bool = False
+):
     port = args.port
     debug = args.debug
     darkpos = args.darkpos
@@ -510,17 +612,22 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
     # dev_addrspace = response.devices[0].defaultAddressSpace
     dev_addrspace = 0
     mem_stub = sni.DeviceMemoryStub(channel)
-    mem_mapping = await mem_stub.MappingDetect(sni_pb2.DetectMemoryMappingRequest(uri=dev_uri))
+    mem_mapping = await mem_stub.MappingDetect(
+        sni_pb2.DetectMemoryMappingRequest(uri=dev_uri)
+    )
     mem_mapping = mem_mapping.memoryMapping
     mem_request = build_multi_request(dev_addrspace, mem_mapping)
     mem_request_names = list(mem_request.keys())
 
     main_nb = mainWindow.notebook
     if not forced_autotrack:
-        mainWindow.wm_title(f"Jank Door Tracker - Auto-tracking Enabled (Connected to {dev_uri})")
+        mainWindow.wm_title(
+            f"Jank Door Tracker - Auto-tracking Enabled (Connected to {dev_uri})"
+        )
     else:
-        mainWindow.wm_title(f"Jank Door Tracker - Auto-tracking Forced (!! Race Rom Detected !!) (Connected to {dev_uri})")
-
+        mainWindow.wm_title(
+            f"Jank Door Tracker - Auto-tracking Forced (!! Race Rom Detected !!) (Connected to {dev_uri})"
+        )
 
     doors_page = get_named_page(main_nb, mainWindow.pages, "doors")
     doors_nb = mainWindow.pages["doors"].notebook
@@ -543,6 +650,7 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
     is_dark = False
     boss_just_killed = False
     old_data = {k: None for k in mem_request_names}
+    eg_tile = (0, 0)
 
     # Main loop for data collection
     while True:
@@ -552,11 +660,13 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
             grpc.ChannelConnectivity.CONNECTING,
         ]:
             mainWindow.wm_title(f"Jank Door Tracker - DISCONNECTED FROM SNI")
-            asyncio.sleep(1)
+            await asyncio.sleep(1)
             continue
         # Lazy error handling - won't actually catch disconnects
         try:
-            mem_req = sni_pb2.MultiReadMemoryRequest(uri=dev_uri, requests=list(mem_request.values()))
+            mem_req = sni_pb2.MultiReadMemoryRequest(
+                uri=dev_uri, requests=list(mem_request.values())
+            )
             mem_data = await mem_stub.MultiRead(mem_req)
             data = des_data(mem_request_names, mem_data)
             data_diff = {k: v for k, v in data.items() if v != old_data[k]}
@@ -564,29 +674,42 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
             if len(data_diff) != 0 and args.debug:
                 print(data_diff)
 
+            if boss_just_killed:
+                if data["gamemode"] != "09":
+                    await asyncio.sleep(0.1)
+                    continue
+
             # Are we even in game?
             if int(data["gamemode"], 16) <= 0x5 or int(data["gamemode"], 16) >= 0x0B:
-                if data['mirror'] == 'f7':
-                    was_mirroring = True
-                if data['gamemode'] == '13':
+                if data["gamemode"] == "16":
                     boss_just_killed = True
+                    await asyncio.sleep(0.1)
+                    continue
+                if data["mirror"] == "f7":
+                    was_mirroring = True
+
                 await asyncio.sleep(0.1)
                 continue
 
-            if data['race'] == '01' and not forced_autotrack:
+            if data["race"] == "01" and not forced_autotrack:
                 race_rom_warning(mainWindow)
                 mainWindow.wm_title(f"Jank Door Tracker - Auto-tracking Disabled")
                 break
 
-            if (
-                data["dungeon"] not in dungeon_ids.keys()
-                or data["indoors"] != "01"
-            ):
-                if previous_dungeon in dungeon_ids.keys() and data["indoors"] == "00" and data["mirror"] != "0f" and not was_dark and not boss_just_killed:
+            if data["dungeon"] not in dungeon_ids.keys() or data["indoors"] != "01":
+                if (
+                    previous_dungeon in dungeon_ids.keys()
+                    and data["indoors"] == "00"
+                    and data["mirror"] != "0f"
+                    and not was_dark
+                    and not boss_just_killed
+                ):
                     reset_dungeon_names(mainWindow)
                     # Just left a dungeon, add the last door as a lobby
-                    new_door = find_closest_door(current_x, current_y, eg_tile, previous_layer)
-                    dp_content.auto_add_lobby(dp_content, new_door)
+                    new_door = find_closest_door(
+                        current_x, current_y, eg_tile, previous_layer
+                    )
+                    dp_content.auto_add_lobby(dp_content, new_door)  # type: ignore
                 current_tile = None
                 previous_tile = None
                 current_x = None
@@ -610,7 +733,11 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
             if not tab_changed:
                 tab_changed = True
                 mainWindow.notebook.select(doors_page)
-                dungeon_page = get_named_page(doors_nb, mainWindow.pages["doors"].pages, dungeon_ids[data["dungeon"]])
+                dungeon_page = get_named_page(
+                    doors_nb,
+                    mainWindow.pages["doors"].pages,
+                    dungeon_ids[data["dungeon"]],
+                )
                 doors_nb.select(dungeon_page)
 
             if data["transitioning"] != "00":
@@ -637,15 +764,22 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
 
             # TODO: Check doors to see if they're entrances and add lobbies?
 
-            eg_tile = (int(data["dungeon_room"], 16) % 16, int(data["dungeon_room"], 16) // 16)
+            eg_tile = (
+                int(data["dungeon_room"], 16) % 16,
+                int(data["dungeon_room"], 16) // 16,
+            )
             current_x_supertile = int(data["link_x"][2:], 16) // 2
             current_y_supertile = int(data["link_y"][2:], 16) // 2
 
             if eg_tile != (current_x_supertile, current_y_supertile):
-                print(f"Supertile mismatch: {eg_tile} != {current_x_supertile}, {current_y_supertile}")
+                print(
+                    f"Supertile mismatch: {eg_tile} != {current_x_supertile}, {current_y_supertile}"
+                )
                 continue
 
-            dp_content = mainWindow.pages["doors"].pages[dungeon_ids[data["dungeon"]]].content
+            dp_content = (
+                mainWindow.pages["doors"].pages[dungeon_ids[data["dungeon"]]].content
+            )
 
             current_x_subtile = int(data["link_x"][2:], 16) % 2
             current_y_subtile = int(data["link_y"][2:], 16) % 2
@@ -656,7 +790,10 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
             if (
                 eg_tile not in dark_tiles
                 or darkpos
-                or (eg_tile in dark_tiles and (data["lampcone"] != "00" or data["torches"] != "00"))
+                or (
+                    eg_tile in dark_tiles
+                    and (data["lampcone"] != "00" or data["torches"] != "00")
+                )
                 or eg_tile == (2, 2)
             ):
                 if "map_tile" not in dp_content.tiles[eg_tile]:
@@ -667,7 +804,9 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
             else:
                 is_dark = True
 
-            if (previous_tile != eg_tile and previous_tile == None) or (was_mirroring and data["mirror"] != "0f"):
+            if (previous_tile != eg_tile and previous_tile == None) or (
+                was_mirroring and data["mirror"] != "0f"
+            ):
                 previous_tile = eg_tile
                 current_tile = eg_tile
                 if was_falling or was_dead:
@@ -679,19 +818,29 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
                     continue
                 if not is_dark:
                     new_door = find_closest_door(
-                        current_x, current_y, eg_tile, data["layer"], closest_distance=32 if was_mirroring else 128
+                        current_x,
+                        current_y,
+                        eg_tile,
+                        data["layer"],
+                        closest_distance=32 if was_mirroring else 128,
                     )
                     dp_content.auto_add_lobby(dp_content, new_door)
                 was_mirroring = False
 
-            elif (previous_tile != eg_tile and previous_tile != None) or was_transitioning:
+            elif (
+                previous_tile != eg_tile and previous_tile != None
+            ) or was_transitioning:
                 was_transitioning = False
                 previous_tile = current_tile
                 current_tile = eg_tile
 
-                new_door = find_closest_door(current_x, current_y, eg_tile, data["layer"])
+                new_door = find_closest_door(
+                    current_x, current_y, eg_tile, data["layer"]
+                )
                 try:
-                    old_door = find_closest_door(previous_x, previous_y, previous_tile, previous_layer)
+                    old_door = find_closest_door(
+                        previous_x, previous_y, previous_tile, previous_layer
+                    )
                 except TypeError:
                     # We likely fell in a hole to a dungeon, so we don't have a previous door
                     continue
@@ -721,7 +870,9 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
 
 
 def start_sni_tracking(mainWindow, args, forced_autotrack=False):
-    sn_probe = asyncio.ensure_future(sni_probe(mainWindow, args=args, forced_autotrack=forced_autotrack))
+    sn_probe = asyncio.ensure_future(
+        sni_probe(mainWindow, args=args, forced_autotrack=forced_autotrack)
+    )
     return sn_probe
 
 
@@ -735,16 +886,25 @@ def kill_sni_tracking(mainWindow):
 if __name__ == "__main__":
     logging.basicConfig()
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--size", choices=["small", "medium", "large"], default="medium", help="Set the window size")
+    parser.add_argument(
+        "--size",
+        choices=["small", "medium", "large"],
+        default="medium",
+        help="Set the window size",
+    )
     parser.add_argument("--port", type=int, default=8191, help="SNI connection port")
-    parser.add_argument("--debug", action="store_true", default=False, help="Enable debug logging")
+    parser.add_argument(
+        "--debug", action="store_true", default=False, help="Enable debug logging"
+    )
     parser.add_argument(
         "--darkpos",
         action="store_true",
         default=False,
         help="Show the players position in dark rooms even without a light source",
     )
-    parser.add_argument("--help", action="store_true", help="Show this help message and exit")
+    parser.add_argument(
+        "--help", action="store_true", help="Show this help message and exit"
+    )
     parser.add_argument(
         "--no-autotrack",
         action="store_true",
@@ -764,8 +924,10 @@ if __name__ == "__main__":
     sc_height = mainWindow.winfo_screenheight()
     window_size = window_sizes[args.size]
     window_size = (window_size[0] + MAIN_X_PAD, window_size[1] + MAIN_Y_PAD)
-    mainWindow.geometry(f"{window_size[0]}x{window_size[1]}+{int(sc_width/2 - window_size[0]/2)}+{int(sc_height/2 - window_size[1]/2)}")
-    mainWindow.aspect_ratio = (1, 2)
+    mainWindow.geometry(
+        f"{window_size[0]}x{window_size[1]}+{int(sc_width/2 - window_size[0]/2)}+{int(sc_height/2 - window_size[1]/2)}"
+    )
+    mainWindow.aspect_ratio = (1, 2)  # type: ignore
     mainWindow.size = args.size
     customizerGUI(mainWindow, args=args)
 
@@ -773,7 +935,7 @@ if __name__ == "__main__":
     if not args.no_autotrack:
         sn_probe = start_sni_tracking(mainWindow, args)
 
-    mainWindow.sni_task = sn_probe
+    mainWindow.sni_task = sn_probe  # type: ignore
 
     loop = asyncio.get_event_loop()
     try:
@@ -783,4 +945,4 @@ if __name__ == "__main__":
 
     tkmain.cancel()
     if not args.no_autotrack:
-        sn_probe.cancel()
+        sn_probe.cancel()  # type: ignore
