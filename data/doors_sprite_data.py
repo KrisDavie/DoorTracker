@@ -17,7 +17,7 @@ def show_sprites(self, top, parent_event, world):
         item_name = get_sprite_by_button(self, item)
 
         sprite_window.selected_item = item_name
-        self.destroy()
+        on_closing(top)
 
     def get_sprite_by_button(self, button):
         for name, loc in self.items.items():
@@ -25,11 +25,20 @@ def show_sprites(self, top, parent_event, world):
                 return name
 
     sprite_window = Toplevel(self)
-    w = top.winfo_x()
-    h = top.winfo_y()
-    x = max(0, min(w + parent_event.x - 288, self.winfo_screenwidth() - 288))
-    y = max(0, min(h + parent_event.y - 288, self.winfo_screenheight() - 288))
-    sprite_window.geometry(f"{288 + (BORDER_SIZE * 2)}x{288 + (BORDER_SIZE * 2)}+{int(x)}+{int(y)}")
+    def on_closing(top):
+        top.last_sprite_window_loc = (sprite_window.winfo_x(), sprite_window.winfo_y())
+        sprite_window.destroy()
+
+    sprite_window.protocol("WM_DELETE_WINDOW", lambda: on_closing(top))
+
+    if hasattr(top, "last_sprite_window_loc"):
+        sprite_window.geometry(f"+{top.last_sprite_window_loc[0]}+{top.last_sprite_window_loc[1]}")
+    else:
+        w = top.winfo_x()
+        h = top.winfo_y()
+        x = max(0, min(w + parent_event.x - 288, self.winfo_screenwidth() - 288))
+        y = max(0, min(h + parent_event.y - 288, self.winfo_screenheight() - 288))
+        sprite_window.geometry(f"{288 + (BORDER_SIZE * 2)}x{288 + (BORDER_SIZE * 2)}+{int(x)}+{int(y)}")
     sprite_window.title("Sprites Window")
     sprite_window.focus_set()
     sprite_window.grab_set()
@@ -85,6 +94,7 @@ item_table = {
     "Hammer": (1, 2),
     "Flippers": (1, 3),
     "Hookshot": (1, 4),
+    "Skull": (1, 5),
     "Sanctuary_Mirror": (8, 5),
     "Drop": (7, 5)
 }
