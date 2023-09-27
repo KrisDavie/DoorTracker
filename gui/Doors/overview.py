@@ -87,6 +87,7 @@ class DoorPage(ttk.Frame):
     cheight: int
     tile_size: int
     map_dims: tuple[int, int]
+    dungeon_name: str
 
     eg_tile_window: Union[Toplevel, None]
     eg_tile_window_notebook: Union[ttk.Notebook, None]
@@ -143,9 +144,7 @@ def get_tile_data_by_map_tile(
     return None
 
 
-def get_tile_data_by_button(
-    tiles: dict[Tuple[int, int], EGTileData], button: int
-) -> Union[Tuple[int, int], None]:
+def get_tile_data_by_button(tiles: dict[Tuple[int, int], EGTileData], button: int) -> Union[Tuple[int, int], None]:
     for eg_tile in tiles:
         if "button" in tiles[eg_tile] and tiles[eg_tile]["button"] == button:
             return eg_tile
@@ -179,7 +178,10 @@ def door_customizer_page(
             background="white",
         )
         self.canvas.pack()
+
+        # Draw dungeon name on the map
         dungeon_name = [k for k, v in dungeon_worlds.items() if v == tab_world][0]
+
         self.canvas.create_text(
             ((self.cwidth + (BORDER_SIZE * 2)) // 2),
             12,
@@ -199,6 +201,7 @@ def door_customizer_page(
         self.door_buttons = {}
         self.sanc_dungeon = False
         self.x_center_align = 0
+        self.dungeon_name = dungeon_name
 
         #  If we're redrawing, we need to keep tiles with no current connections, we store them temporarily in old_tiles
         if redraw:
@@ -220,9 +223,7 @@ def door_customizer_page(
         self.unused_map_tiles = {}
 
     def redraw_canvas(self: DoorPage) -> None:
-        yaml = return_connections(
-            self.door_links, self.lobby_doors, self.special_doors
-        )[0]
+        yaml = return_connections(self.door_links, self.lobby_doors, self.special_doors)
         load_yaml(self, yaml, redraw=True)
 
     def load_yaml(self: DoorPage, yaml_data: dict, redraw=False):
@@ -230,6 +231,7 @@ def door_customizer_page(
         door_links_to_make = set()
         doors_to_process: deque = deque()
         regions_processed = set()
+        self.map_dims = (16, 16)
 
         def queue_regions_doors(door: str, region=False):
             if not region:
@@ -388,10 +390,7 @@ def door_customizer_page(
             for d in [self.doors, self.inverse_doors]:
                 if next_door in d:
                     linked_door = d[next_door]
-                    if (
-                        linked_door not in doors_processed
-                        and linked_door not in regions_to_doors
-                    ):
+                    if linked_door not in doors_processed and linked_door not in regions_to_doors:
                         doors_to_process.appendleft(linked_door)
 
             linked_door_x, linked_door_y = get_doors_eg_tile(linked_door)
@@ -402,22 +401,13 @@ def door_customizer_page(
                 door_tile_y,
             ) in self.tiles:
                 current_lobby_doors = [x["door"] for x in self.lobby_doors]
-                if (
-                    next_door in dungeon_lobbies[tab_world]
-                    and next_door not in current_lobby_doors
-                ):
+                if next_door in dungeon_lobbies[tab_world] and next_door not in current_lobby_doors:
                     add_lobby_door(self, next_door, next_door)
                 continue
 
             # PoD warp tile (Never seen but still linked, start from 0,0)
-            if (
-                linked_door_x
-                and linked_door_y
-                and (linked_door_x, linked_door_y) in self.tiles
-            ):
-                new_tile_x, new_tile_y = self.tiles[(linked_door_x, linked_door_y)][
-                    "map_tile"
-                ]
+            if linked_door_x and linked_door_y and (linked_door_x, linked_door_y) in self.tiles:
+                new_tile_x, new_tile_y = self.tiles[(linked_door_x, linked_door_y)]["map_tile"]
             else:
                 new_tile_x = new_tile_y = 0
 
@@ -430,28 +420,22 @@ def door_customizer_page(
 
             while get_tile_data_by_map_tile(self.tiles, (new_tile_x, new_tile_y)):
                 if (direction == "We" and last_cardinal == 0) or (
-                    (
-                        (direction == "No" or direction == "Up")
-                        or (direction == "So" or direction == "Dn")
-                    )
+                    ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
                     and last_cardinal == -1
                 ):
                     new_tile_x += 1
                 elif (direction == "Ea" and last_cardinal == 0) or (
-                    (
-                        (direction == "No" or direction == "Up")
-                        or (direction == "So" or direction == "Dn")
-                    )
+                    ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
                     and last_cardinal == 1
                 ):
                     new_tile_x -= 1
-                elif (
-                    (direction == "No" or direction == "Up") and last_cardinal == 0
-                ) or ((direction == "We" or direction == "Ea") and last_cardinal == -1):
+                elif ((direction == "No" or direction == "Up") and last_cardinal == 0) or (
+                    (direction == "We" or direction == "Ea") and last_cardinal == -1
+                ):
                     new_tile_y += 1
-                elif (
-                    (direction == "So" or direction == "Dn") and last_cardinal == 0
-                ) or ((direction == "We" or direction == "Ea") and last_cardinal == 1):
+                elif ((direction == "So" or direction == "Dn") and last_cardinal == 0) or (
+                    (direction == "We" or direction == "Ea") and last_cardinal == 1
+                ):
                     new_tile_y -= 1
                 if last_cardinal == 0:
                     last_cardinal = -1
@@ -465,30 +449,26 @@ def door_customizer_page(
                 new_tile_y,
             )
             current_lobby_doors = [x["door"] for x in self.lobby_doors]
-            if (
-                next_door in dungeon_lobbies[tab_world]
-                and next_door not in current_lobby_doors
-            ):
+            if next_door in dungeon_lobbies[tab_world] and next_door not in current_lobby_doors:
                 add_lobby_door(self, next_door, next_door)
 
         links_made = set()
 
-        for k,v in dungeon_doors.items():
-            # If the door or its pair is not in door_links_to_make, add it
-            if k not in door_links_to_make and v not in door_links_to_make:
-                door_links_to_make.add(k)
-            for d in [k, v]:
-                door_tile_x, door_tile_y = get_doors_eg_tile(d)
-                if ((door_tile_x, door_tile_y) == (None, None)) or (door_tile_x, door_tile_y) in self.tiles:
-                    continue
-                else:
-                    self.tiles[(door_tile_x, door_tile_y)]["map_tile"] = find_first_unused_tile()
+        # IDK what I was thinking here. TODO: Fix this?!
+        # for k, v in dungeon_doors.items():
+        #     for d in [k, v]:
+        #         door_tile_x, door_tile_y = get_doors_eg_tile(d)
+        #         if ((door_tile_x, door_tile_y) == (None, None)) or (door_tile_x, door_tile_y) in self.tiles:
+        #             continue
+        #         else:
+        #             # If the door or its pair is not in door_links_to_make, add it
+        #             if k not in door_links_to_make and v not in door_links_to_make:
+        #                 door_links_to_make.add(k)
+        #             self.tiles[(door_tile_x, door_tile_y)]["map_tile"] = find_first_unused_tile()
 
         for door in door_links_to_make:
             try:
-                linked_door = (
-                    self.doors[door] if door in self.doors else self.inverse_doors[door]
-                )
+                linked_door = self.doors[door] if door in self.doors else self.inverse_doors[door]
                 if linked_door in links_made or door in links_made:
                     continue
                 add_door_link(self, door, linked_door)
@@ -537,7 +517,7 @@ def door_customizer_page(
 
     def add_lobby(self: DoorPage, lobby_room: str, lobby: str):
         x, y = get_doors_eg_tile(lobby_room)
-        if not x or not y:
+        if x == None or y == None:
             return
 
         if (x, y) in self.tiles:
@@ -563,9 +543,7 @@ def door_customizer_page(
         del self.tiles[eg_tile]
         for page in top.eg_tile_window.pages.values():
             if eg_tile in page.content.tiles:
-                page.content.deactivate_tiles(
-                    page.content, top.eg_tile_multiuse, top.disabled_eg_tiles
-                )
+                page.content.deactivate_tiles(page.content, top.eg_tile_multiuse, top.disabled_eg_tiles)
 
         # find doors in this tile:
         for door in door_coordinates[eg_tile]:
@@ -573,9 +551,7 @@ def door_customizer_page(
                 continue
             self.unlinked_doors.remove(door["name"])
             if door["name"] in self.special_doors:
-                icon_idx = [
-                    k for k, v in self.placed_icons.items() if v["name"] == door["name"]
-                ][0]
+                icon_idx = [k for k, v in self.placed_icons.items() if v["name"] == door["name"]][0]
                 del self.placed_icons[icon_idx]
                 del self.special_doors[door["name"]]
             _lobby_doors = [x["door"] for x in self.lobby_doors]
@@ -590,14 +566,10 @@ def door_customizer_page(
                 self.canvas.delete(_door_link["button"])  # type: ignore
                 # Set colors back to normal
                 if _door_link["door"] == door["name"]:
-                    self.canvas.itemconfigure(
-                        self.door_buttons[_door_link["linked_door"]], fill="#0f0"
-                    )
+                    self.canvas.itemconfigure(self.door_buttons[_door_link["linked_door"]], fill="#0f0")
                     self.canvas.delete(self.door_buttons[_door_link["door"]])
                 else:
-                    self.canvas.itemconfigure(
-                        self.door_buttons[_door_link["door"]], fill="#0f0"
-                    )
+                    self.canvas.itemconfigure(self.door_buttons[_door_link["door"]], fill="#0f0")
                     self.canvas.delete(self.door_buttons[_door_link["linked_door"]])
                 del self.door_links[_dl_idx]
                 for _d in [_door_link["door"], _door_link["linked_door"]]:
@@ -629,17 +601,8 @@ def door_customizer_page(
         dark_tile=False,
         ci_kwargs={},
     ):
-        x1 = (
-            (tile_x * self.tile_size)
-            + BORDER_SIZE
-            + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE)
-            + self.x_center_align
-        )
-        y1 = (
-            (tile_y * self.tile_size)
-            + BORDER_SIZE
-            + (((2 * tile_y + 1) - 1) * TILE_BORDER_SIZE)
-        )
+        x1 = (tile_x * self.tile_size) + BORDER_SIZE + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE) + self.x_center_align
+        y1 = (tile_y * self.tile_size) + BORDER_SIZE + (((2 * tile_y + 1) - 1) * TILE_BORDER_SIZE)
 
         if not eg_img:
             return
@@ -668,16 +631,10 @@ def door_customizer_page(
                 stipple="gray25",
             )
             disabled_tiles[(x, y)] = rect
-            self.canvas.tag_bind(
-                rect, "<Button-2>", lambda event: reenable_eg_tile(self, event)
-            )
+            self.canvas.tag_bind(rect, "<Button-2>", lambda event: reenable_eg_tile(self, event))
         if not self.eg_selection_mode:
-            self.canvas.tag_bind(
-                map, "<Control-Button-3>", lambda event: remove_eg_tile(self, event)
-            )
-            self.canvas.tag_bind(
-                map, "<Button-2>", lambda event: disable_eg_tile(self, event)
-            )
+            self.canvas.tag_bind(map, "<Control-Button-3>", lambda event: remove_eg_tile(self, event))
+            self.canvas.tag_bind(map, "<Button-2>", lambda event: disable_eg_tile(self, event))
         else:
             self.canvas.tag_bind(
                 map,
@@ -704,9 +661,7 @@ def door_customizer_page(
                     dark_tile=True,
                 )
             else:
-                add_eg_tile_img(
-                    self, eg_tile_x, eg_tile_y, x + self.x_offset, y + self.y_offset
-                )
+                add_eg_tile_img(self, eg_tile_x, eg_tile_y, x + self.x_offset, y + self.y_offset)
 
     def get_door_coords(door):
         eg_tile, list_pos = door_coordinates_key[door]
@@ -715,9 +670,7 @@ def door_customizer_page(
     def draw_empty_map(self: DoorPage):
         for row in range(self.map_dims[0]):
             for col in range(self.map_dims[1]):
-                if get_tile_data_by_map_tile(
-                    self.tiles, (col - self.x_offset, row - self.y_offset)
-                ):
+                if get_tile_data_by_map_tile(self.tiles, (col - self.x_offset, row - self.y_offset)):
                     continue
 
                 x1 = (
@@ -726,11 +679,7 @@ def door_customizer_page(
                     + (((2 * col + 1) - 1) * TILE_BORDER_SIZE)
                     + self.x_center_align
                 )
-                y1 = (
-                    (row * self.tile_size)
-                    + BORDER_SIZE
-                    + (((2 * row + 1) - 1) * TILE_BORDER_SIZE)
-                )
+                y1 = (row * self.tile_size) + BORDER_SIZE + (((2 * row + 1) - 1) * TILE_BORDER_SIZE)
                 tile = self.canvas.create_rectangle(
                     x1,
                     y1,
@@ -748,9 +697,7 @@ def door_customizer_page(
                 #     fill="white",
                 #     font=("TkDefaultFont", 8),
                 # )
-                self.canvas.tag_bind(
-                    tile, "<Button-1>", lambda event: select_tile(self, event)
-                )
+                self.canvas.tag_bind(tile, "<Button-1>", lambda event: select_tile(self, event))
                 self.canvas.tag_lower(tile)
                 self.unused_map_tiles[(col, row)] = tile
 
@@ -786,13 +733,11 @@ def door_customizer_page(
         self.y_offset = y_offset
         self.x_offset = x_offset
 
-        self.tile_size = min(
-            (self.cwidth // (self.map_dims[1])), (self.cheight // (self.map_dims[0]))
-        ) - (TILE_BORDER_SIZE * 2)
+        self.tile_size = min((self.cwidth // (self.map_dims[1])), (self.cheight // (self.map_dims[0]))) - (
+            TILE_BORDER_SIZE * 2
+        )
         # recorrect x_offset to center map with unsual aspect ratios
-        total_tile_width = (self.tile_size + (TILE_BORDER_SIZE * 2)) * self.map_dims[
-            1
-        ] + x_offset
+        total_tile_width = (self.tile_size + (TILE_BORDER_SIZE * 2)) * self.map_dims[1] + x_offset
         if total_tile_width < self.cwidth:
             self.x_center_align += (self.cwidth - total_tile_width) // 2
 
@@ -801,9 +746,7 @@ def door_customizer_page(
 
         #  Add any old tiles, with no connections to the tiles to be plotted. Put them in the first empty space
         for tile, tile_data in self.old_tiles.items():
-            if (tile in self.tiles and "map_tile" in self.tiles[tile]) or len(
-                tile_data
-            ) == 0:
+            if (tile in self.tiles and "map_tile" in self.tiles[tile]) or len(tile_data) == 0:
                 continue
             self.tiles[tile]["map_tile"] = find_first_unused_tile()
         self.old_tiles = {}
@@ -827,9 +770,7 @@ def door_customizer_page(
                 continue
             d_eg_x = int(data[0]) % 16
             d_eg_y = int(data[0]) // 16
-            if (d_eg_x, d_eg_y) not in self.tiles or "img_obj" not in self.tiles[
-                (d_eg_x, d_eg_y)
-            ]:
+            if (d_eg_x, d_eg_y) not in self.tiles or "img_obj" not in self.tiles[(d_eg_x, d_eg_y)]:
                 continue
 
             _data = create_door_dict(door)
@@ -839,11 +780,7 @@ def door_customizer_page(
                     icon_queue.append(("Drop", x1, y1, door))
                 else:
                     icon_queue.append((self.special_doors[door], x1, y1, door))
-            if (
-                door == "Sanctuary Mirror Route"
-                or door.startswith("Skull Drop Entrance")
-                or door == "Sewer Drop"
-            ):
+            if door == "Sanctuary Mirror Route" or door.startswith("Skull Drop Entrance") or door == "Sewer Drop":
                 continue
             spotsize = self.spotsize * 0.75 if door in INTERIOR_DOORS else self.spotsize
             self.door_buttons[door] = self.canvas.create_oval(
@@ -872,23 +809,15 @@ def door_customizer_page(
         doors_linked = set()
         link_colours = distinct_colours(len(self.door_links))
         for n, door_link in enumerate(self.door_links):
-            x1, y1 = get_final_door_coords(
-                self, door_link, "source", x_offset, y_offset
-            )
-            x2, y2 = get_final_door_coords(
-                self, door_link, "linked", x_offset, y_offset
-            )
+            x1, y1 = get_final_door_coords(self, door_link, "source", x_offset, y_offset)
+            x2, y2 = get_final_door_coords(self, door_link, "linked", x_offset, y_offset)
             self.door_links[n]["button"] = self.canvas.create_line(
                 x1,
                 y1,
                 x2,
                 y2,
-                fill="black"
-                if door_link["door"] in INTERIOR_DOORS
-                else link_colours[n],
-                width=self.linewidth * 0.5
-                if door_link["door"] in INTERIOR_DOORS
-                else self.linewidth,
+                fill="black" if door_link["door"] in INTERIOR_DOORS else link_colours[n],
+                width=self.linewidth * 0.5 if door_link["door"] in INTERIOR_DOORS else self.linewidth,
                 arrow=BOTH,
                 activefill="red",
                 dash=(2, 2) if door_link["door"] in INTERIOR_DOORS else (),
@@ -908,15 +837,19 @@ def door_customizer_page(
                 self.unlinked_doors.remove(door_link["linked_door"])
             except KeyError:
                 pass
-            self.canvas.itemconfigure(self.door_buttons[door_link["door"]], fill="grey")
-            self.canvas.itemconfigure(
-                self.door_buttons[door_link["linked_door"]], fill="grey"
-            )
+
+            try:
+                self.canvas.itemconfigure(self.door_buttons[door_link["door"]], fill="grey")
+            except KeyError:
+                print(f"Error setting door {door_link['door']} to grey")
+
+            try:
+                self.canvas.itemconfigure(self.door_buttons[door_link["linked_door"]], fill="grey")
+            except KeyError:
+                print(f"Error setting door {door_link['linked_door']} to grey")
 
             if door_link["door"] in self.special_doors:
-                icon_queue.append(
-                    (self.special_doors[door_link["door"]], x1, y1, door_link["door"])
-                )
+                icon_queue.append((self.special_doors[door_link["door"]], x1, y1, door_link["door"]))
             if door_link["linked_door"] in self.special_doors:
                 icon_queue.append(
                     (
@@ -957,17 +890,11 @@ def door_customizer_page(
         door_tile_y = door[tile][1] + (min_y)
         x = (
             ((door[coords][0] / 512) * self.tile_size)
-            + (
-                (door_tile_x * self.tile_size)
-                + BORDER_SIZE
-                + (((2 * door_tile_x + 1) - 1) * TILE_BORDER_SIZE)
-            )
+            + ((door_tile_x * self.tile_size) + BORDER_SIZE + (((2 * door_tile_x + 1) - 1) * TILE_BORDER_SIZE))
             + self.x_center_align
         )
         y = ((door[coords][1] / 512) * self.tile_size) + (
-            (door_tile_y * self.tile_size)
-            + BORDER_SIZE
-            + (((2 * door_tile_y + 1) - 1) * TILE_BORDER_SIZE)
+            (door_tile_y * self.tile_size) + BORDER_SIZE + (((2 * door_tile_y + 1) - 1) * TILE_BORDER_SIZE)
         )
         return x, y
 
@@ -995,25 +922,18 @@ def door_customizer_page(
         door = self.canvas.find_closest(event.x, event.y)
         loc_name = get_loc_by_button(self, door)
         selected_item = doors_sprite_data.show_sprites(self, top, event, tab_world)
-        if (
-            selected_item in doors_sprite_data.all_dungeon_lobbies
-            or selected_item == "Drop"
-        ):
+        if selected_item in doors_sprite_data.all_dungeon_lobbies or selected_item == "Drop":
             lobby = selected_item
             add_lobby_door(self, loc_name, lobby)
 
-            x_loc, y_loc = get_final_door_coords(
-                self, self.lobby_doors[-1], "source", self.x_offset, self.y_offset
-            )
+            x_loc, y_loc = get_final_door_coords(self, self.lobby_doors[-1], "source", self.x_offset, self.y_offset)
             if "Drop" in loc_name:
                 self.special_doors[loc_name] = "Drop"
             else:
                 self.special_doors[loc_name] = lobby
         else:
             _data = create_door_dict(loc_name)
-            x_loc, y_loc = get_final_door_coords(
-                self, _data, "source", self.x_offset, self.y_offset
-            )
+            x_loc, y_loc = get_final_door_coords(self, _data, "source", self.x_offset, self.y_offset)
             self.special_doors[loc_name] = selected_item
         place_door_icon(self, selected_item, x_loc, y_loc, loc_name)
 
@@ -1068,10 +988,7 @@ def door_customizer_page(
         self.canvas.delete(image)
         for loc, data in self.placed_icons.items():
             if data["name"] == loc_name:
-                if (
-                    self.special_doors[loc_name]
-                    in doors_sprite_data.all_dungeon_lobbies
-                ):
+                if self.special_doors[loc_name] in doors_sprite_data.all_dungeon_lobbies:
                     _lobby_doors = [x["door"] for x in self.lobby_doors]
                     del self.lobby_doors[_lobby_doors.index(loc_name)]
                 del self.special_doors[loc_name]
@@ -1087,9 +1004,9 @@ def door_customizer_page(
 
         # Get the location name from the button
         loc_name = get_loc_by_button(self, door)
-        if loc_name in [x["door"] for x in self.door_links] + [
-            x["linked_door"] for x in self.door_links
-        ] + [x["door"] for x in self.lobby_doors]:
+        if loc_name in [x["door"] for x in self.door_links] + [x["linked_door"] for x in self.door_links] + [
+            x["door"] for x in self.lobby_doors
+        ]:
             return
 
         if self.select_state == SelectState.NoneSelected:
@@ -1106,23 +1023,15 @@ def door_customizer_page(
 
     def draw_latest_door_link(self: DoorPage, loc_name):
         last_link = self.door_links[-1]
-        x1, y1 = get_final_door_coords(
-            self, last_link, "source", self.x_offset, self.y_offset
-        )
-        x2, y2 = get_final_door_coords(
-            self, last_link, "linked", self.x_offset, self.y_offset
-        )
+        x1, y1 = get_final_door_coords(self, last_link, "source", self.x_offset, self.y_offset)
+        x2, y2 = get_final_door_coords(self, last_link, "linked", self.x_offset, self.y_offset)
         last_link["button"] = self.canvas.create_line(
             x1,
             y1,
             x2,
             y2,
-            fill="black"
-            if last_link["door"] in INTERIOR_DOORS
-            else distinct_colours(1)[0],
-            width=self.linewidth * 0.5
-            if last_link["door"] in INTERIOR_DOORS
-            else self.linewidth,
+            fill="black" if last_link["door"] in INTERIOR_DOORS else distinct_colours(1)[0],
+            width=self.linewidth * 0.5 if last_link["door"] in INTERIOR_DOORS else self.linewidth,
             arrow=BOTH,
             activefill="red",
             dash=(2, 2) if last_link["door"] in INTERIOR_DOORS else (),
@@ -1139,12 +1048,7 @@ def door_customizer_page(
 
     def auto_add_door_link(self: DoorPage, door, linked_door):
         for d in [door, linked_door]:
-            if (
-                has_target(self, d)
-                or d in INTERIOR_DOORS
-                or d in [x["door"] for x in self.lobby_doors]
-                or d == None
-            ):
+            if has_target(self, d) or d in INTERIOR_DOORS or d in [x["door"] for x in self.lobby_doors] or d == None:
                 return
 
         _valid_links = [
@@ -1166,6 +1070,7 @@ def door_customizer_page(
     def auto_add_lobby(self: DoorPage, door):
         lobby_idx = len(self.lobby_doors)
         current_lobby_doors = [x["door"] for x in self.lobby_doors]
+        current_lobbies = [x["lobby"] for x in self.lobby_doors]
         if (
             door in current_lobby_doors
             or door == None
@@ -1176,7 +1081,10 @@ def door_customizer_page(
         for ld in current_lobby_doors:
             if ld == "Sanctuary Mirror Route" or "Drop" in ld:
                 lobby_idx -= 1
-        lobby = dungeon_lobbies[tab_world][lobby_idx]
+
+        for possible_lobby in dungeon_lobbies[tab_world]:
+            if possible_lobby not in current_lobbies:
+                lobby = possible_lobby
         if "Drop" in door:
             lobby_icon = "Drop"
         elif "Sanctuary Mirror Route" in door:
@@ -1184,14 +1092,11 @@ def door_customizer_page(
         else:
             lobby_icon = lobby
         add_lobby_door(self, door, lobby)
-        x_loc, y_loc = get_final_door_coords(
-            self, self.lobby_doors[-1], "source", self.x_offset, self.y_offset
-        )
+        x_loc, y_loc = get_final_door_coords(self, self.lobby_doors[-1], "source", self.x_offset, self.y_offset)
         # Find used lobbies
 
         place_door_icon(self, lobby_icon, x_loc, y_loc, lobby)
 
-        self.lobby_doors.append({"door": door, "lobby": lobby})  # type: ignore
         redraw_canvas(self)
 
     def auto_add_lamp_icon(self: DoorPage, door, icon="Lamp"):
@@ -1202,9 +1107,7 @@ def door_customizer_page(
             del self.placed_icons[icon_idx]
             del self.special_doors[door]
         _data = create_door_dict(door)
-        x_loc, y_loc = get_final_door_coords(
-            self, _data, "source", self.x_offset, self.y_offset
-        )
+        x_loc, y_loc = get_final_door_coords(self, _data, "source", self.x_offset, self.y_offset)
         self.special_doors[door] = icon
         place_door_icon(self, icon, x_loc, y_loc, door)
 
@@ -1217,8 +1120,7 @@ def door_customizer_page(
         return loc_name in linked_doors
 
     def return_connections(door_links, lobby_doors, special_doors):
-        final_connections = {"doors": {}, "lobbies": {}}
-        doors_type = "vanilla" if len(door_links) > 0 else False
+        final_connections = {"doors": {}, "lobbies": {}, "dungeon": tab_world}
         special_doors_remaining = special_doors.copy()
 
         for data in door_links:
@@ -1234,29 +1136,36 @@ def door_customizer_page(
                     "type": door_type,
                 }
                 special_doors_remaining.pop(door)
+            # Also checked linked doors
+            elif linked_door in special_doors:
+                door_type = special_doors[linked_door]
+                final_connections["doors"][linked_door] = {
+                    "dest": final_connections["doors"][linked_door],
+                    "type": door_type,
+                }
+                special_doors_remaining.pop(linked_door)
 
         for lobby_data in lobby_doors:
             lobby = lobby_data["lobby"]
             if lobby == "Sanctuary_Mirror":
                 lobby_door = "Sanctuary Mirror Route"
-                final_connections["lobbies"][lobby] = {
-                    v: k for k, v in dungeon_worlds.items()
-                }[
+                final_connections["lobbies"][lobby] = {v: k for k, v in dungeon_worlds.items()}[
                     tab_world
                 ]  # Add dungeon name instead of door name
             else:
                 lobby_door = lobby_data["door"]
                 final_connections["lobbies"][lobby] = lobby_door
+                print(f"Added {lobby_door} to {self.dungeon_name} as {lobby}")
             try:
                 special_doors_remaining.pop(lobby_door)
             except:
-                # We should never get here because nobody should link a door to a lobby
+                print("We should never get here because nobody should link a door to a lobby")
                 pass
 
         for door in special_doors_remaining:
             final_connections["doors"][door] = {"type": special_doors[door]}
 
-        return final_connections, doors_type
+        return final_connections
 
     def remove_door_link(self: DoorPage, event):
         link = self.canvas.find_closest(event.x, event.y)
@@ -1266,24 +1175,17 @@ def door_customizer_page(
                 self.canvas.delete(link[0])  # type: ignore
                 # Set colors back to normal
                 self.canvas.itemconfigure(self.door_buttons[data["door"]], fill="#0f0")
-                self.canvas.itemconfigure(
-                    self.door_buttons[data["linked_door"]], fill="#0f0"
-                )
+                self.canvas.itemconfigure(self.door_buttons[data["linked_door"]], fill="#0f0")
                 break
 
-    def deactivate_tiles(
-        self: DoorPage, eg_tile_multiuse, disabled_eg_tiles, temp_disabled_eg_tiles=[]
-    ):
+    def deactivate_tiles(self: DoorPage, eg_tile_multiuse, disabled_eg_tiles, temp_disabled_eg_tiles=[]):
         total_used_tiles = defaultdict(int)
         for page in top.pages["doors"].pages.values():
             for tile, tile_data in page.content.tiles.items():
                 if "map_tile" in tile_data:
                     total_used_tiles[tile] += 1
         for tile in self.tiles:
-            if (
-                total_used_tiles[tile] < eg_tile_multiuse[tile]
-                and tile not in temp_disabled_eg_tiles
-            ):
+            if total_used_tiles[tile] < eg_tile_multiuse[tile] and tile not in temp_disabled_eg_tiles:
                 if tile in disabled_eg_tiles:
                     self.canvas.delete(disabled_eg_tiles[tile])  # type: ignore
                     del disabled_eg_tiles[tile]
@@ -1300,11 +1202,7 @@ def door_customizer_page(
                 + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE)
                 + self.x_center_align
             )
-            y1 = (
-                (tile_y * self.tile_size)
-                + BORDER_SIZE
-                + (((2 * tile_y + 1) - 1) * TILE_BORDER_SIZE)
-            )
+            y1 = (tile_y * self.tile_size) + BORDER_SIZE + (((2 * tile_y + 1) - 1) * TILE_BORDER_SIZE)
             x2 = x1 + self.tile_size
             y2 = y1 + self.tile_size
             rect = self.canvas.create_rectangle(
@@ -1320,9 +1218,7 @@ def door_customizer_page(
 
     def select_tile(self: DoorPage, event, find_unused=False):
         parent.setvar("selected_eg_tile", BooleanVar(value=False))  # type: ignore
-        tiles_in_dungeon = [
-            tile for tile in self.tiles if "map_tile" in self.tiles[tile]
-        ]
+        tiles_in_dungeon = [tile for tile in self.tiles if "map_tile" in self.tiles[tile]]
         for page in top.eg_tile_window.pages.values():
             page.content.deactivate_tiles(
                 page.content,
@@ -1346,9 +1242,7 @@ def door_customizer_page(
             if empty_tile_button not in bg_tiles:
                 while empty_tile_button not in bg_tiles:
                     empty_tile_button = self.canvas.find_below(empty_tile_button)  # type: ignore
-            (tile_x, tile_y) = [
-                k for k, v in self.unused_map_tiles.items() if v == empty_tile_button
-            ][0]
+            (tile_x, tile_y) = [k for k, v in self.unused_map_tiles.items() if v == empty_tile_button][0]
         else:
             tile = find_first_unused_tile()
             if tile is None:
@@ -1373,11 +1267,7 @@ def door_customizer_page(
     def auto_add_tile(self, selected_eg_tile):
         tile_x = tile_y = 0
         for tile in self.unused_map_tiles:
-            if tile not in [
-                self.tiles[tile]["map_tile"]
-                for tile in self.tiles
-                if "map_tile" in self.tiles[tile]
-            ]:
+            if tile not in [self.tiles[tile]["map_tile"] for tile in self.tiles if "map_tile" in self.tiles[tile]]:
                 tile_x, tile_y = tile
                 empty_tile_button = self.unused_map_tiles[tile]
                 break
@@ -1404,9 +1294,7 @@ def door_customizer_page(
             ):
                 d_eg_x = int(data[0]) % 16
                 d_eg_y = int(data[0]) // 16
-                if (d_eg_x, d_eg_y) not in self.tiles or "img_obj" not in self.tiles[
-                    (d_eg_x, d_eg_y)
-                ]:
+                if (d_eg_x, d_eg_y) not in self.tiles or "img_obj" not in self.tiles[(d_eg_x, d_eg_y)]:
                     continue
                 current_lobby_doors = [x["door"] for x in self.lobby_doors]
                 if door.startswith("Sanctuary") and not self.sanc_dungeon:
@@ -1421,17 +1309,11 @@ def door_customizer_page(
                         self.x_offset,
                         self.y_offset,
                     )
-                    place_door_icon(
-                        self, "Sanctuary_Mirror", x1, y1, "Sanctuary Mirror Route"
-                    )
+                    place_door_icon(self, "Sanctuary_Mirror", x1, y1, "Sanctuary Mirror Route")
                     if door == "Sanctuary Mirror Route":
                         continue
 
-                if (
-                    "Drop" in door
-                    and door in dungeon_lobbies[tab_world]
-                    and door not in current_lobby_doors
-                ):
+                if "Drop" in door and door in dungeon_lobbies[tab_world] and door not in current_lobby_doors:
                     add_lobby_door(self, door, door)
                     x1, y1 = get_final_door_coords(
                         self,
@@ -1445,12 +1327,8 @@ def door_customizer_page(
 
                 _data = create_door_dict(door)
 
-                x1, y1 = get_final_door_coords(
-                    self, _data, "source", self.x_offset, self.y_offset
-                )
-                spotsize = (
-                    self.spotsize * 0.75 if door in INTERIOR_DOORS else self.spotsize
-                )
+                x1, y1 = get_final_door_coords(self, _data, "source", self.x_offset, self.y_offset)
+                spotsize = self.spotsize * 0.75 if door in INTERIOR_DOORS else self.spotsize
                 self.door_buttons[door] = self.canvas.create_oval(
                     x1 - spotsize,
                     y1 - spotsize,
@@ -1535,6 +1413,10 @@ def door_customizer_page(
     self: DoorPage = typing.cast(DoorPage, ttk.Frame(parent))
     self.eg_selection_mode = eg_selection_mode
     self.eg_tile_window = None
+    dungeon_name = [k for k, v in dungeon_worlds.items() if v == tab_world][0]
+
+    self.dungeon = dungeon_name
+
     # self.cwidth = 1024
     # self.cheight = 512
 

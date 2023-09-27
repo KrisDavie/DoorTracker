@@ -1,18 +1,3 @@
-def parse_entrances(entrance_data):
-    entrances = {"entrances": {}, "exits": {}, "two-way": {}}
-    for line in entrance_data:
-        if "<=>" in line:
-            entrance, exit = line.split(" <=> ")
-            entrances["two-way"][entrance.strip()] = exit.strip()
-        elif "=>" in line:
-            entrance, exit = line.split(" => ")
-            entrances["entrances"][entrance.strip()] = exit.strip()
-        elif "<=" in line:
-            entrance, exit = line.split(" <= ")
-            entrances["exits"][entrance.strip()] = exit.strip()
-    return entrances
-
-
 def parse_doors(door_data):
     mode = "doors"
     doors = {"doors": {}, "lobbies": {}}
@@ -80,29 +65,11 @@ def parse_doors(door_data):
     return doors
 
 
-def parse_placements(placement_data):
-    placements = {}
-    for line in placement_data:
-        if ":" in line:
-            location, item = line.split(": ")
-            if "@" in location:
-                location = location.split(" @")[0]
-            placements[location.strip()] = item.strip()
-    return placements
-
-
 def parse_dr_spoiler(fh):
     yaml_data = {"placements": {1: {}}}
     fh.seek(0)
     spoiler_data = [line.strip() for line in fh.readlines()]
-    # Entrances -> Doors -> Dungeon Lobbies -> Door Types -> Locations -> Shops -> Playthrough
-    log_locs = {
-        "Entrances:": None,
-        "Doors:": None,
-        "Locations:": None,
-        "Shops:": None,
-        "Playthrough:": None,
-    }
+    log_locs = {"Doors:": None}
     for section in log_locs.keys():
         try:
             log_locs[section] = spoiler_data.index(section)
@@ -113,12 +80,7 @@ def parse_dr_spoiler(fh):
         if section == "Playthrough:":
             continue
         data = spoiler_data[index + 1 : list(log_locs.values())[n + 1] - 1]
-        if section == "Entrances:":
-            yaml_data["entrances"] = {1: {}}
-            yaml_data["entrances"][1] = parse_entrances(data)
-        elif section == "Doors:":
+        if section == "Doors:":
             yaml_data["doors"] = {1: {}}
             yaml_data["doors"][1] = parse_doors(data)
-        elif section == "Locations:":
-            yaml_data["placements"][1] = parse_placements(data)
     return yaml_data
