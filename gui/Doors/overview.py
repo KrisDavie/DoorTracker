@@ -321,7 +321,7 @@ def door_customizer_page(
             )
 
     def clean_canvas(self: DoorPage) -> None:
-        for tag in ["tile_image", "door", "door_link", "background_select", "door_icon", "hidden_tile"]:
+        for tag in ["tile_image", "door", "door_link", "background_select", "door_icon", "hidden_tile", "dungeon_name"]:
             for item in self.canvas.find_withtag(tag):
                 self.canvas.delete(item)
 
@@ -338,6 +338,14 @@ def door_customizer_page(
         old_tiles = dict(sorted(self.tiles.items()))
 
         clean_canvas(self)
+        self.canvas.create_text(
+            ((self.cwidth + (BORDER_SIZE * 2)) // 2),
+            12,
+            text=dungeon_name.replace("_", " "),
+            anchor="center",
+            font=("TkDefaultFont", 12, "bold"),
+            tags=["dungeon_name"],
+        )
         # Reset data - We have a copy in the function args
         self.doors = self.default_doors.copy()
         self.lobby_doors = []
@@ -809,6 +817,7 @@ def door_customizer_page(
                 self.unused_map_tiles[(col, row)] = tile
 
     def draw_map(self: DoorPage):
+        self.x_center_align = 0
         # x is columns, y is rows
         icon_queue = []
         aspect_ratio = self.aspect_ratio
