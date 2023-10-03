@@ -1,8 +1,9 @@
+import math
 from tkinter import BOTH, BooleanVar, Toplevel, ttk, NW, Canvas
 from typing import List, Tuple, TypedDict, Union, Callable
 import typing
 from PIL import ImageTk, Image, ImageOps, ImageColor
-from collections import deque, defaultdict
+from collections import deque, defaultdict, Counter
 import data.doors_sprite_data as doors_sprite_data
 from gui.Entrances.overview import SelectState
 from data.worlds_data import dungeon_worlds
@@ -80,11 +81,6 @@ def distinct_colours(n):
     rgbs = [ImageColor.getrgb(f"hsl({h}, 100%, 50%)") for h in hues]
     hexs = [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in rgbs]  # type: ignore
     return hexs
-
-
-# TODO: Why was HC slowly crawling off the page?!
-# TODO: Why does the layout change on multiple reloads? Should be atomic
-# TODO: Implement dark room hiding
 
 
 # These data structures drastically need to be cleaned up, but I'm not sure how to do it yet
@@ -208,6 +204,7 @@ def door_customizer_page(
         self.sanc_dungeon = False
         self.x_center_align = 0
         self.dungeon_name = dungeon_name
+        self.tiles = {}
 
         #  If we're redrawing, we need to keep tiles with no current connections, we store them temporarily in old_tiles
         if redraw:
@@ -218,12 +215,7 @@ def door_customizer_page(
             self.redraw = False
 
         # Are we plotting the vanilla map? If so, we need leave the vanilla data in place (added when the page is created)
-        if not self.eg_selection_mode:
-            self.tiles = defaultdict(dict)  # type: ignore
-            if not redraw:
-                for n, tile in enumerate(mandatory_tiles[tab_world]):
-                    self.tiles[tile] = {"map_tile": (n, 0)}  # type: ignore
-        else:
+        if self.eg_selection_mode:
             self.tiles = {
                 tile: EGTileData(
                     is_dark=tile in dark_tiles,
@@ -275,9 +267,7 @@ def door_customizer_page(
             return
 
         for tile in mandatory_tiles[tab_world]:
-            self.tiles[tile] = EGTileData(
-                is_dark=tile in dark_tiles, has_been_lit=False, map_tile=None, img_obj=None, button=None, origin=None
-            )
+            create_eg_tile_data(self, tile)
 
     # def redraw_canvas(self: DoorPage) -> None:
     #     # yaml = return_connections(self.door_links, self.lobby_doors, self.special_doors)
@@ -321,7 +311,16 @@ def door_customizer_page(
             )
 
     def clean_canvas(self: DoorPage) -> None:
-        for tag in ["tile_image", "door", "door_link", "background_select", "door_icon", "hidden_tile", "dungeon_name"]:
+        for tag in [
+            "tile_image",
+            "door",
+            "door_link",
+            "background_select",
+            "door_icon",
+            "hidden_tile",
+            "dungeon_name",
+            "player",
+        ]:
             for item in self.canvas.find_withtag(tag):
                 self.canvas.delete(item)
 
@@ -336,6 +335,7 @@ def door_customizer_page(
         old_door_links = sorted(self.door_links, key=lambda x: x["door"])
         old_lobby_doors = sorted(self.lobby_doors, key=lambda x: x["lobby"])
         old_tiles = dict(sorted(self.tiles.items()))
+        self.old_tiles = old_tiles
 
         clean_canvas(self)
         self.canvas.create_text(
@@ -396,161 +396,161 @@ def door_customizer_page(
                 del old_tiles[(x, y)]
             queue_regions_doors(lobby_data["door"])
 
-        # if "Sanctuary_Mirror" in yaml_data["lobbies"]:
-        #     sanc_world = dungeon_worlds[yaml_data["lobbies"]["Sanctuary_Mirror"]]
-        #     if sanc_world == tab_world:
-        #         add_lobby(self, "Sanctuary Mirror Route", "Sanctuary_Mirror")
-        #         queue_regions_doors("Sanctuary Mirror Route")
-
-        if len(doors_to_process) == 0:
-            for tile in mandatory_tiles[tab_world]:
-                self.tiles[tile] = EGTileData(
-                    is_dark=tile in dark_tiles,
-                    has_been_lit=old_tiles[tile]["has_been_lit"],
-                    map_tile=None,
-                    img_obj=None,
-                    button=None,
-                    origin=None,
-                )
-                del old_tiles[tile]
-                for door in door_coordinates[tile]:
-                    doors_to_process.append(door["name"])
-        else:
-            pass
+        # if len(doors_to_process) == 0:
+        #     for tile in mandatory_tiles[tab_world]:
+        #         create_eg_tile_data(self, tile, old_tiles[tile]["has_been_lit"])
+        #         del old_tiles[tile]
+        #         for door in door_coordinates[tile]:
+        #             doors_to_process.append(door["name"])
 
         processed_doors = set()
-        while doors_to_process:
-            next_door = doors_to_process.pop()
-            processed_doors.add(next_door)
-
-            # We've done all the linked doors from lobbies - do we have any tiles left?
+        while True:
+            if len(doors_to_process) == 0 and len(old_tiles) == 0:
+                break
             if len(doors_to_process) == 0:
                 while old_tiles:
                     tile, old_tile = old_tiles.popitem()
-                    self.tiles[tile] = EGTileData(
-                        is_dark=tile in dark_tiles,
-                        has_been_lit=old_tile["has_been_lit"],
-                        map_tile=None,
-                        img_obj=None,
-                        button=None,
-                        origin=None,
-                    )
+                    create_eg_tile_data(self, tile, old_tile["has_been_lit"])
                     for door in door_coordinates[tile]:
                         if door["name"] in doors_processed:
                             print("ERROR 001: This should never have happened!")
                             continue
                         doors_to_process.append(door["name"])
+            # I think we can remove this loop - to be testes
+            while doors_to_process:
+                next_door = doors_to_process.pop()
+                print(f"Processing {next_door}")
+                processed_doors.add(next_door)
 
-            if next_door in MANUAL_REGIONS_ADDED:
-                queue_regions_doors(MANUAL_REGIONS_ADDED[next_door], is_region=True)
+                # We've done all the linked doors from lobbies - do we have any tiles left?
 
-            doors_processed.add(next_door)
-            door_tile_x, door_tile_y = get_doors_eg_tile(next_door)
+                # We add some manual links here, typically for one way regions
+                if next_door in MANUAL_REGIONS_ADDED:
+                    queue_regions_doors(MANUAL_REGIONS_ADDED[next_door], is_region=True)
 
-            if (door_tile_x, door_tile_y) != (None, None):
-                queue_regions_doors(next_door)
-                door_links_to_make.add(next_door)
-            else:
-                if next_door not in self.doors:
-                    continue
-                _region = self.doors[next_door]
-                if _region not in regions_to_doors:
-                    queue_regions_doors(self.doors[next_door])
+                doors_processed.add(next_door)
+                door_eg_tile = get_doors_eg_tile(next_door)
+
+                if door_eg_tile != (None, None):
+                    queue_regions_doors(next_door)
+                    door_links_to_make.add(next_door)
                 else:
-                    queue_regions_doors(self.doors[next_door], is_region=True)
+                    if next_door not in self.doors:
+                        continue
+                    _region = self.doors[next_door]
+                    if _region not in regions_to_doors:
+                        queue_regions_doors(self.doors[next_door])
+                    else:
+                        queue_regions_doors(self.doors[next_door], is_region=True)
 
-            # Find the door that this door is linked to
-            linked_door = None
-            for d in [self.doors, {v: k for k, v in self.doors.items()}]:
-                if next_door in d:
-                    linked_door = d[next_door]
-                    if linked_door not in doors_processed and linked_door not in regions_to_doors:
-                        doors_to_process.appendleft(linked_door)
+                # Find the door that this door is linked to
+                linked_door = None
+                for d in [self.doors, {v: k for k, v in self.doors.items()}]:
+                    if next_door in d:
+                        linked_door = d[next_door]
+                        if linked_door not in doors_processed and linked_door not in regions_to_doors:
+                            doors_to_process.append(linked_door)
 
-            linked_door_x, linked_door_y = get_doors_eg_tile(linked_door)
+                linked_door_x, linked_door_y = get_doors_eg_tile(linked_door)
 
-            # (Is this a door) or (have we already added the tile)?
-            if (door_tile_x, door_tile_y) == (None, None) or (
-                (
-                    door_tile_x,
-                    door_tile_y,
-                )
-                in self.tiles
-                and self.tiles[(door_tile_x, door_tile_y)]["map_tile"] != None
-            ):
-                current_lobby_doors = [x["door"] for x in self.lobby_doors]
-                if next_door in dungeon_lobbies[tab_world] and next_door not in current_lobby_doors:
-                    add_lobby_door(self, next_door, next_door)
-                continue
+                # (Is this a door) or (have we already added the tile)?
+                if door_eg_tile == (None, None) or (
+                    door_eg_tile in self.tiles and self.tiles[door_eg_tile]["map_tile"] != None
+                ):
+                    current_lobby_doors = [x["door"] for x in self.lobby_doors]
+                    if next_door in dungeon_lobbies[tab_world] and next_door not in current_lobby_doors:
+                        # I don't think we ever get here after the first draw is added
 
-            # PoD warp tile (Never seen but still linked, start from 0,0)
-            if (
-                linked_door_x
-                and linked_door_y
-                and (
+                        add_lobby_door(self, next_door, next_door)
+                    continue
+
+                # PoD warp tile (Never seen but still linked, start from 0,0)
+                if (linked_door_x, linked_door_y) != (None, None) and (
                     (linked_door_x, linked_door_y) in self.tiles
                     and self.tiles[(linked_door_x, linked_door_y)]["map_tile"] != None
-                )
-            ):
-                new_tile_x, new_tile_y = self.tiles[(linked_door_x, linked_door_y)]["map_tile"]
-            else:
-                new_tile_x = new_tile_y = 0
-
-            # Find closest unused map tile to place supertile in, respect directionality where possible
-            direction = doors_data[next_door][1]
-            last_cardinal = 0
-
-            if door_tile_x == None or door_tile_y == None:
-                continue
-
-            while get_tile_data_by_map_tile(self.tiles, (new_tile_x, new_tile_y)):
-                if (direction == "We" and last_cardinal == 0) or (
-                    ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
-                    and last_cardinal == -1
                 ):
-                    new_tile_x += 1
-                elif (direction == "Ea" and last_cardinal == 0) or (
-                    ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
-                    and last_cardinal == 1
-                ):
-                    new_tile_x -= 1
-                elif ((direction == "No" or direction == "Up") and last_cardinal == 0) or (
-                    (direction == "We" or direction == "Ea") and last_cardinal == -1
-                ):
-                    new_tile_y += 1
-                elif ((direction == "So" or direction == "Dn") and last_cardinal == 0) or (
-                    (direction == "We" or direction == "Ea") and last_cardinal == 1
-                ):
-                    new_tile_y -= 1
-                if last_cardinal == 0:
-                    last_cardinal = -1
-                elif last_cardinal == -1:
-                    last_cardinal = 1
-                elif last_cardinal == 1:
-                    last_cardinal = 0
+                    new_tile_x, new_tile_y = self.tiles[(linked_door_x, linked_door_y)]["map_tile"]
+                else:
+                    new_tile_x = new_tile_y = 0
 
-            if (door_tile_x, door_tile_y) in self.tiles:
-                self.tiles[(door_tile_x, door_tile_y)]["map_tile"] = (new_tile_x, new_tile_y)
-            else:
-                print('Adding new EG tile to "tiles"')
-                if (door_tile_x, door_tile_y) in old_tiles:
-                    del old_tiles[(door_tile_x, door_tile_y)]
-                self.tiles[(door_tile_x, door_tile_y)] = EGTileData(
-                    is_dark=(door_tile_x, door_tile_y) in dark_tiles,
-                    has_been_lit=old_tiles[(door_tile_x, door_tile_y)]["has_been_lit"]
-                    if (door_tile_x, door_tile_y) in old_tiles
-                    else False,
-                    map_tile=(
+                direction = doors_data[next_door][1]
+                last_cardinal = 0
+
+                if door_eg_tile == (None, None):
+                    continue
+
+                # TODO: If (prefer_fill_map and map_usage <= 80%) then: find_closest_unused_tile_by_physical_distance() and use that
+
+                # map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
+                # num_placed_tiles = len([x for x in self.tiles.values() if x["map_tile"] != None])
+                # map_usage = (num_placed_tiles / (map_dims[0] * map_dims[1])) * 100
+                # prefer_fill_map = True
+                # if prefer_fill_map and map_usage <= 80:
+                #     current_unused_tiles = []
+                #     for i in range(map_dims[0]):
+                #         for j in range(map_dims[1]):
+                #             if not get_tile_data_by_map_tile(self.tiles, (i, j)):
+                #                 current_unused_tiles.append((i + x_offset, j + y_offset))
+                #     dists = [
+                #         math.sqrt((tile[0] - new_tile_x) ** 2 + (tile[1] - new_tile_y) ** 2)
+                #         for tile in current_unused_tiles
+                #     ]
+                #     closest_idx = dists.index(min(dists))
+                #     closest_tile = current_unused_tiles[closest_idx]
+                #     while get_tile_data_by_map_tile(self.tiles, closest_tile):
+                #         del current_unused_tiles[closest_idx]
+                #         closest_idx = dists.index(min(dists))
+                #         closest_tile = current_unused_tiles[closest_idx]
+                #     new_tile_x, new_tile_y = closest_tile
+
+                # else:
+                # Complicated way of finding the nearest tile that isn't already used while respecting directionality
+                print(f"Placing {door_eg_tile} ({next_door}), starting at ({new_tile_x}, {new_tile_y})")
+                while get_tile_data_by_map_tile(self.tiles, (new_tile_x, new_tile_y)):
+                    if (direction == "We" and last_cardinal == 0) or (
+                        ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
+                        and last_cardinal == -1
+                    ):
+                        new_tile_x += 1
+                        print(f"Moving right to ({new_tile_x}, {new_tile_y})")
+                    elif (direction == "Ea" and last_cardinal == 0) or (
+                        ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
+                        and last_cardinal == 1
+                    ):
+                        new_tile_x -= 1
+                        print(f"Moving left to ({new_tile_x}, {new_tile_y})")
+                    elif ((direction == "No" or direction == "Up") and last_cardinal == 0) or (
+                        (direction == "We" or direction == "Ea") and last_cardinal == -1
+                    ):
+                        new_tile_y += 1
+                        print(f"Moving down to ({new_tile_x}, {new_tile_y})")
+                    elif ((direction == "So" or direction == "Dn") and last_cardinal == 0) or (
+                        (direction == "We" or direction == "Ea") and last_cardinal == 1
+                    ):
+                        new_tile_y -= 1
+                        print(f"Moving up to ({new_tile_x}, {new_tile_y})")
+                    if last_cardinal == 0:
+                        last_cardinal = -1
+                    elif last_cardinal == -1:
+                        last_cardinal = 1
+                    elif last_cardinal == 1:
+                        last_cardinal = 0
+
+                if door_eg_tile in self.tiles:
+                    self.tiles[door_eg_tile]["map_tile"] = (new_tile_x, new_tile_y)
+                else:
+                    print('Adding new EG tile to "tiles"')
+                    create_eg_tile_data(
+                        self,
+                        door_eg_tile,
+                        has_been_lit=old_tiles[door_eg_tile]["has_been_lit"] if door_eg_tile in old_tiles else False,
+                    )
+                    self.tiles[door_eg_tile]["map_tile"] = (
                         new_tile_x,
                         new_tile_y,
-                    ),
-                    img_obj=None,
-                    button=None,
-                    origin=None,
-                )
-            current_lobby_doors = [x["door"] for x in self.lobby_doors]
-            if next_door in dungeon_lobbies[tab_world] and next_door not in current_lobby_doors:
-                add_lobby_door(self, next_door, next_door)
+                    )
+                    if door_eg_tile in old_tiles:
+                        del old_tiles[door_eg_tile]
 
         links_made = set()
 
@@ -579,6 +579,18 @@ def door_customizer_page(
                 if not get_tile_data_by_map_tile(self.tiles, (col, row)):
                     return (col, row)
         raise Exception("No unused tiles left")
+
+    def create_eg_tile_data(self: DoorPage, eg_tile: str, has_been_lit=False) -> None:
+        if eg_tile in self.tiles:
+            return
+        self.tiles[eg_tile] = EGTileData(
+            is_dark=eg_tile in dark_tiles,
+            has_been_lit=has_been_lit,
+            map_tile=None,
+            img_obj=None,
+            button=None,
+            origin=None,
+        )
 
     def get_doors_eg_tile(door):
         # Coords are x = left -> right, y = top -> bottom, 0,0 is top left
@@ -618,7 +630,7 @@ def door_customizer_page(
         else:
             self.tiles[(x, y)] = EGTileData(
                 is_dark=(x, y) in dark_tiles,
-                has_been_lit=False,
+                has_been_lit=self.old_tiles[(x, y)]["has_been_lit"] if (x, y) in self.old_tiles else False,
                 map_tile=None,
                 img_obj=None,
                 button=None,
@@ -636,7 +648,7 @@ def door_customizer_page(
         else:
             self.tiles[(x, y)] = EGTileData(
                 is_dark=(x, y) in dark_tiles,
-                has_been_lit=False,
+                has_been_lit=self.old_tiles[(x, y)]["has_been_lit"] if (x, y) in self.old_tiles else False,
                 map_tile=(0, 0),
                 img_obj=None,
                 button=None,
@@ -816,10 +828,7 @@ def door_customizer_page(
                 self.canvas.tag_lower(tile)
                 self.unused_map_tiles[(col, row)] = tile
 
-    def draw_map(self: DoorPage):
-        self.x_center_align = 0
-        # x is columns, y is rows
-        icon_queue = []
+    def calculate_map_dims(self: DoorPage):
         aspect_ratio = self.aspect_ratio
         if len(self.tiles) > 0:
             # Get the min x and y values
@@ -838,11 +847,41 @@ def door_customizer_page(
         #  dims = (rows, columns), (y, x)
         aspect_ratio_multiplier = aspect_ratio[1] / aspect_ratio[0]
         if len_x >= len_y * aspect_ratio_multiplier:
-            self.map_dims = int((len_x // aspect_ratio_multiplier) + 1), int(
+            map_dims = int((len_x // aspect_ratio_multiplier) + 1), int(
                 ((len_x // aspect_ratio_multiplier) + 1) * aspect_ratio_multiplier
             )
         else:
-            self.map_dims = (len_y, int(len_y * aspect_ratio_multiplier))
+            map_dims = (len_y, int(len_y * aspect_ratio_multiplier))
+
+        return map_dims, x_offset, y_offset, len_x, len_y
+
+    def draw_map(self: DoorPage):
+        # Firstly are any tiles without a map_tile?
+        if len([tile_data for tile, tile_data in self.tiles.items() if tile_data["map_tile"] == None]) > 0:
+            print(
+                "ERROR 003: We have a tile without a position. This should only happen when we have a tile with no doors (i.e. Eastern Fairies)"
+            )
+            for tile in self.tiles.keys():
+                if self.tiles[tile]["map_tile"] == None:
+                    self.tiles[tile]["map_tile"] = find_first_unused_tile()
+
+        # Secondly, are there any overlapping tiles?
+        if len(self.tiles) != len(set([tile_data["map_tile"] for tile, tile_data in self.tiles.items()])):
+            print("ERROR 004: Multiple tiles have the same map_tile. This should never have happened!")
+            c = Counter([tile_data["map_tile"] for tile, tile_data in self.tiles.items()])
+            to_fix = [k for k, v in c.items() if v > 1]
+            for map_tile in to_fix:
+                tiles_to_fix = [tile for tile, tile_data in self.tiles.items() if tile_data["map_tile"] == map_tile]
+                tiles_to_fix.pop(0)  # Leave the first one in place
+                for tile in tiles_to_fix:
+                    self.tiles[tile]["map_tile"] = find_first_unused_tile()
+
+        self.x_center_align = 0
+        # x is columns, y is rows
+        icon_queue = []
+
+        map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
+        self.map_dims = map_dims
 
         y_offset += (self.map_dims[0] - len_y) // 2
         x_offset += (self.map_dims[1] - len_x) // 2
@@ -861,16 +900,17 @@ def door_customizer_page(
         self.tile_map = []
 
         #  Add any old tiles, with no connections to the tiles to be plotted. Put them in the first empty space
-        for tile, tile_data in self.old_tiles.items():
-            if (tile in self.tiles and "map_tile" in self.tiles[tile]) or len(tile_data) == 0:
-                continue
-            self.tiles[tile]["map_tile"] = find_first_unused_tile()
-        self.old_tiles = {}
+        # for tile, tile_data in self.old_tiles.items():
+        #     if (tile in self.tiles and "map_tile" in self.tiles[tile]) or len(tile_data) == 0:
+        #         continue
+        #     self.tiles[tile]["map_tile"] = find_first_unused_tile()
+        # self.old_tiles = {}
 
         for (eg_x, eg_y), tile_data in self.tiles.items():
             try:
                 tile_x, tile_y = tile_data["map_tile"]
             except TypeError:
+                print("ERROR 005: This should never have happened!")
                 continue
             if eg_x == None or eg_y == None:
                 continue
@@ -887,12 +927,14 @@ def door_customizer_page(
                 and not self.show_all_doors
             ):
                 continue
+
             d_eg_x = int(data[0]) % 16
             d_eg_y = int(data[0]) // 16
             if (d_eg_x, d_eg_y) not in self.tiles or "img_obj" not in self.tiles[(d_eg_x, d_eg_y)]:
                 continue
 
             _data = create_door_dict(door)
+
             x1, y1 = get_final_door_coords(self, _data, "source", x_offset, y_offset)
             if door in self.special_doors:
                 if "Drop" in door:

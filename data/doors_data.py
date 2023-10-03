@@ -1,6 +1,6 @@
 from data.worlds_data import World
 from collections import defaultdict
-from typing import Union, List, Tuple, Dict
+from typing import Union, List, Tuple, Dict, DefaultDict
 
 
 def add_manual_drop(source, source_eg_tile, dest_eg_tile, dest_region=None):
@@ -50,8 +50,9 @@ dark_tiles = {
     (10, 11),
     (11, 0),
 }
+door_coordinates: DefaultDict[Tuple[int, int], List[dict[str, Union[str, int]]]] = defaultdict(list)
 
-door_coordinates: Dict[Tuple[int, int], List[dict[str, Union[str, int]]]] = {
+door_coordinates.update({
     (1, 6): [
         {
             "x": 57,
@@ -6158,6 +6159,7 @@ door_coordinates: Dict[Tuple[int, int], List[dict[str, Union[str, int]]]] = {
         }
     ],
 }
+)
 
 dungeon_lobbies = {
     World.CastleTower: ["Agahnims Tower"],

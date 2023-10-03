@@ -625,6 +625,8 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
 
             if eg_tile not in dark_tiles or not is_dark:
                 dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
+            else:
+                dp_content.canvas.delete("player")
 
             if (previous_tile != eg_tile and previous_tile == None) or (was_mirroring and data["mirror"] != "0f"):
                 previous_tile = eg_tile
