@@ -1236,6 +1236,8 @@ def door_customizer_page(
         current_lobbies = [x["lobby"] for x in self.lobby_doors]
         if (
             door in current_lobby_doors
+            or 'Boss' in door
+            or door in ['Tower Agahnim 1 SW', 'GT Agahnim 2 SW']
             or door == None
             or door in INTERIOR_DOORS
             or doors_data[door][1] in ["No", "We", "Ea", "Up", "Dn"]
