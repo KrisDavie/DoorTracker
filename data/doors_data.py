@@ -9148,3 +9148,97 @@ add_manual_drop("Mire Attic Hint Hole", 0x97, 0xD1)
 add_manual_drop("GT Bob's Room Hole", 0x8C, 0x1C)
 add_manual_drop("GT Falling Torches Hole", 0x3D, 0x96)
 add_manual_drop("GT Moldorm Hole", 0x4D, 0xA6)
+
+# These are tiles which only have single paths through them and can be ignored when mapping
+simple_tiles = (
+    (2, 0),
+    (4, 0),
+    (11, 0),
+    (15, 0),
+    (16, 1),
+    (14, 1),
+    # (12, 1), # Ice armos
+    (13, 1),
+    (9, 1),
+    (6, 1),
+    # 4, 1, # TR Pipe maze
+    (3, 1),
+    (1, 2),
+    (2, 2),
+    (3, 2),
+    (8, 2),  # Swamp lobby
+    (15, 3),  # Ice H room
+    (14, 3),  # Ice stalfos drop
+    (11, 3),
+    (9, 3),  # Moth drop
+    (2, 3),
+    (0, 3),
+    (0, 4),
+    (1, 4),
+    (2, 4),
+    (3, 4),
+    # (4, 4), # TT big chest
+    (9, 4),  # SW Torches
+    (11, 4),
+    (12, 4),
+    (14, 4),
+    (13, 5),
+    (12, 5),
+    (11, 5),
+    (9, 5),
+    # (7, 5), # Two different single paths
+    (3, 5),
+    (1, 5),
+    (0, 5),
+    (3, 6),
+    (4, 6),
+    (6, 6),
+    # (10, 6), # PoD dark basement
+    (11, 6),
+    (12, 6),
+    (13, 6),
+    (14, 6),
+    (15, 7),
+    (3, 7),
+    (1, 7),
+    (0, 7),
+    (2, 8),
+    (3, 8),
+    (14, 8),
+    (15, 9),
+    (9, 9),
+    (8, 9),
+    # (6, 9), # GT Staredown
+    (5, 9),
+    (3, 9),
+    (2, 9),
+    (1, 9),
+    (0, 10),
+    (1, 10),
+    # (2, 10), Only the cross bridge
+    (3, 10),
+    (5, 10),
+    (10, 10),
+    (11, 10),
+    (14, 10),
+    (15, 10),
+    # (14, 11), # Ice pre kholdstare room dropdown
+    (10, 11),
+    # (9, 11), # EP cannonballs
+    (8, 11),
+    (5, 11),
+    (4, 11),
+    (0, 11),
+    (0, 12),
+    # (3, 11), # Mire big chest tile, only middle left bridge
+    (4, 12),
+    (7, 12),
+    (9, 12),
+    (10, 13),
+    (9, 13),
+    (8, 13),
+    (5, 13),
+    (2, 13),
+    (0, 13),
+    (0, 14),
+)

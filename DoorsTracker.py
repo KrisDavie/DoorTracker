@@ -195,6 +195,11 @@ def customizerGUI(mainWindow, args=None):
 
     self.eg_tile_multiuse = eg_tile_multiuse.copy()
     self.disabled_eg_tiles = {}
+
+    self.experimental_flags = {
+        "hide_single_route_tiles": False,
+    }
+
     for dungeon, world in dungeon_worlds.items():
         if dungeon == "Overworld":
             continue
@@ -264,6 +269,12 @@ def customizerGUI(mainWindow, args=None):
     for size in window_sizes:
         sizeMenu.add_radiobutton(label=size.capitalize(), command=lambda size=size: set_size(self, size))
     sizeMenu.invoke(1)
+
+    experimentalMenu = Menu(viewMenu, tearoff="off")  # type: ignore
+    menu.add_cascade(label="Experimental", menu=experimentalMenu)
+    experimentalMenu.add_checkbutton(
+        label="Hide Single Route Tiles", command=lambda: set_experimental_flag(self, "hide_single_route_tiles")
+    )
 
     self.eg_tile_window.withdraw()
 
@@ -358,6 +369,15 @@ def set_size(self, size):
     self.geometry(
         f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}"
     )
+
+
+def set_experimental_flag(self, flag: str):
+    self.experimental_flags[flag] = not self.experimental_flags[flag]
+    for world in self.pages:
+        self.pages[world].content.experimental_flags = self.experimental_flags
+        self.pages[world].content.redraw_canvas(self.pages[world].content)
+        self.eg_tile_window.pages[world].content.experimental_flags = self.experimental_flags
+        self.eg_tile_window.pages[world].content.draw_vanilla_eg_map(self.eg_tile_window.pages[world].content)
 
 
 mem_addresses = {
@@ -529,10 +549,10 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
                 mainWindow.wm_title(f"Jank Door Tracker - Auto-tracking Disabled")
                 break
 
-            if args.darkpos:
-                is_dark = False
-            else:
-                is_dark = data["lampcone"] == "00" and data["torches"] == "00"
+            # if args.darkpos:
+            #     is_dark = False
+            # else:
+            is_dark = data["lampcone"] == "00" and data["torches"] == "00"
 
             if data["dungeon"] not in dungeon_ids.keys() or data["indoors"] != "01":
                 if (
@@ -700,12 +720,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--port", type=int, default=8191, help="SNI connection port")
     parser.add_argument("--debug", action="store_true", default=False, help="Enable debug logging")
-    parser.add_argument(
-        "--darkpos",
-        action="store_true",
-        default=False,
-        help="Show the players position in dark rooms even without a light source",
-    )
+    # parser.add_argument(
+    #     "--darkpos",
+    #     action="store_true",
+    #     default=False,
+    #     help="Show the players position in dark rooms even without a light source",
+    # )
     parser.add_argument("--help", action="store_true", help="Show this help message and exit")
     parser.add_argument(
         "--no-autotrack",

@@ -21,6 +21,7 @@ from data.doors_data import (
     falldown_pits,
     vanilla_logical_connections,
     dungeon_warps,
+    simple_tiles,
 )
 
 from pathlib import Path
@@ -205,6 +206,11 @@ def door_customizer_page(
         self.x_center_align = 0
         self.dungeon_name = dungeon_name
         self.tiles = {}
+        self.experimental_flags = top.experimental_flags
+        self.pinned_eg_tiles = set()
+
+        self.holdover_tiles = {}
+        self.holdover_door_links = []
 
         #  If we're redrawing, we need to keep tiles with no current connections, we store them temporarily in old_tiles
         if redraw:
@@ -320,6 +326,9 @@ def door_customizer_page(
             "hidden_tile",
             "dungeon_name",
             "player",
+            "dark_tile",
+            "disabled_tile",
+            "pinned_tile",
         ]:
             for item in self.canvas.find_withtag(tag):
                 self.canvas.delete(item)
@@ -330,6 +339,86 @@ def door_customizer_page(
         doors_to_process: deque = deque()
         regions_processed = set()
         self.map_dims = (16, 16)
+
+        if self.experimental_flags["hide_single_route_tiles"]:
+            lobbies = [x["door"] for x in self.lobby_doors]
+            for tile in simple_tiles:
+                if tile not in self.tiles or tile in self.pinned_eg_tiles:
+                    continue
+                all_door_links = {}
+                for door_data in self.door_links:
+                    all_door_links[door_data["door"]] = door_data["linked_door"]
+                all_door_links_inverse = {v: k for k, v in all_door_links.items()}
+                skip_tile = False
+                linked_doors = []
+                for door in door_coordinates[tile]:
+                    if door["name"] in INTERIOR_DOORS:
+                        continue
+                    # This is a lobby
+                    if door["name"] in lobbies:
+                        skip_tile = True
+                    # This has an unlinked doot
+                    if door["name"] not in all_door_links and door["name"] not in all_door_links_inverse:
+                        skip_tile = True
+                    else:
+                        linked_doors.append(door["name"])
+                if skip_tile:
+                    continue
+
+                # All doors are linked, keep a copy of the tile and remove it from the main store
+                self.holdover_tiles[tile] = self.tiles[tile].copy()
+                del self.tiles[tile]
+
+                doors_to_link = []
+
+                # Check each door that was linked and find its partner
+                holdover_doors = [x["door"] for x in self.holdover_door_links] + [
+                    x["linked_door"] for x in self.holdover_door_links
+                ]
+                for door in linked_doors:
+                    _linked_door = all_door_links[door] if door in all_door_links else all_door_links_inverse[door]
+                    # If the door is in the list, we already have the original link and the link we're on is not to be kept
+                    if door not in holdover_doors:
+                        self.holdover_door_links.append({"door": door, "linked_door": _linked_door})
+
+                    # Get the current link
+                    # Hold onto it to re-link later
+                    doors_to_link.append(_linked_door)
+                    # Remove the current link from door_links
+                    dl_idx, _ = get_link_by_door(door)
+                    del self.door_links[dl_idx]
+
+                if len(doors_to_link) != 2:
+                    print("ERROR: This should never have happened! We have more than 2 doors in a simple tile")
+                    continue
+
+                # Join the links to other tiles together
+                self.door_links.append(
+                    {
+                        "door": doors_to_link[0],
+                        "linked_door": doors_to_link[1],
+                    }
+                )
+        else:
+            for ho_tile, ho_tile_data in self.holdover_tiles.items():
+                self.tiles[ho_tile] = ho_tile_data
+
+            for ho_door_link in self.holdover_door_links:
+                # Find and remove the current door link in self.door_links where either ho_door_link['door'] or ho_door_link['linked_door'] matches either door or linked_door from the link
+                for i, door_link in enumerate(self.door_links):
+                    if (
+                        door_link["door"] == ho_door_link["door"]
+                        or door_link["linked_door"] == ho_door_link["door"]
+                        or door_link["door"] == ho_door_link["linked_door"]
+                        or door_link["linked_door"] == ho_door_link["linked_door"]
+                    ):
+                        del self.door_links[i]
+                        break
+            for ho_door_link in self.holdover_door_links:
+                self.door_links.append(ho_door_link)
+
+            self.holdover_tiles = {}
+            self.holdover_door_links = []
 
         #  Sort door_links by the "door" key of each dict
         old_door_links = sorted(self.door_links, key=lambda x: x["door"])
@@ -661,42 +750,23 @@ def door_customizer_page(
         eg_tile = get_tile_data_by_button(self.tiles, button)
         if not eg_tile or eg_tile in mandatory_tiles[tab_world]:
             return
-        self.canvas.delete(button)
         del self.tiles[eg_tile]
-        for page in top.eg_tile_window.pages.values():
-            if eg_tile in page.content.tiles:
-                page.content.deactivate_tiles(page.content, top.eg_tile_multiuse, top.disabled_eg_tiles)
 
         # find doors in this tile:
         for door in door_coordinates[eg_tile]:
             if door["name"] == "Sanctuary Mirror Route":
                 continue
-            self.unlinked_doors.remove(door["name"])
+            if door["name"] in self.unlinked_doors:
+                self.unlinked_doors.remove(door["name"])
             if door["name"] in self.special_doors:
-                icon_idx = [k for k, v in self.placed_icons.items() if v["name"] == door["name"]][0]
-                del self.placed_icons[icon_idx]
                 del self.special_doors[door["name"]]
             _lobby_doors = [x["door"] for x in self.lobby_doors]
             if door["name"] in _lobby_doors:
                 del self.lobby_doors[_lobby_doors.index(door["name"])]
-            while True:
-                _dl_idx, _door_link = get_link_by_door(door["name"])  # type: ignore
-                if not _door_link or not _dl_idx:
-                    if not door["name"] == "Sanctuary Mirror Route":
-                        self.canvas.delete(self.door_buttons[door["name"]])
-                    break
-                self.canvas.delete(_door_link["button"])  # type: ignore
-                # Set colors back to normal
-                if _door_link["door"] == door["name"]:
-                    self.canvas.itemconfigure(self.door_buttons[_door_link["linked_door"]], fill="#0f0")
-                    self.canvas.delete(self.door_buttons[_door_link["door"]])
-                else:
-                    self.canvas.itemconfigure(self.door_buttons[_door_link["door"]], fill="#0f0")
-                    self.canvas.delete(self.door_buttons[_door_link["linked_door"]])
+            _dl_idx, _door_link = get_link_by_door(door["name"])  # type: ignore
+            if _dl_idx != None:
                 del self.door_links[_dl_idx]
-                for _d in [_door_link["door"], _door_link["linked_door"]]:
-                    if _d in self.special_doors:
-                        del self.special_doors[_d]
+        redraw_canvas(self)
 
     def disable_eg_tile(self: DoorPage, event):
         button = self.canvas.find_closest(event.x, event.y)[0]
@@ -704,6 +774,17 @@ def door_customizer_page(
         if not eg_tile or eg_tile in mandatory_tiles[tab_world]:
             return
         disabled_tiles[eg_tile] = {}
+        redraw_canvas(self)
+
+    def pin_eg_tile(self: DoorPage, event):
+        button = self.canvas.find_closest(event.x, event.y)[0]
+        eg_tile = get_tile_data_by_button(self.tiles, button)
+        if not eg_tile or eg_tile in mandatory_tiles[tab_world]:
+            return
+        if eg_tile in self.pinned_eg_tiles:
+            self.pinned_eg_tiles.remove(eg_tile)
+        else:
+            self.pinned_eg_tiles.add(eg_tile)
         redraw_canvas(self)
 
     def reenable_eg_tile(self: DoorPage, event):
@@ -742,6 +823,17 @@ def door_customizer_page(
                 fill="#f00",
                 tags=["dark_tile"],
             )
+
+        if (x, y) in self.pinned_eg_tiles and not self.eg_selection_mode:
+            self.canvas.create_rectangle(
+                x1 - TILE_BORDER_SIZE,
+                y1 - TILE_BORDER_SIZE,
+                x1 + self.tile_size + TILE_BORDER_SIZE,
+                y1 + self.tile_size + TILE_BORDER_SIZE,
+                fill="#0f0",
+                tags=["pinned_tile"],
+                outline="",
+            )
         map = self.canvas.create_image(x1, y1, image=img, anchor=NW, tags=["tile_image"], **ci_kwargs)
         # TODO: Add the doors for a hidden tile and the code to unhide it. Tags should probably include tileid
         if self.tiles[(x, y)]["is_dark"] and not self.tiles[(x, y)]["has_been_lit"]:
@@ -771,7 +863,7 @@ def door_customizer_page(
             self.canvas.tag_bind(rect, "<Button-2>", lambda event: reenable_eg_tile(self, event))
         if not self.eg_selection_mode:
             self.canvas.tag_bind(map, "<Control-Button-3>", lambda event: remove_eg_tile(self, event))
-            self.canvas.tag_bind(map, "<Button-2>", lambda event: disable_eg_tile(self, event))
+            self.canvas.tag_bind(map, "<Button-2>", lambda event: pin_eg_tile(self, event))
         else:
             self.canvas.tag_bind(
                 map,
@@ -783,7 +875,8 @@ def door_customizer_page(
         self.tiles[(x, y)]["origin"] = (x1, y1)
         return
 
-    def draw_vanilla_eg_map(self: DoorPage, top):
+    def draw_vanilla_eg_map(self: DoorPage):
+        clean_canvas(self)
         for (eg_tile_x, eg_tile_y), tile_data in self.tiles.items():
             if tile_data["map_tile"] == None:
                 continue
@@ -1236,8 +1329,8 @@ def door_customizer_page(
         current_lobbies = [x["lobby"] for x in self.lobby_doors]
         if (
             door in current_lobby_doors
-            or 'Boss' in door
-            or door in ['Tower Agahnim 1 SW', 'GT Agahnim 2 SW']
+            or "Boss" in door
+            or door in ["Tower Agahnim 1 SW", "GT Agahnim 2 SW"]
             or door == None
             or door in INTERIOR_DOORS
             or doors_data[door][1] in ["No", "We", "Ea", "Up", "Dn"]
@@ -1630,6 +1723,7 @@ def door_customizer_page(
     self.init_page = init_page
     self.deactivate_tiles = deactivate_tiles
     self.redraw_canvas = redraw_canvas
+    self.draw_vanilla_eg_map = draw_vanilla_eg_map
     self.auto_add_tile = auto_add_tile
     self.auto_draw_player = auto_draw_player
     self.auto_add_door_link = auto_add_door_link
@@ -1638,7 +1732,7 @@ def door_customizer_page(
 
     #  If we're in eg selection mode, we need to use the special function to only draw tiles and not connections
     if self.eg_selection_mode:
-        draw_vanilla_eg_map(self, top)
+        draw_vanilla_eg_map(self)
     else:
         redraw_canvas(self)
 
