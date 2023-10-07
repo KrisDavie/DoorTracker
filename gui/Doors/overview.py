@@ -1,4 +1,3 @@
-import math
 from tkinter import BOTH, BooleanVar, Toplevel, ttk, NW, Canvas
 from typing import List, Tuple, TypedDict, Union, Callable
 import typing
@@ -1328,10 +1327,10 @@ def door_customizer_page(
         current_lobby_doors = [x["door"] for x in self.lobby_doors]
         current_lobbies = [x["lobby"] for x in self.lobby_doors]
         if (
-            door in current_lobby_doors
+            door == None
+            or door in current_lobby_doors
             or "Boss" in door
             or door in ["Tower Agahnim 1 SW", "GT Agahnim 2 SW"]
-            or door == None
             or door in INTERIOR_DOORS
             or doors_data[door][1] in ["No", "We", "Ea", "Up", "Dn"]
         ):
@@ -1530,6 +1529,9 @@ def door_customizer_page(
         add_new_doors(self)
 
     def auto_add_tile(self, selected_eg_tile, was_lit=False):
+        if self.experimental_flags["hide_single_route_tiles"]:
+            if selected_eg_tile in self.holdover_tiles:
+                return
         tile_x = tile_y = 0
         for tile in self.unused_map_tiles:
             if tile not in [
@@ -1659,6 +1661,9 @@ def door_customizer_page(
         top.eg_tile_window.withdraw()
 
     def auto_draw_player(self, x, y, current_tile):
+        if self.experimental_flags["hide_single_route_tiles"]:
+            if current_tile in self.holdover_tiles:
+                return
         try:
             self.canvas.delete("player")
         except:
