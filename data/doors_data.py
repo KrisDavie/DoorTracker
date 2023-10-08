@@ -9150,18 +9150,59 @@ add_manual_drop("GT Falling Torches Hole", 0x3D, 0x96)
 add_manual_drop("GT Moldorm Hole", 0x4D, 0xA6)
 
 # These are tiles which only have single paths through them and can be ignored when mapping
-simple_tiles = (
+complex_tiles = {
+    (7, 5): {
+        "paths": [{"Skull Pot Prison ES", "Skull Pot Prison SE"}, {"Skull 2 East Lobby SW", "Skull 2 East Lobby WS"}],
+    },
+    (4, 1): {
+        "paths": [{"TR Lava Escape SE", "TR Lava Escape NW"}, {"TR Lava Island WS", "TR Lava Island ES"}],
+    },
+    (10, 6): {
+        "paths": [{"PoD Dark Basement E Up Stairs", "PoD Dark Basement W Up Stairs"}],
+    },
+    (5, 7): {
+        "paths": [{"Desert Arrow Pot Corner W Edge", "Desert Arrow Pot Corner S Edge"}],
+    },
+    (2, 8): {
+        "paths": [
+            {"Hyrule Dungeon South Abyss North Edge", "Hyrule Dungeon South Abyss West Edge"},
+            {"Hyrule Dungeon South Abyss Catwalk North Edge", "Hyrule Dungeon South Abyss Catwalk West Edge"},
+        ],
+    },
+    (2, 10): {
+        "paths": [{"Mire Over Bridge E", "Mire Over Bridge W"}],
+    },
+    (10, 10): {
+        "paths": [{"Eastern Map Valley WN", "Eastern Map Valley SW"}],
+    },
+    (2, 11): {
+        "paths": [{"Mire BK Door Room N", "Mire BK Door Room EN"}],
+    },
+    (9, 11): {
+        "paths": [
+            {"Eastern Canonball Ledge Key Door EN", "Eastern Canonball Ledge Key Door WN"},
+            {"Eastern Canonball S", "Eastern Canonball N"},
+        ],
+    },
+    (3, 12): {
+        "paths": [{"Mire Failure Bridge W", "Mire Failure Bridge E"}],
+    },
+    (6, 13): {
+        "paths": [{"TR Main Lobby SE", "TR Lobby Ledge NE"}],
+    },
+}
+
+simple_tiles = {
     (2, 0),
     (4, 0),
     (11, 0),
     (15, 0),
     (16, 1),
     (14, 1),
-    # (12, 1), # Ice armos
+    (12, 1),  # Ice armos
     (13, 1),
     (9, 1),
     (6, 1),
-    # 4, 1, # TR Pipe maze
     (3, 1),
     (1, 2),
     (2, 2),
@@ -9177,7 +9218,7 @@ simple_tiles = (
     (1, 4),
     (2, 4),
     (3, 4),
-    # (4, 4), # TT big chest
+    (4, 4),  # TT big chest
     (9, 4),  # SW Torches
     (11, 4),
     (12, 4),
@@ -9186,14 +9227,12 @@ simple_tiles = (
     (12, 5),
     (11, 5),
     (9, 5),
-    # (7, 5), # Two different single paths
     (3, 5),
     (1, 5),
     (0, 5),
     (3, 6),
     (4, 6),
     (6, 6),
-    # (10, 6), # PoD dark basement
     (11, 6),
     (12, 6),
     (13, 6),
@@ -9202,35 +9241,28 @@ simple_tiles = (
     (3, 7),
     (1, 7),
     (0, 7),
-    (2, 8),
     (3, 8),
     (14, 8),
     (15, 9),
     (9, 9),
     (8, 9),
-    # (6, 9), # GT Staredown
     (5, 9),
     (3, 9),
     (2, 9),
     (1, 9),
     (0, 10),
     (1, 10),
-    # (2, 10), Only the cross bridge
     (3, 10),
     (5, 10),
-    (10, 10),
     (11, 10),
     (14, 10),
     (15, 10),
-    # (14, 11), # Ice pre kholdstare room dropdown
     (10, 11),
-    # (9, 11), # EP cannonballs
     (8, 11),
     (5, 11),
     (4, 11),
     (0, 11),
     (0, 12),
-    # (3, 11), # Mire big chest tile, only middle left bridge
     (4, 12),
     (7, 12),
     (9, 12),
@@ -9241,4 +9273,4 @@ simple_tiles = (
     (2, 13),
     (0, 13),
     (0, 14),
-)
+}

@@ -21,6 +21,7 @@ from data.doors_data import (
     vanilla_logical_connections,
     dungeon_warps,
     simple_tiles,
+    complex_tiles,
 )
 
 from pathlib import Path
@@ -341,7 +342,7 @@ def door_customizer_page(
 
         if self.experimental_flags["hide_single_route_tiles"]:
             lobbies = [x["door"] for x in self.lobby_doors]
-            for tile in simple_tiles:
+            for tile in simple_tiles | complex_tiles.keys():
                 if tile not in self.tiles or tile in self.pinned_eg_tiles:
                     continue
                 all_door_links = {}
@@ -356,11 +357,19 @@ def door_customizer_page(
                     # This is a lobby
                     if door["name"] in lobbies:
                         skip_tile = True
-                    # This has an unlinked doot
+                    # This has an unlinked door
                     if door["name"] not in all_door_links and door["name"] not in all_door_links_inverse:
                         skip_tile = True
                     else:
                         linked_doors.append(door["name"])
+                if tile in complex_tiles:
+                    all_paths = set()
+                    for path in complex_tiles[tile]["paths"]:
+                        all_paths = all_paths | path
+                    if (set(linked_doors) in complex_tiles[tile]["paths"]) or (set(linked_doors) == all_paths):
+                        skip_tile = False
+                    else:
+                        skip_tile = True
                 if skip_tile:
                     continue
 
@@ -1532,6 +1541,8 @@ def door_customizer_page(
         if self.experimental_flags["hide_single_route_tiles"]:
             if selected_eg_tile in self.holdover_tiles:
                 return
+        if selected_eg_tile in self.tiles:
+            return
         tile_x = tile_y = 0
         for tile in self.unused_map_tiles:
             if tile not in [
@@ -1664,6 +1675,8 @@ def door_customizer_page(
         if self.experimental_flags["hide_single_route_tiles"]:
             if current_tile in self.holdover_tiles:
                 return
+        if current_tile not in self.tiles:
+            return
         try:
             self.canvas.delete("player")
         except:
