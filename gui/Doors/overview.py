@@ -170,6 +170,10 @@ def door_customizer_page(
 ) -> DoorPage:
     def init_page(self: DoorPage, redraw=False) -> None:
         self.select_state = SelectState.NoneSelected
+
+        if hasattr(self, "canvas") and isinstance(self.canvas, Canvas):
+            self.canvas.destroy()
+
         self.canvas = Canvas(
             self,
             width=self.cwidth + (BORDER_SIZE * 2),
@@ -275,46 +279,17 @@ def door_customizer_page(
         for tile in mandatory_tiles[tab_world]:
             create_eg_tile_data(self, tile)
 
-    # def redraw_canvas(self: DoorPage) -> None:
-    #     # yaml = return_connections(self.door_links, self.lobby_doors, self.special_doors)
-    #     reload_page(self, self.doors, self.lobby_doors, self. redraw=True)
-
-    def load_yaml(self: DoorPage, yaml_doors: dict, yaml_lobbies):
-        for k, v in yaml_doors.items():
-            if type(v) == str:
-                self.doors[k] = v
-                self.doors[v] = k
-            elif type(v) == dict:
-                source = k
-                if "dest" in v:
-                    dest = v["dest"]
-                else:
-                    try:
-                        dest = self.interior_doors_dict[source]
-                    except KeyError:
-                        print("Could not find interior door for " + source)
-                        dest = None
-                if not dest and "type" in v:
-                    self.special_doors[source] = v["type"]
-                    continue
-
-                self.doors[source] = dest  # type: ignore
-                self.doors[dest] = source  # type: ignore
-                if "type" in v:
-                    if "type" == "Trap Door":
-                        self.special_doors[dest] = v["type"]
-                    else:
-                        self.special_doors[source] = v["type"]
-                        self.special_doors[dest] = v["type"]
-                if "one-way" in v:
-                    self.special_doors[dest] = "Trap Door"
-        for k, v in yaml_lobbies.items():
-            self.lobby_doors.append(
-                {
-                    "door": k,
-                    "lobby": v,
-                }
+    def load_yaml(self: DoorPage, yaml_data: dict):
+        self.door_links = yaml_data["door_links"]
+        self.lobby_doors = yaml_data["lobby_doors"]
+        self.special_doors = yaml_data["special_doors"]
+        self.tiles = {
+            tuple([int(x) for x in tile.split("__")]): create_eg_tile_data(
+                self, tuple([int(x) for x in tile.split("__")]), has_been_lit=tile_data, return_tile=True
             )
+            for tile, tile_data in yaml_data["tiles"].items()
+        }
+        redraw_canvas(self)
 
     def clean_canvas(self: DoorPage) -> None:
         for tag in [
@@ -677,10 +652,10 @@ def door_customizer_page(
                     return (col, row)
         raise Exception("No unused tiles left")
 
-    def create_eg_tile_data(self: DoorPage, eg_tile: str, has_been_lit=False) -> None:
-        if eg_tile in self.tiles:
+    def create_eg_tile_data(self: DoorPage, eg_tile: str, has_been_lit=False, return_tile=False) -> None:
+        if eg_tile in self.tiles and not return_tile:
             return
-        self.tiles[eg_tile] = EGTileData(
+        tile_data = EGTileData(
             is_dark=eg_tile in dark_tiles,
             has_been_lit=has_been_lit,
             map_tile=None,
@@ -688,6 +663,10 @@ def door_customizer_page(
             button=None,
             origin=None,
         )
+        if return_tile:
+            return tile_data
+        else:
+            self.tiles[eg_tile] = tile_data
 
     def get_doors_eg_tile(door):
         # Coords are x = left -> right, y = top -> bottom, 0,0 is top left
@@ -1195,6 +1174,8 @@ def door_customizer_page(
     def show_door_icons(self: DoorPage, event):
         door = self.canvas.find_closest(event.x, event.y)
         loc_name = get_loc_by_button(self, door)
+        if loc_name == "":
+            return
         selected_item = doors_sprite_data.show_sprites(self, top, event, tab_world)
         if selected_item in doors_sprite_data.all_dungeon_lobbies or selected_item == "Drop":
             lobby = selected_item
@@ -1383,52 +1364,45 @@ def door_customizer_page(
                 linked_doors.add(data["linked_door"])
         return loc_name in linked_doors
 
-    def return_connections(door_links, lobby_doors, special_doors):
-        final_connections = {"doors": {}, "lobbies": {}, "dungeon": tab_world}
-        special_doors_remaining = special_doors.copy()
+    def return_connections(self: DoorPage):
+        final_connections = {
+            "door_links": self.door_links,
+            "lobby_doors": self.lobby_doors,
+            "tiles": {tile: tile_data["has_been_lit"] for tile, tile_data in self.tiles.items()},
+            "special_doors": self.special_doors,
+        }
+        if self.experimental_flags["hide_single_route_tiles"]:
+            cur_tiles = self.tiles.copy()
+            cur_links = self.door_links.copy()
 
-        for data in door_links:
-            door = data["door"]
-            linked_door = data["linked_door"]
-            if "Drop Entrance" in door or "Drop Entrance" in linked_door:
-                continue
-            final_connections["doors"][door] = linked_door
-            if door in special_doors:
-                door_type = special_doors[door]
-                final_connections["doors"][door] = {
-                    "dest": final_connections["doors"][door],
-                    "type": door_type,
-                }
-                special_doors_remaining.pop(door)
-            # Also checked linked doors
-            elif linked_door in special_doors:
-                door_type = special_doors[linked_door]
-                final_connections["doors"][linked_door] = {
-                    "dest": final_connections["doors"][linked_door],
-                    "type": door_type,
-                }
-                special_doors_remaining.pop(linked_door)
+            for ho_tile, ho_tile_data in self.holdover_tiles.items():
+                cur_tiles[ho_tile] = ho_tile_data
 
-        for lobby_data in lobby_doors:
-            lobby = lobby_data["lobby"]
-            if lobby == "Sanctuary_Mirror":
-                lobby_door = "Sanctuary Mirror Route"
-                final_connections["lobbies"][lobby] = {v: k for k, v in dungeon_worlds.items()}[
-                    tab_world
-                ]  # Add dungeon name instead of door name
-            else:
-                lobby_door = lobby_data["door"]
-                final_connections["lobbies"][lobby] = lobby_door
-                print(f"Added {lobby_door} to {self.dungeon_name} as {lobby}")
-            try:
-                special_doors_remaining.pop(lobby_door)
-            except:
-                print("We should never get here because nobody should link a door to a lobby")
-                pass
+            for ho_door_link in self.holdover_door_links:
+                for i, door_link in enumerate(cur_links):
+                    if (
+                        door_link["door"] == ho_door_link["door"]
+                        or door_link["linked_door"] == ho_door_link["door"]
+                        or door_link["door"] == ho_door_link["linked_door"]
+                        or door_link["linked_door"] == ho_door_link["linked_door"]
+                    ):
+                        del cur_links[i]
+                        break
+            for ho_door_link in self.holdover_door_links:
+                cur_links.append(ho_door_link)
 
-        for door in special_doors_remaining:
-            final_connections["doors"][door] = {"type": special_doors[door]}
+            final_connections["tiles"] = {tile: tile_data["has_been_lit"] for tile, tile_data in cur_tiles.items()}
+            final_connections["door_links"] = cur_links
 
+        final_connections["door_links"] = [
+            {"door": x["door"], "linked_door": x["linked_door"]} for x in final_connections["door_links"]
+        ]
+        final_connections["tiles"] = {
+            "__".join([str(x) for x in tile]): tile_data for tile, tile_data in final_connections["tiles"].items()
+        }
+        final_connections["lobby_doors"] = [
+            {"door": x["door"], "lobby": x["lobby"]} for x in final_connections["lobby_doors"]
+        ]
         return final_connections
 
     def remove_door_link(self: DoorPage, event):
@@ -1736,7 +1710,7 @@ def door_customizer_page(
 
     init_page(self)
 
-    # self.load_yaml = reload_page
+    self.load_yaml = load_yaml
     self.return_connections = return_connections
     self.init_page = init_page
     self.deactivate_tiles = deactivate_tiles

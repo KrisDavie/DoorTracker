@@ -116,45 +116,18 @@ def customizerGUI(mainWindow, args=None):
         with open(file, mode="r") as fh:
             try:
                 yaml_data = yaml.safe_load(fh)
-            except:
-                print("Error loading yaml file. Attempting to load DR spoiler log.")
-                try:
-                    fh.seek(0)
-                    yaml_data = parse_dr_spoiler(fh)
-                except Exception as e:
-                    print(f"Error loading DR spoiler log. {e}")
-                    return
-
-        for dungeon in dungeon_worlds.keys():
-            if dungeon == "Overworld":
-                continue
-            if dungeon == "Underworld":
-                continue
-
-            if "doors" in yaml_data:
-                self.pages[dungeon].content.load_yaml(
-                    self.pages[dungeon].content,
-                    yaml_data["doors"][1]["doors"][dungeon],
-                    yaml_data["doors"][1]["lobbies"][dungeon],
-                )
+            except Exception as e:
+                print(f"Error loading yaml. {e}")
+                return
+            for dungeon, dungeon_data in yaml_data.items():
+                self.pages[dungeon].content.load_yaml(self.pages[dungeon].content, dungeon_data)
 
     def save_yaml(self, save=True):
         yaml_data = {}
 
-        # Save doors
-        yaml_data["doors"] = {1: {"doors": {}, "lobbies": {}}}
-
-        for item_world in self.pages:
-            doors_data = self.pages[item_world].content.return_connections(
-                self.pages[item_world].content.door_links,
-                self.pages[item_world].content.lobby_doors,
-                self.pages[item_world].content.special_doors,
-            )
-            yaml_data["doors"][1]["doors"][item_world] = doors_data["doors"]
-            yaml_data["doors"][1]["lobbies"][item_world] = doors_data["lobbies"]
-
-        if len(yaml_data["doors"][1]) == 0:
-            del yaml_data["doors"]
+        for dungeon in self.pages:
+            doors_data = self.pages[dungeon].content.return_connections(self.pages[dungeon].content)
+            yaml_data[dungeon] = doors_data
 
         if not save:
             if len(yaml_data) == 0:
@@ -165,6 +138,9 @@ def customizerGUI(mainWindow, args=None):
             filetypes=[("Yaml Files", (".yaml", ".yml")), ("All Files", "*")],
             initialdir=os.path.join("."),
         )
+
+        if file == "":
+            return
         with open(file, mode="w") as fh:
             yaml.dump(yaml_data, fh)
 
