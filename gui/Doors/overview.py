@@ -320,6 +320,9 @@ def door_customizer_page(
             for tile in simple_tiles | complex_tiles.keys():
                 if tile not in self.tiles or tile in self.pinned_eg_tiles:
                     continue
+                # Don't do anything with dark tiles that have not been lit
+                if self.tiles[tile]["is_dark"] == True and self.tiles[tile]["has_been_lit"] == False:
+                    continue
                 all_door_links = {}
                 for door_data in self.door_links:
                     all_door_links[door_data["door"]] = door_data["linked_door"]
@@ -491,7 +494,6 @@ def door_customizer_page(
             # I think we can remove this loop - to be testes
             while doors_to_process:
                 next_door = doors_to_process.pop()
-                print(f"Processing {next_door}")
                 processed_doors.add(next_door)
 
                 # We've done all the linked doors from lobbies - do we have any tiles left?

@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 import pickle
 import sys
-from tkinter import Menu, Tk, TOP, BOTH, Toplevel, ttk, filedialog
+from tkinter import BooleanVar, Menu, Tk, TOP, BOTH, Toplevel, ttk, filedialog
 from PIL import Image
 import logging
 import grpc.aio
@@ -147,6 +147,7 @@ def customizerGUI(mainWindow, args=None):
     self.notebook = ttk.Notebook(self)
 
     def hide_dont_close(self):
+        self.notebook.setvar("selected_eg_tile", BooleanVar(value=False))
         self.eg_tile_window.grab_release()
         self.eg_tile_window.withdraw()
 
