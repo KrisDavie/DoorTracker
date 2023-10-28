@@ -1,3 +1,4 @@
+import math
 from tkinter import BOTH, BooleanVar, Toplevel, ttk, NW, Canvas
 from typing import List, Tuple, TypedDict, Union, Callable
 import typing
@@ -212,6 +213,7 @@ def door_customizer_page(
         self.tiles = {}
         self.experimental_flags = top.experimental_flags
         self.pinned_eg_tiles = set()
+        self.prefer_fill_map = False
 
         self.holdover_tiles = {}
         self.holdover_door_links = []
@@ -313,7 +315,7 @@ def door_customizer_page(
         door_links_to_make = set()
         doors_to_process: deque = deque()
         regions_processed = set()
-        self.map_dims = (16, 16)
+        # self.map_dims = (16, 16)
 
         if self.experimental_flags["hide_single_route_tiles"]:
             lobbies = [x["door"] for x in self.lobby_doors]
@@ -555,65 +557,64 @@ def door_customizer_page(
 
                 # TODO: If (prefer_fill_map and map_usage <= 80%) then: find_closest_unused_tile_by_physical_distance() and use that
 
-                # map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
-                # num_placed_tiles = len([x for x in self.tiles.values() if x["map_tile"] != None])
-                # map_usage = (num_placed_tiles / (map_dims[0] * map_dims[1])) * 100
-                # prefer_fill_map = True
-                # if prefer_fill_map and map_usage <= 80:
-                #     current_unused_tiles = []
-                #     for i in range(map_dims[0]):
-                #         for j in range(map_dims[1]):
-                #             if not get_tile_data_by_map_tile(self.tiles, (i, j)):
-                #                 current_unused_tiles.append((i + x_offset, j + y_offset))
-                #     dists = [
-                #         math.sqrt((tile[0] - new_tile_x) ** 2 + (tile[1] - new_tile_y) ** 2)
-                #         for tile in current_unused_tiles
-                #     ]
-                #     closest_idx = dists.index(min(dists))
-                #     closest_tile = current_unused_tiles[closest_idx]
-                #     while get_tile_data_by_map_tile(self.tiles, closest_tile):
-                #         del current_unused_tiles[closest_idx]
-                #         closest_idx = dists.index(min(dists))
-                #         closest_tile = current_unused_tiles[closest_idx]
-                #     new_tile_x, new_tile_y = closest_tile
+                map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
+                num_placed_tiles = len([x for x in self.tiles.values() if x["map_tile"] != None])
+                map_usage = (num_placed_tiles / (map_dims[0] * map_dims[1])) * 100
+                if self.prefer_fill_map and map_usage <= 80:
+                    self.map_dims = map_dims
+                    y_offset += (self.map_dims[0] - len_y) // 2
+                    x_offset += (self.map_dims[1] - len_x) // 2
+                    self.y_offset = y_offset
+                    self.x_offset = x_offset
 
-                # else:
-                # Complicated way of finding the nearest tile that isn't already used while respecting directionality
-                print(f"Placing {door_eg_tile} ({next_door}), starting at ({new_tile_x}, {new_tile_y})")
-                while get_tile_data_by_map_tile(self.tiles, (new_tile_x, new_tile_y)):
-                    if (direction == "We" and last_cardinal == 0) or (
-                        ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
-                        and last_cardinal == -1
-                    ):
-                        new_tile_x += 1
-                        print(f"Moving right to ({new_tile_x}, {new_tile_y})")
-                    elif (direction == "Ea" and last_cardinal == 0) or (
-                        ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
-                        and last_cardinal == 1
-                    ):
-                        new_tile_x -= 1
-                        print(f"Moving left to ({new_tile_x}, {new_tile_y})")
-                    elif ((direction == "No" or direction == "Up") and last_cardinal == 0) or (
-                        (direction == "We" or direction == "Ea") and last_cardinal == -1
-                    ):
-                        new_tile_y += 1
-                        print(f"Moving down to ({new_tile_x}, {new_tile_y})")
-                    elif ((direction == "So" or direction == "Dn") and last_cardinal == 0) or (
-                        (direction == "We" or direction == "Ea") and last_cardinal == 1
-                    ):
-                        new_tile_y -= 1
-                        print(f"Moving up to ({new_tile_x}, {new_tile_y})")
-                    if last_cardinal == 0:
-                        last_cardinal = -1
-                    elif last_cardinal == -1:
-                        last_cardinal = 1
-                    elif last_cardinal == 1:
-                        last_cardinal = 0
+                    current_unused_tiles = []
+                    for y in range(map_dims[0]):
+                        for x in range(map_dims[1]):
+                            if not get_tile_data_by_map_tile(self.tiles, (x, y)):
+                                current_unused_tiles.append((x + x_offset, y + y_offset))
+                    dists = [
+                        math.sqrt((tile[0] - new_tile_x) ** 2 + (tile[1] - new_tile_y) ** 2)
+                        for tile in current_unused_tiles
+                    ]
+                    closest_idx = dists.index(min(dists))
+                    closest_tile = current_unused_tiles[closest_idx]
+                    while get_tile_data_by_map_tile(self.tiles, closest_tile):
+                        del current_unused_tiles[closest_idx]
+                        closest_idx = dists.index(min(dists))
+                        closest_tile = current_unused_tiles[closest_idx]
+                    new_tile_x, new_tile_y = closest_tile
+
+                else:
+                    # Complicated way of finding the nearest tile that isn't already used while respecting directionality
+                    while get_tile_data_by_map_tile(self.tiles, (new_tile_x, new_tile_y)):
+                        if (direction == "We" and last_cardinal == 0) or (
+                            ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
+                            and last_cardinal == -1
+                        ):
+                            new_tile_x += 1
+                        elif (direction == "Ea" and last_cardinal == 0) or (
+                            ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
+                            and last_cardinal == 1
+                        ):
+                            new_tile_x -= 1
+                        elif ((direction == "No" or direction == "Up") and last_cardinal == 0) or (
+                            (direction == "We" or direction == "Ea") and last_cardinal == -1
+                        ):
+                            new_tile_y += 1
+                        elif ((direction == "So" or direction == "Dn") and last_cardinal == 0) or (
+                            (direction == "We" or direction == "Ea") and last_cardinal == 1
+                        ):
+                            new_tile_y -= 1
+                        if last_cardinal == 0:
+                            last_cardinal = -1
+                        elif last_cardinal == -1:
+                            last_cardinal = 1
+                        elif last_cardinal == 1:
+                            last_cardinal = 0
 
                 if door_eg_tile in self.tiles:
                     self.tiles[door_eg_tile]["map_tile"] = (new_tile_x, new_tile_y)
                 else:
-                    print('Adding new EG tile to "tiles"')
                     create_eg_tile_data(
                         self,
                         door_eg_tile,
@@ -879,9 +880,6 @@ def door_customizer_page(
     def draw_empty_map(self: DoorPage):
         for row in range(self.map_dims[0]):
             for col in range(self.map_dims[1]):
-                if get_tile_data_by_map_tile(self.tiles, (col - self.x_offset, row - self.y_offset)):
-                    continue
-
                 x1 = (
                     (col * self.tile_size)
                     + BORDER_SIZE
@@ -889,6 +887,12 @@ def door_customizer_page(
                     + self.x_center_align
                 )
                 y1 = (row * self.tile_size) + BORDER_SIZE + (((2 * row + 1) - 1) * TILE_BORDER_SIZE)
+                # if get_tile_data_by_map_tile(self.tiles, (col - self.x_offset, row - self.y_offset)):
+                #     self.canvas.create_text(
+                #         x1 + self.tile_size / 2, y1 + self.tile_size / 2, text=f"{row}, {col}", fill="white"
+                #     )
+                #     continue
+
                 tile = self.canvas.create_rectangle(
                     x1,
                     y1,
@@ -899,6 +903,10 @@ def door_customizer_page(
                     activefill=f"#BBB",
                     tags=["background_select"],
                 )
+                # self.canvas.create_text(
+                #     x1 + self.tile_size / 2, y1 + self.tile_size / 2, text=f"{row}, {col}", fill="white"
+                # )
+
                 # _ = self.canvas.create_text(
                 #     x1 + self.tile_size / 2,
                 #     y1 + self.tile_size / 2,
@@ -962,19 +970,19 @@ def door_customizer_page(
         # x is columns, y is rows
         icon_queue = []
 
-        map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
-        self.map_dims = map_dims
-
-        y_offset += (self.map_dims[0] - len_y) // 2
-        x_offset += (self.map_dims[1] - len_x) // 2
-        self.y_offset = y_offset
-        self.x_offset = x_offset
+        if not self.prefer_fill_map:
+            map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
+            self.map_dims = map_dims
+            y_offset += (self.map_dims[0] - len_y) // 2
+            x_offset += (self.map_dims[1] - len_x) // 2
+            self.y_offset = y_offset
+            self.x_offset = x_offset
 
         self.tile_size = min((self.cwidth // (self.map_dims[1])), (self.cheight // (self.map_dims[0]))) - (
             TILE_BORDER_SIZE * 2
         )
         # recorrect x_offset to center map with unsual aspect ratios
-        total_tile_width = (self.tile_size + (TILE_BORDER_SIZE * 2)) * self.map_dims[1] + x_offset
+        total_tile_width = (self.tile_size + (TILE_BORDER_SIZE * 2)) * self.map_dims[1] + self.x_offset
         if total_tile_width < self.cwidth:
             self.x_center_align += (self.cwidth - total_tile_width) // 2
 
@@ -997,8 +1005,8 @@ def door_customizer_page(
             if eg_x == None or eg_y == None:
                 continue
 
-            tile_x += x_offset
-            tile_y += y_offset
+            tile_x += self.x_offset
+            tile_y += self.y_offset
             add_eg_tile_img(self, eg_x, eg_y, tile_x, tile_y)
 
         for door, data in doors_data.items():
@@ -1017,7 +1025,7 @@ def door_customizer_page(
 
             _data = create_door_dict(door)
 
-            x1, y1 = get_final_door_coords(self, _data, "source", x_offset, y_offset)
+            x1, y1 = get_final_door_coords(self, _data, "source", self.x_offset, self.y_offset)
             if door in self.special_doors:
                 if "Drop" in door:
                     icon_queue.append(("Drop", x1, y1, door))
@@ -1053,8 +1061,8 @@ def door_customizer_page(
         doors_linked = set()
         link_colours = distinct_colours(len(self.door_links))
         for n, door_link in enumerate(self.door_links):
-            x1, y1 = get_final_door_coords(self, door_link, "source", x_offset, y_offset)
-            x2, y2 = get_final_door_coords(self, door_link, "linked", x_offset, y_offset)
+            x1, y1 = get_final_door_coords(self, door_link, "source", self.x_offset, self.y_offset)
+            x2, y2 = get_final_door_coords(self, door_link, "linked", self.x_offset, self.y_offset)
             self.door_links[n]["button"] = self.canvas.create_line(
                 x1,
                 y1,
@@ -1106,7 +1114,7 @@ def door_customizer_page(
                 )
 
         for n, lobby in enumerate(self.lobby_doors):
-            x1, y1 = get_final_door_coords(self, lobby, "source", x_offset, y_offset)
+            x1, y1 = get_final_door_coords(self, lobby, "source", self.x_offset, self.y_offset)
             if "Drop" in lobby["lobby"]:
                 lobby_icon = "Drop"
             else:
