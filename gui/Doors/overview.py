@@ -213,7 +213,6 @@ def door_customizer_page(
         self.tiles = {}
         self.experimental_flags = top.experimental_flags
         self.pinned_eg_tiles = set()
-        self.prefer_fill_map = False
 
         self.holdover_tiles = {}
         self.holdover_door_links = []
@@ -560,7 +559,7 @@ def door_customizer_page(
                 map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
                 num_placed_tiles = len([x for x in self.tiles.values() if x["map_tile"] != None])
                 map_usage = (num_placed_tiles / (map_dims[0] * map_dims[1])) * 100
-                if self.prefer_fill_map and map_usage <= 80:
+                if self.experimental_flags["prefer_fill_map"] and map_usage <= 80:
                     self.map_dims = map_dims
                     y_offset += (self.map_dims[0] - len_y) // 2
                     x_offset += (self.map_dims[1] - len_x) // 2
@@ -791,6 +790,7 @@ def door_customizer_page(
         y: int,
         tile_x: int,
         tile_y: int,
+        debug_coords=False,
         ci_kwargs={},
     ):
         x1 = (tile_x * self.tile_size) + BORDER_SIZE + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE) + self.x_center_align
@@ -825,6 +825,14 @@ def door_customizer_page(
                 outline="",
             )
         map = self.canvas.create_image(x1, y1, image=img, anchor=NW, tags=["tile_image"], **ci_kwargs)
+        if debug_coords:
+            self.canvas.create_text(
+                x1 + self.tile_size // 2,
+                y1 + self.tile_size // 2,
+                text=f"{x}, {y}",
+                fill="white",
+                font=("TkDefaultFont", 8),
+            )
         # TODO: Add the doors for a hidden tile and the code to unhide it. Tags should probably include tileid
         if self.tiles[(x, y)]["is_dark"] and not self.tiles[(x, y)]["has_been_lit"]:
             rect = self.canvas.create_rectangle(
@@ -970,7 +978,7 @@ def door_customizer_page(
         # x is columns, y is rows
         icon_queue = []
 
-        if not self.prefer_fill_map:
+        if not self.experimental_flags["prefer_fill_map"]:
             map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
             self.map_dims = map_dims
             y_offset += (self.map_dims[0] - len_y) // 2

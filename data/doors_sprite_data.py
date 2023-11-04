@@ -90,6 +90,7 @@ item_table = {
     "Key Door": (0, 3),
     "Big Key Door": (0, 4),
     "Trap Door": (0, 5),
+    "Master Sword": (0, 6),
     "Bow": (0, 7),
     "Fire Rod": (0, 8),
     "Boomerang": (1, 7),
@@ -104,6 +105,9 @@ item_table = {
     "Skull": (1, 5),
     "Checkmark": (2, 5),
     "Crossmark": (3, 5),
+    "Blue Peg": (4, 5),
+    "Orange Peg": (5, 5),
+    "Peg Switch": (6, 5),
     "Sanctuary_Mirror": (8, 5),
     "Drop": (7, 5),
 }

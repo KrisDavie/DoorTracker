@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import math
 from pathlib import Path
-import pickle
 import sys
 from tkinter import BooleanVar, Menu, Tk, TOP, BOTH, Toplevel, ttk, filedialog
 from PIL import Image
@@ -14,6 +13,7 @@ from gui.Doors.overview import door_customizer_page
 from SpoilerToYaml import parse_dr_spoiler
 from data.worlds_data import dungeon_worlds
 from data.doors_data import eg_tile_multiuse, door_coordinates, dark_tiles, doors_data
+from data.vanilla_data import vanilla_layout_optimized, vanilla_layout_original
 
 import os
 import yaml
@@ -88,26 +88,6 @@ def customizerGUI(mainWindow, args=None):
     self = mainWindow
     self.args = args
 
-    def _save_vanilla(self):
-        data = {}
-        # Tile map, tile_size, map_dims
-        for dungeon in dungeon_worlds.keys():
-            if dungeon in ["Overworld", "Underworld"]:
-                continue
-            data[dungeon] = {
-                "tiles": {
-                    k: {"map_tile": v["map_tile"]}
-                    for k, v in self.pages[dungeon].content.tiles.items()
-                    if "map_tile" in v
-                },
-                "tile_size": self.pages[dungeon].content.tile_size,
-                "map_dims": self.pages[dungeon].content.map_dims,
-                "x_offset": self.pages[dungeon].content.x_offset,
-                "y_offset": self.pages[dungeon].content.y_offset,
-            }
-        with open("vanilla_layout.pickle", "wb") as f:
-            pickle.dump(data, f, pickle.HIGHEST_PROTOCOL)
-
     def load_yaml(self):
         file = filedialog.askopenfilename(
             filetypes=[("Yaml Files", (".yaml", ".yml")), ("All Files", "*")],
@@ -167,15 +147,71 @@ def customizerGUI(mainWindow, args=None):
     self.eg_tile_window.notebook = ttk.Notebook(self.eg_tile_window)  # type: ignore
     self.eg_tile_window.pages = {}  # type: ignore
     self.show_all_doors = False
-    with open(Path(__file__).parent / "data" / "vanilla_layout.pickle", "rb") as f:
-        vanilla_layout = pickle.load(f)
 
     self.eg_tile_multiuse = eg_tile_multiuse.copy()
     self.disabled_eg_tiles = {}
 
     self.experimental_flags = {
         "hide_single_route_tiles": False,
+        "prefer_fill_map": False,
     }
+
+    def create_vanilla_window(layout_name: str):
+        if layout_name == "Optimized":
+            layout = vanilla_layout_optimized
+        elif layout_name == "Original":
+            layout = vanilla_layout_original
+            if "Other Lobby Tiles" in self.eg_tile_window.pages:
+                try:
+                    self.eg_tile_window.notebook.forget(
+                        list(self.eg_tile_window.pages.keys()).index("Other Lobby Tiles")
+                    )
+                    del self.eg_tile_window.pages["Other Lobby Tiles"]
+                except Exception:
+                    pass
+        else:
+            return
+        for dungeon, world in dungeon_worlds.items():
+            if dungeon == "Overworld":
+                continue
+            if dungeon == "Underworld":
+                continue
+            if dungeon in self.eg_tile_window.pages:
+                self.eg_tile_window.notebook.forget(list(self.eg_tile_window.pages.keys()).index(dungeon))
+                del self.eg_tile_window.pages[dungeon]
+            self.eg_tile_window.pages[dungeon] = ttk.Frame(self.eg_tile_window.notebook)  # type: ignore
+            self.eg_tile_window.notebook.add(  # type: ignore
+                self.eg_tile_window.pages[dungeon], text=dungeon.replace("_", " ")  # type: ignore
+            )
+            self.eg_tile_window.pages[dungeon].content = door_customizer_page(  # type: ignore
+                self,
+                self.eg_tile_window.pages[dungeon],  # type: ignore
+                world,
+                eg_img=eg_img,
+                eg_selection_mode=True,
+                vanilla_data=layout[dungeon],
+                plando_window=self.notebook,  # type: ignore
+                cdims=window_size,
+            )
+            self.eg_tile_window.pages[dungeon].content.pack(side=TOP, fill=BOTH, expand=True)  # type: ignore
+            self.eg_tile_window.notebook.pack()  # type: ignore
+        if layout_name == "Optimized":
+            self.eg_tile_window.pages["Other Lobby Tiles"] = ttk.Frame(self.eg_tile_window.notebook)  # type: ignore
+            self.eg_tile_window.notebook.add(  # type: ignore
+                self.eg_tile_window.pages["Other Lobby Tiles"], text="Other Lobby Tiles"  # type: ignore
+            )
+            self.eg_tile_window.pages["Other Lobby Tiles"].content = door_customizer_page(  # type: ignore
+                self,
+                self.eg_tile_window.pages["Other Lobby Tiles"],  # type: ignore
+                world,
+                eg_img=eg_img,
+                eg_selection_mode=True,
+                vanilla_data=layout["Lobbyable_Tiles"],
+                plando_window=self.notebook,  # type: ignore
+                cdims=window_size,
+            )
+            self.eg_tile_window.pages["Other Lobby Tiles"].content.pack(side=TOP, fill=BOTH, expand=True)  # type: ignore
+            self.eg_tile_window.notebook.pack()  # type: ignore
 
     for dungeon, world in dungeon_worlds.items():
         if dungeon == "Overworld":
@@ -196,24 +232,7 @@ def customizerGUI(mainWindow, args=None):
         )
         self.pages[dungeon].content.pack(side=TOP, fill=BOTH, expand=True)  # type: ignore
 
-        self.eg_tile_window.pages[dungeon] = ttk.Frame(self.eg_tile_window.notebook)  # type: ignore
-        self.eg_tile_window.notebook.add(  # type: ignore
-            self.eg_tile_window.pages[dungeon], text=dungeon.replace("_", " ")  # type: ignore
-        )
-        self.eg_tile_window.pages[dungeon].content = door_customizer_page(  # type: ignore
-            self,
-            self.eg_tile_window.pages[dungeon],  # type: ignore
-            world,
-            eg_img=eg_img,
-            eg_selection_mode=True,
-            vanilla_data=vanilla_layout[dungeon],
-            plando_window=self.notebook,  # type: ignore
-            cdims=window_size,
-        )
-        self.eg_tile_window.pages[dungeon].content.pack(side=TOP, fill=BOTH, expand=True)  # type: ignore
-
     self.notebook.pack()  # type: ignore
-    self.eg_tile_window.notebook.pack()  # type: ignore
 
     menu = Menu(self)
     self.config(menu=menu)
@@ -247,10 +266,25 @@ def customizerGUI(mainWindow, args=None):
         sizeMenu.add_radiobutton(label=size.capitalize(), command=lambda size=size: set_size(self, size))
     sizeMenu.invoke(1)
 
+    vanillaLayoutMenu = Menu(viewMenu, tearoff="off")  # type: ignore
+    viewMenu.add_cascade(label="Vanilla Layout", menu=vanillaLayoutMenu)
+    vanillaLayoutMenu.add_radiobutton(
+        label="Optimized",
+        command=lambda: create_vanilla_window("Optimized"),
+    )
+    vanillaLayoutMenu.add_radiobutton(
+        label="Original",
+        command=lambda: create_vanilla_window("Original"),
+    )
+    vanillaLayoutMenu.invoke(0)
+
     experimentalMenu = Menu(viewMenu, tearoff="off")  # type: ignore
     menu.add_cascade(label="Experimental", menu=experimentalMenu)
     experimentalMenu.add_checkbutton(
         label="Hide Single Route Tiles", command=lambda: set_experimental_flag(self, "hide_single_route_tiles")
+    )
+    experimentalMenu.add_checkbutton(
+        label="Fill Map to 80%", command=lambda: set_experimental_flag(self, "prefer_fill_map")
     )
 
     self.eg_tile_window.withdraw()
