@@ -2,7 +2,7 @@
 
 ## **Under the [current standard racing ruleset](http://alttp.mymm1.com/wiki/ALTTPR_Racing_Ruleset), auto-tracking using this tracker is illegal to use while racing**
 
-**This tracker is currently very experimental and may not work as expected. Documentation is also lacking**
+A getting started document, including screenshots, controls nd more technical details can be found [here](https://docs.google.com/document/d/1fN7ge8Tu9MSFbcTuvMs_V3Tb8xwC9ftmlpK6ZS5yaco/edit?usp=sharing), I will attempt to keep this up to date.
 
 This tracker will auto-track dungeon layouts from the Doors branch of ALttPR using SNI.
 
@@ -22,7 +22,7 @@ Right click a door to place an annotation or lobby on that door. Lobbies are the
 
 Add new tiles by clicking an empty grey square. Ctrl-Right click to remove a tile.
 
-~~You can save the current state of the tracker with File -> Save Tracker Data. This will save the current layout and the current annotations. You can load a saved layout File -> Load Tracker Data and selecting a file.~~
+You can save the current state of the tracker with File -> Save Tracker Data. This will save the current layout and the current annotations. You can load a saved layout File -> Load Tracker Data and selecting a file.
 
 The size and aspect ratio of the tracker can be modified under the view menu.
 
@@ -30,7 +30,7 @@ The size and aspect ratio of the tracker can be modified under the view menu.
 
 ### Windows users
 
-Download the latest release from the releases page. Run the `DoorsTracker.exe` file.
+Download the latest release from the releases page. Run the `DoorsTracker_vx.x.x.exe` file.
 
 ### Other users
 
@@ -76,5 +76,6 @@ If you are running from source, you will need the following dependencies:
 
 ## Known Issues
 
-- Save and load is currently broken
-- Multiple different dark rooms in the same dungeon will be obscured separately, providing the player with a little extra information
+- When autotracking, multiple different dark rooms in the same dungeon will be obscured separately, providing the player with a little extra information
+- Certain supertiles with many connections (Mire lobby, Mire Big chest Supertile) or long transition edges (Desert Main, TT Lobbies) can have issues tracking. This usually results in a wrong connection, or a missed connection.
+
