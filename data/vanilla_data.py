@@ -256,7 +256,7 @@ vanilla_layout_optimized = {
             (2, 0): {"map_tile": (-1, -1)},
             (11, 3): {"map_tile": (-1, 0)},
             (11, 1): {"map_tile": (-1, 1)},
-            (10, 3): {"map_tile": (0, -1)},
+            (3, 10): {"map_tile": (0, -1)},
             (5, 11): {"map_tile": (0, 0)},
             (11, 5): {"map_tile": (0, 1)},
             (13, 5): {"map_tile": (1, -1)},

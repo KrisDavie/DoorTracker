@@ -39,9 +39,9 @@ MAIN_X_PAD = 40
 MAIN_Y_PAD = 120
 
 
-def reconnect(mainWindow, forced=False):
+def reconnect(mainWindow, forced=False, device=None):
     kill_sni_tracking(mainWindow)
-    mainWindow.sni_task = start_sni_tracking(mainWindow, mainWindow.args, forced_autotrack=forced)
+    mainWindow.sni_task = start_sni_tracking(mainWindow, mainWindow.args, forced_autotrack=forced, device=device)
 
 
 def race_rom_warning(self):
@@ -59,7 +59,7 @@ def race_rom_warning(self):
 
     def force_autotracking():
         self.autotracking_forced = True
-        reconnect(mainWindow, forced=True)
+        reconnect(mainWindow, forced=True, device=mainWindow.device)
         top.destroy()
 
     ttk.Label(
@@ -249,6 +249,12 @@ def customizerGUI(mainWindow, args=None):
     fileMenu.add_separator()
     fileMenu.add_command(label="Stop Auto-tracking", command=lambda: kill_sni_tracking(self))
     fileMenu.add_command(label="Reconnect to SNI", command=lambda: reconnect(self))
+    devicesMenu = Menu(fileMenu, tearoff="off")  # type: ignore
+    fileMenu.add_cascade(label="Devices", menu=devicesMenu)
+    devicesMenu.add_radiobutton(label="No Devices...")
+    devicesMenu.entryconfig("No Devices...", state="disabled")
+    mainWindow.devicesMenu = devicesMenu
+
     fileMenu.add_separator()
     fileMenu.add_command(label="Reset Tracker", command=lambda: reset_tracker(self))
     fileMenu.add_separator()
@@ -473,16 +479,31 @@ def highlight_dungeon_name(mainWindow, dungeon_name):
     doors_nb.tab(dungeon_page, underline=0)
 
 
-async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool = False):
+async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool = False, device: str = None):
     port = args.port
     debug = args.debug
     channel = grpc.aio.insecure_channel(f"localhost:{port}")
     stub = sni.DevicesStub(channel)
-    response = await stub.ListDevices(sni_pb2.DevicesRequest(kinds=""))
+    while True:
+        response = await stub.ListDevices(sni_pb2.DevicesRequest(kinds=""))
+        if len(response.devices) > 0:
+            break
+        else:
+            mainWindow.wm_title(f"Jank Door Tracker - Waiting for devices...")
+            await asyncio.sleep(1)
+    mainWindow.devicesMenu.delete(0, "end")
+    for _device in response.devices:
+        mainWindow.devicesMenu.add_radiobutton(
+            label=_device.uri, command=lambda device=_device.uri: reconnect(mainWindow, device=device)
+        )
+
+    if device and device in [x.uri for x in response.devices]:
+        dev_uri = device
+    else:
+        dev_uri = response.devices[0].uri
+    mainWindow.device = dev_uri
     if debug:
         print("Found device: " + response.devices[0].uri)
-    dev_uri = response.devices[0].uri
-    # dev_addrspace = response.devices[0].defaultAddressSpace
     dev_addrspace = 0
     mem_stub = sni.DeviceMemoryStub(channel)
     mem_mapping = await mem_stub.MappingDetect(sni_pb2.DetectMemoryMappingRequest(uri=dev_uri))
@@ -708,8 +729,8 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
         #     await asyncio.sleep(1)
 
 
-def start_sni_tracking(mainWindow, args, forced_autotrack=False):
-    sn_probe = asyncio.ensure_future(sni_probe(mainWindow, args=args, forced_autotrack=forced_autotrack))
+def start_sni_tracking(mainWindow, args, forced_autotrack=False, device=None):
+    sn_probe = asyncio.ensure_future(sni_probe(mainWindow, args=args, forced_autotrack=forced_autotrack, device=device))
     return sn_probe
 
 
