@@ -386,9 +386,7 @@ def set_size(self, size):
     sc_width = mainWindow.winfo_screenwidth()
     sc_height = mainWindow.winfo_screenheight()
     for world in self.pages:
-        self.pages[world].content.cheight = new_height
-        self.pages[world].content.cwidth = new_width
-        self.pages[world].content.redraw_canvas(self.pages[world].content)
+        self.pages[world].content.update_size(self.pages[world].content, (new_width, new_height))
     self.geometry(
         f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}"
     )

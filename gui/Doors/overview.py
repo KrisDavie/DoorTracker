@@ -280,6 +280,31 @@ def door_customizer_page(
         for tile in mandatory_tiles[tab_world]:
             create_eg_tile_data(self, tile)
 
+    def update_size(self: DoorPage, size: tuple[int, int]) -> None:
+        self.cwidth = size[0]
+        self.cheight = size[1]
+        self.canvas.destroy()
+        self.canvas = Canvas(
+            self,
+            width=self.cwidth + (BORDER_SIZE * 2),
+            height=self.cheight + (BORDER_SIZE * 2),
+            background="white",
+        )
+        self.canvas.pack()
+
+        # Draw dungeon name on the map
+        dungeon_name = [k for k, v in dungeon_worlds.items() if v == tab_world][0]
+
+        self.canvas.create_text(
+            ((self.cwidth + (BORDER_SIZE * 2)) // 2),
+            12,
+            text=dungeon_name.replace("_", " "),
+            anchor="center",
+            font=("TkDefaultFont", 12, "bold"),
+            tags=["dungeon_name"],
+        )
+        redraw_canvas(self)
+
     def load_yaml(self: DoorPage, yaml_data: dict):
         self.door_links = yaml_data["door_links"]
         self.lobby_doors = yaml_data["lobby_doors"]
@@ -1761,6 +1786,7 @@ def door_customizer_page(
     self.auto_add_door_link = auto_add_door_link
     self.auto_add_lobby = auto_add_lobby
     self.auto_add_lamp_icon = auto_add_lamp_icon
+    self.update_size = update_size
 
     #  If we're in eg selection mode, we need to use the special function to only draw tiles and not connections
     if self.eg_selection_mode:
