@@ -1,5 +1,5 @@
 import math
-from tkinter import BOTH, BooleanVar, Toplevel, ttk, NW, Canvas
+from tkinter import BOTH, FIRST, LAST, BooleanVar, Toplevel, ttk, NW, Canvas
 from typing import List, Tuple, TypedDict, Union, Callable
 import typing
 from PIL import ImageTk, Image, ImageOps, ImageColor
@@ -315,6 +315,7 @@ def door_customizer_page(
         doors_to_process: deque = deque()
         regions_processed = set()
         # self.map_dims = (16, 16)
+        len_x, len_y = self.aspect_ratio
 
         if self.experimental_flags["hide_single_route_tiles"]:
             lobbies = [x["door"] for x in self.lobby_doors]
@@ -327,7 +328,9 @@ def door_customizer_page(
                 all_door_links = {}
                 for door_data in self.door_links:
                     all_door_links[door_data["door"]] = door_data["linked_door"]
-                all_door_links_inverse = {v: k for k, v in all_door_links.items()}
+                all_door_links_inverse = (
+                    {v: k for k, v in all_door_links.items()} if not self.experimental_flags["decoupled_doors"] else {}
+                )
                 skip_tile = False
                 linked_doors = []
                 for door in door_coordinates[tile]:
@@ -520,16 +523,26 @@ def door_customizer_page(
 
                 # Find the door that this door is linked to
                 linked_door = None
+                if self.experimental_flags["decoupled_doors"]:
+                    decoupled_linked_doors = []
                 for d in [self.doors, {v: k for k, v in self.doors.items()}]:
                     if next_door in d:
                         linked_door = d[next_door]
                         if linked_door not in doors_processed and linked_door not in regions_to_doors:
                             doors_to_process.append(linked_door)
+                        if self.experimental_flags["decoupled_doors"]:
+                            decoupled_linked_doors.append(linked_door)
+
+                if self.experimental_flags["decoupled_doors"]:
+                    if len(decoupled_linked_doors) == 0:
+                        linked_door = None
+                    else:
+                        linked_door = decoupled_linked_doors[0]
 
                 linked_door_x, linked_door_y = get_doors_eg_tile(linked_door)
 
                 # (Is this a door) or (have we already added the tile)?
-                if door_eg_tile == (None, None) or (
+                if (door_eg_tile == (None, None) and not self.experimental_flags["decoupled_doors"]) or (
                     door_eg_tile in self.tiles and self.tiles[door_eg_tile]["map_tile"] != None
                 ):
                     current_lobby_doors = [x["door"] for x in self.lobby_doors]
@@ -548,27 +561,37 @@ def door_customizer_page(
                 else:
                     new_tile_x = new_tile_y = 0
 
-                direction = doors_data[next_door][1]
+                try:
+                    direction = doors_data[next_door][1]
+                except KeyError:
+                    continue
                 last_cardinal = 0
 
                 if door_eg_tile == (None, None):
                     continue
 
                 # TODO: If (prefer_fill_map and map_usage <= 80%) then: find_closest_unused_tile_by_physical_distance() and use that
+                if (
+                    not hasattr(self, "map_dims")
+                    or not hasattr(self, "x_offset")
+                    or not hasattr(self, "y_offset")
+                    or not len_x
+                    or not len_y
+                ):
+                    self.map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
 
-                map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
                 num_placed_tiles = len([x for x in self.tiles.values() if x["map_tile"] != None])
-                map_usage = (num_placed_tiles / (map_dims[0] * map_dims[1])) * 100
+                map_usage = (num_placed_tiles / (self.map_dims[0] * self.map_dims[1])) * 100
                 if self.experimental_flags["prefer_fill_map"] and map_usage <= 80:
-                    self.map_dims = map_dims
+                    _, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
                     y_offset += (self.map_dims[0] - len_y) // 2
                     x_offset += (self.map_dims[1] - len_x) // 2
                     self.y_offset = y_offset
                     self.x_offset = x_offset
 
                     current_unused_tiles = []
-                    for y in range(map_dims[0]):
-                        for x in range(map_dims[1]):
+                    for y in range(self.map_dims[0]):
+                        for x in range(self.map_dims[1]):
                             if not get_tile_data_by_map_tile(self.tiles, (x, y)):
                                 current_unused_tiles.append((x + x_offset, y + y_offset))
                     dists = [
@@ -585,6 +608,8 @@ def door_customizer_page(
 
                 else:
                     # Complicated way of finding the nearest tile that isn't already used while respecting directionality
+                    self.map_dims, x_offset, y_offset, len_x, len_y = calculate_map_dims(self)
+
                     while get_tile_data_by_map_tile(self.tiles, (new_tile_x, new_tile_y)):
                         if (direction == "We" and last_cardinal == 0) or (
                             ((direction == "No" or direction == "Up") or (direction == "So" or direction == "Dn"))
@@ -630,12 +655,21 @@ def door_customizer_page(
 
         for door in door_links_to_make:
             try:
-                linked_door = self.doors[door] if door in self.doors else {v: k for k, v in self.doors.items()}[door]
-                if linked_door in links_made or door in links_made:
-                    continue
+                if not self.experimental_flags["decoupled_doors"]:
+                    linked_door = (
+                        self.doors[door] if door in self.doors else {v: k for k, v in self.doors.items()}[door]
+                    )
+                    if linked_door in links_made or door in links_made or linked_door == None:
+                        continue
+                else:
+                    linked_door = self.doors[door] if door in self.doors else None
+                    if door in links_made or linked_door == None:
+                        continue
+
                 add_door_link(self, door, linked_door)
                 links_made.add(door)
-                links_made.add(linked_door)
+                if not self.experimental_flags["decoupled_doors"]:
+                    links_made.add(linked_door)
             except KeyError:
                 # Couldn't make link for {door}, possibly a lobby or unlinked
                 pass
@@ -648,11 +682,16 @@ def door_customizer_page(
         draw_map(self)
 
     def find_first_unused_tile():
-        for row in range(self.map_dims[0]):
-            for col in range(self.map_dims[1]):
-                if not get_tile_data_by_map_tile(self.tiles, (col, row)):
-                    return (col, row)
-        raise Exception("No unused tiles left")
+        # Sort unused tiles by distance from 0,0
+        # Return the first one
+        sorted_unused_tiles = sorted(
+            self.unused_map_tiles,
+            key=lambda x: math.sqrt((x[0] - 0) ** 2 + (x[1] - 0) ** 2),
+        )
+        if sorted_unused_tiles:
+            return sorted_unused_tiles[0]
+        else:
+            return None
 
     def create_eg_tile_data(self: DoorPage, eg_tile: str, has_been_lit=False, return_tile=False) -> None:
         if eg_tile in self.tiles and not return_tile:
@@ -793,6 +832,8 @@ def door_customizer_page(
         debug_coords=False,
         ci_kwargs={},
     ):
+        if (tile_x, tile_y) in self.unused_map_tiles:
+            del self.unused_map_tiles[(tile_x, tile_y)]
         x1 = (tile_x * self.tile_size) + BORDER_SIZE + (((2 * tile_x + 1) - 1) * TILE_BORDER_SIZE) + self.x_center_align
         y1 = (tile_y * self.tile_size) + BORDER_SIZE + (((2 * tile_y + 1) - 1) * TILE_BORDER_SIZE)
 
@@ -895,11 +936,6 @@ def door_customizer_page(
                     + self.x_center_align
                 )
                 y1 = (row * self.tile_size) + BORDER_SIZE + (((2 * row + 1) - 1) * TILE_BORDER_SIZE)
-                # if get_tile_data_by_map_tile(self.tiles, (col - self.x_offset, row - self.y_offset)):
-                #     self.canvas.create_text(
-                #         x1 + self.tile_size / 2, y1 + self.tile_size / 2, text=f"{row}, {col}", fill="white"
-                #     )
-                #     continue
 
                 tile = self.canvas.create_rectangle(
                     x1,
@@ -911,17 +947,6 @@ def door_customizer_page(
                     activefill=f"#BBB",
                     tags=["background_select"],
                 )
-                # self.canvas.create_text(
-                #     x1 + self.tile_size / 2, y1 + self.tile_size / 2, text=f"{row}, {col}", fill="white"
-                # )
-
-                # _ = self.canvas.create_text(
-                #     x1 + self.tile_size / 2,
-                #     y1 + self.tile_size / 2,
-                #     text=f"{tile} - {col - self.x_offset}, {row - self.y_offset}",
-                #     fill="white",
-                #     font=("TkDefaultFont", 8),
-                # )
                 self.canvas.tag_bind(tile, "<Button-1>", lambda event: select_tile(self, event))
                 self.canvas.tag_lower(tile)
                 self.unused_map_tiles[(col, row)] = tile
@@ -997,12 +1022,9 @@ def door_customizer_page(
         # This stores the x, y coords that we're plotting to and the eg x,y coords of the tile we're plotting
         self.tile_map = []
 
+        draw_empty_map(self)
+
         #  Add any old tiles, with no connections to the tiles to be plotted. Put them in the first empty space
-        # for tile, tile_data in self.old_tiles.items():
-        #     if (tile in self.tiles and "map_tile" in self.tiles[tile]) or len(tile_data) == 0:
-        #         continue
-        #     self.tiles[tile]["map_tile"] = find_first_unused_tile()
-        # self.old_tiles = {}
 
         for (eg_x, eg_y), tile_data in self.tiles.items():
             try:
@@ -1078,7 +1100,7 @@ def door_customizer_page(
                 y2,
                 fill="black" if door_link["door"] in INTERIOR_DOORS else link_colours[n],
                 width=self.linewidth * 0.5 if door_link["door"] in INTERIOR_DOORS else self.linewidth,
-                arrow=BOTH,
+                arrow=BOTH if not self.experimental_flags["decoupled_doors"] else LAST,
                 activefill="red",
                 dash=(2, 2) if door_link["door"] in INTERIOR_DOORS else (),
                 tags=["door_link"],
@@ -1138,7 +1160,6 @@ def door_customizer_page(
             place_door_icon(self, icon, eg_x, eg_y, loc_name)
 
         # Draw the empty map
-        draw_empty_map(self)
 
     def get_final_door_coords(self: DoorPage, door: DoorLink | LobbyData, door_type, min_x, min_y):
         tile = "source_tile"
@@ -1295,7 +1316,7 @@ def door_customizer_page(
             y2,
             fill="black" if last_link["door"] in INTERIOR_DOORS else distinct_colours(1)[0],
             width=self.linewidth * 0.5 if last_link["door"] in INTERIOR_DOORS else self.linewidth,
-            arrow=BOTH,
+            arrow=BOTH if not self.experimental_flags["decoupled_doors"] else LAST,
             activefill="red",
             dash=(2, 2) if last_link["door"] in INTERIOR_DOORS else (),
             tags=["door_link"],
@@ -1311,7 +1332,7 @@ def door_customizer_page(
         self.canvas.itemconfigure(self.door_buttons[last_link["linked_door"]], fill="grey")  # type: ignore
 
     def auto_add_door_link(self: DoorPage, door, linked_door):
-        for d in [door, linked_door]:
+        for d in [door, linked_door] if not self.experimental_flags["decoupled_doors"] else [door]:
             if has_target(self, d) or d in INTERIOR_DOORS or d in [x["door"] for x in self.lobby_doors] or d == None:
                 return
 
@@ -1378,7 +1399,7 @@ def door_customizer_page(
         linked_doors = set()
         for data in self.door_links:
             linked_doors.add(data["door"])
-            if "linked_door" in data:
+            if "linked_door" in data and not self.experimental_flags["decoupled_doors"]:
                 linked_doors.add(data["linked_door"])
         return loc_name in linked_doors
 
@@ -1506,7 +1527,6 @@ def door_customizer_page(
                 print("No unused tiles left")
                 return
             tile_x, tile_y = tile
-            empty_tile_button = self.unused_map_tiles[tile]
 
         x, y = selected_eg_tile
 

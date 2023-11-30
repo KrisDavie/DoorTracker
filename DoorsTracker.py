@@ -121,6 +121,8 @@ def customizerGUI(mainWindow, args=None):
 
         if file == "":
             return
+        if not file.endswith(".yaml") or not file.endswith(".yml"):
+            file += ".yaml"
         with open(file, mode="w") as fh:
             yaml.dump(yaml_data, fh)
 
@@ -154,6 +156,7 @@ def customizerGUI(mainWindow, args=None):
     self.experimental_flags = {
         "hide_single_route_tiles": False,
         "prefer_fill_map": False,
+        "decoupled_doors": False,
     }
 
     def create_vanilla_window(layout_name: str):
@@ -291,6 +294,9 @@ def customizerGUI(mainWindow, args=None):
     )
     experimentalMenu.add_checkbutton(
         label="Fill Map to 80%", command=lambda: set_experimental_flag(self, "prefer_fill_map")
+    )
+    experimentalMenu.add_checkbutton(
+        label="Enable Decoupled Support", command=lambda: set_experimental_flag(self, "decoupled_doors")
     )
 
     self.eg_tile_window.withdraw()
@@ -480,6 +486,7 @@ def highlight_dungeon_name(mainWindow, dungeon_name):
 
 
 async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool = False, device: str = None):
+    forced_autotrack = True
     port = args.port
     debug = args.debug
     channel = grpc.aio.insecure_channel(f"localhost:{port}")
