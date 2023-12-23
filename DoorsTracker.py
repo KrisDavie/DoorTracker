@@ -97,8 +97,14 @@ def customizerGUI(mainWindow, args=None):
             try:
                 yaml_data = yaml.safe_load(fh)
             except Exception as e:
-                print(f"Error loading yaml. {e}")
-                return
+                # try:
+                yaml_data = parse_dr_spoiler(fh)
+                # except Exception as e2:
+                #     print(f"Error loading yaml. {e2}")
+                #     return
+            if 'Agahnims_Tower' in yaml_data:
+                yaml_data['Castle_Tower'] = yaml_data['Agahnims_Tower']
+                del yaml_data['Agahnims_Tower']
             for dungeon, dungeon_data in yaml_data.items():
                 self.pages[dungeon].content.load_yaml(self.pages[dungeon].content, dungeon_data)
 
@@ -484,7 +490,7 @@ def highlight_dungeon_name(mainWindow, dungeon_name):
 
 
 async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool = False, device: str = None):
-    forced_autotrack = True
+    forced_autotrack = forced_autotrack
     port = args.port
     debug = args.debug
     channel = grpc.aio.insecure_channel(f"localhost:{port}")
