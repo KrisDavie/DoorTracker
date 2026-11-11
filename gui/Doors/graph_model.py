@@ -33,6 +33,7 @@ from data.doors_data import (
     simple_tiles,
     vanilla_logical_connections,
 )
+from data.room_bounds import room_bounds
 from data.worlds_data import dungeon_worlds
 
 ITEM_SHEET_PATH = Path(__file__).parent.parent.parent / "data" / "Doors_Sheet.png"
@@ -50,6 +51,7 @@ HARD_GAP = 4  # last resort while settling: rooms that actually touch are moved 
 REPEL_RANGE = 60  # default reach of the repulsion between blocks; the toolbar slider changes it per tab
 REPEL_STRENGTH = 0.12  # share of the missing distance two blocks are pushed apart each step
 LINK_PULL_MAX = 10  # a link never pulls harder than one stretched this far, so repulsion can hold it off
+STACK_GAP = 4  # space left between the walls of two stacked rooms, where the doorway bar sits
 SNAP = THUMB / 8  # stacked rooms line up on this grid along the shared wall
 
 DIRECTIONS = {"No": (0, -1), "So": (0, 1), "We": (-1, 0), "Ea": (1, 0)}
@@ -572,7 +574,11 @@ class GraphModel:
                     rank += 1
             self._build_stacks()
         if self.pos and all(t in self.pos for t in self.tiles):
-            # A saved arrangement is shown exactly as it was left
+            # A saved arrangement is shown as it was left. Stacked rooms are set against each other
+            # again, in case the file predates a change to how closely they sit.
+            for root, members in self.stack_members.items():
+                anchor = next((m for m in members if m in self.fixed), root)
+                self._place_stack(anchor, *self.pos[anchor])
             self._layout_signature = self._signature()
         else:
             self._optimise_stack_order()
@@ -747,10 +753,44 @@ class GraphModel:
                 compact.add(tile)
         return compact
 
-    def _size(self, tile):
+    def _pieces(self, tile):
+        """The parts of a supertile that are drawn, each as (left, top, right, bottom) around the tile's centre.
+
+        Positions always refer to the centre of the whole 512x512 supertile, so doors and stacking do
+        not care about this. Normally it is one piece, the whole square. With dead rooms hidden there
+        is one piece per room that has a door, and whatever lies between them is free for other rooms.
+        """
         if tile in self.compact:
-            return COMPACT_W, COMPACT_H
-        return THUMB, THUMB
+            return [(-COMPACT_W / 2, -COMPACT_H / 2, COMPACT_W / 2, COMPACT_H / 2)]
+        half = THUMB / 2
+        live = room_bounds.get(tile, {}).get("live")
+        if not live or not self.experimental_flags.get("hide_dead_rooms") or self._is_hidden_dark(tile):
+            return [(-half, -half, half, half)]
+        pad = 6
+        scale = THUMB / 512
+        return [
+            (
+                max(0, b[0] - pad) * scale - half,
+                max(0, b[1] - pad) * scale - half,
+                min(512, b[2] + pad) * scale - half,
+                min(512, b[3] + pad) * scale - half,
+            )
+            for b in live
+        ]
+
+    def _box(self, tile):
+        """The box around everything drawn of a supertile."""
+        pieces = self._pieces(tile)
+        return (
+            min(p[0] for p in pieces),
+            min(p[1] for p in pieces),
+            max(p[2] for p in pieces),
+            max(p[3] for p in pieces),
+        )
+
+    def _size(self, tile):
+        left, top, right, bottom = self._box(tile)
+        return right - left, bottom - top
 
     def _port_offset(self, door):
         """Offset of a door port from the centre of its card, world units."""
@@ -790,9 +830,24 @@ class GraphModel:
             return None
         fax, fay = door_fraction(a)
         fbx, fby = door_fraction(b)
+        # Along the doorway the two rooms meet wall to wall. That is the walls of the rooms the doors
+        # are in, not the edges of the supertile squares: a room can sit well inside its square when
+        # the rest of it is dead.
+        pa, pb = self._piece_at(a), self._piece_at(b)
+        gap = STACK_GAP if self.experimental_flags.get("hide_dead_rooms") else 0.0
         if da[0] == 0:
-            return round((fax - fbx) * THUMB / SNAP) * SNAP, da[1] * THUMB
-        return da[0] * THUMB, round((fay - fby) * THUMB / SNAP) * SNAP
+            across = round((fax - fbx) * THUMB / SNAP) * SNAP
+            return across, (pa[1] - pb[3] - gap) if da[1] < 0 else (pa[3] - pb[1] + gap)
+        across = round((fay - fby) * THUMB / SNAP) * SNAP
+        return ((pa[0] - pb[2] - gap) if da[0] < 0 else (pa[2] - pb[0] + gap)), across
+
+    def _piece_at(self, door):
+        """The drawn piece of a supertile that a door belongs to."""
+        ox, oy = self._port_offset(door)
+        return min(
+            self._pieces(door_tile(door)),
+            key=lambda p: max(p[0] - ox, 0, ox - p[2]) + max(p[1] - oy, 0, oy - p[3]),
+        )
 
     def _stack_order(self, rank=None):
         """Links in the order they get to claim a doorway: stacked by hand first, then by rank, then by age."""
@@ -813,6 +868,7 @@ class GraphModel:
         root = {t: t for t in self.tiles}
         off = {t: (0.0, 0.0) for t in self.tiles}
         members = {t: [t] for t in self.tiles}
+        boxes = {t: self._pieces(t) for t in self.tiles}
         joined = set()
         auto = self.auto_stack
         for n in order:
@@ -833,11 +889,20 @@ class GraphModel:
                 if abs(sx) < 1 and abs(sy) < 1:
                     joined.add(n)
                 continue
-            clash = any(
-                abs(off[m][0] + sx - off[k][0]) < THUMB - 1 and abs(off[m][1] + sy - off[k][1]) < THUMB - 1
-                for m in members[rb]
-                for k in members[ra]
-            )
+            clash = False
+            for m in members[rb]:
+                mx, my = off[m][0] + sx, off[m][1] + sy
+                for k in members[ra]:
+                    kx, ky = off[k]
+                    clash = any(
+                        mx + ml < kx + kr - 1 and kx + kl < mx + mr - 1 and my + mt < ky + kb - 1 and ky + kt < my + mb - 1
+                        for ml, mt, mr, mb in boxes[m]
+                        for kl, kt, kr, kb in boxes[k]
+                    )
+                    if clash:
+                        break
+                if clash:
+                    break
             if clash:
                 continue
             if len(members[rb]) > len(members[ra]):
@@ -1088,14 +1153,14 @@ class GraphModel:
         rest = [t for r in self.stack_members if r not in loose for t in self.stack_members[r]]
         if not loose or not rest:
             return
-        right = max(self.pos[t][0] + self._size(t)[0] / 2 for t in rest)
-        y = min(self.pos[t][1] - self._size(t)[1] / 2 for t in rest)
+        right = max(self.pos[t][0] + self._box(t)[2] for t in rest)
+        y = min(self.pos[t][1] + self._box(t)[1] for t in rest)
         gap = max(self.spacing, LINK_GAP)
         for r in sorted(loose):
             members = self.stack_members[r]
-            left = min(self.stack_off[m][0] - self._size(m)[0] / 2 for m in members)
-            top = min(self.stack_off[m][1] - self._size(m)[1] / 2 for m in members)
-            bottom = max(self.stack_off[m][1] + self._size(m)[1] / 2 for m in members)
+            left = min(self.stack_off[m][0] + self._box(m)[0] for m in members)
+            top = min(self.stack_off[m][1] + self._box(m)[1] for m in members)
+            bottom = max(self.stack_off[m][1] + self._box(m)[3] for m in members)
             self._place_stack(r, right + gap * 2 - left, y - top)
             y += bottom - top + gap
 
@@ -1130,8 +1195,15 @@ class GraphModel:
             members = self.stack_members[r]
             boxes = []
             for m in members:
-                w, h = self._size(m)
-                boxes.append((self.stack_off[m][0], self.stack_off[m][1], w / 2, h / 2))
+                for left, top, right, bottom in self._pieces(m):
+                    boxes.append(
+                        (
+                            self.stack_off[m][0] + (left + right) / 2,
+                            self.stack_off[m][1] + (top + bottom) / 2,
+                            (right - left) / 2,
+                            (bottom - top) / 2,
+                        )
+                    )
             rects.append(boxes)
             centres.append((sum(b[0] for b in boxes) / len(boxes), sum(b[1] for b in boxes) / len(boxes)))
             extents.append(
@@ -1352,7 +1424,7 @@ class GraphModel:
             LINK_PULL_MAX * (self.leaf_pull**3 if len(neighbours[sp[0]]) == 1 or len(neighbours[sp[3]]) == 1 else 1.0)
             for sp in springs
         ]
-        weight = [len(r) for r in rects]
+        weight = [len(self.stack_members[r]) for r in roots]
         total_weight = sum(weight)
 
         for it in range(iterations):
@@ -1534,10 +1606,10 @@ class GraphModel:
     def _bounds(self):
         if not self.pos:
             return 0, 0, 1, 1
-        x0 = min(self.pos[t][0] - self._size(t)[0] / 2 for t in self.pos)
-        x1 = max(self.pos[t][0] + self._size(t)[0] / 2 for t in self.pos)
-        y0 = min(self.pos[t][1] - self._size(t)[1] / 2 for t in self.pos)
-        y1 = max(self.pos[t][1] + self._size(t)[1] / 2 for t in self.pos)
+        x0 = min(self.pos[t][0] + self._box(t)[0] for t in self.pos)
+        y0 = min(self.pos[t][1] + self._box(t)[1] for t in self.pos)
+        x1 = max(self.pos[t][0] + self._box(t)[2] for t in self.pos)
+        y1 = max(self.pos[t][1] + self._box(t)[3] for t in self.pos)
         return x0, y0, x1, y1
 
     def _door_dots(self, tile):

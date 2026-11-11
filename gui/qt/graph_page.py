@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from data.doors_data import door_coordinates_key, mandatory_tiles
+from data.room_bounds import room_bounds
 from gui.Doors.graph_model import (
     BACKGROUND,
     COMPACT_H,
@@ -83,22 +84,38 @@ class Assets:
         self._sheet = None
         self._icons = {}
 
-    def tile(self, tile, wanted_px):
-        """The supertile picture, at the smallest stored size that is at least wanted_px wide."""
-        if tile not in self._tiles:
+    def tile(self, tile, wanted_px, blank_dead=False):
+        """The supertile picture, at the smallest stored size that is at least wanted_px wide.
+
+        With blank_dead, rooms that have no door are painted over with the picture's background.
+        """
+        bounds = room_bounds.get(tile, {})
+        blank_dead = blank_dead and bool(bounds.get("dead"))
+        key = (tile, blank_dead)
+        if key not in self._tiles:
             x, y = tile
             if self.eg_img is None:
                 image = QImage(256, 256, QImage.Format_RGB888)
                 image.fill(QColor("#444"))
             else:
                 crop = self.eg_img.crop((x * 512, y * 512, (x + 1) * 512, (y + 1) * 512)).convert("RGB")
+                if blank_dead:
+                    from PIL import ImageDraw
+
+                    draw = ImageDraw.Draw(crop)
+                    for left, top, right, bottom in bounds["dead"]:
+                        draw.rectangle((left - 2, top - 2, right + 1, bottom + 1), fill=tuple(bounds["background"]))
                 image = QImage(crop.tobytes(), 512, 512, 512 * 3, QImage.Format_RGB888).copy()
             levels = {}
             for size in (512, 256, 128, 64):
-                scaled = image if image.width() == size else image.scaled(size, size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                scaled = (
+                    image
+                    if image.width() == size
+                    else image.scaled(size, size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                )
                 levels[size] = QPixmap.fromImage(scaled)
-            self._tiles[tile] = levels
-        levels = self._tiles[tile]
+            self._tiles[key] = levels
+        levels = self._tiles[key]
         for size in (64, 128, 256, 512):
             if size >= wanted_px:
                 return levels[size]
@@ -127,7 +144,14 @@ class RoomItem(QGraphicsItem):
         self.kind = "card"
         self.payload = tile
         model = page.model
-        self.w, self.h = model._size(tile)
+        self.box = model._box(tile)
+        # One rectangle per real room, top-left one first
+        self.pieces = [
+            QRectF(left, top, right - left, bottom - top)
+            for left, top, right, bottom in sorted(model._pieces(tile), key=lambda p: (p[1], p[0]))
+        ]
+        self.w, self.h = self.box[2] - self.box[0], self.box[3] - self.box[1]
+        self.blank_dead = bool(model.experimental_flags.get("hide_dead_rooms"))
         self.colour = QColor(DUNGEON_COLOURS.get(tile_dungeon(tile), UNKNOWN_DUNGEON_COLOUR))
         self.hidden = model._is_hidden_dark(tile)
         self.compact = tile in model.compact
@@ -138,37 +162,49 @@ class RoomItem(QGraphicsItem):
         self.setZValue(1)
 
     def boundingRect(self):
-        return QRectF(-self.w / 2 - 5, -self.h / 2 - 5, self.w + 10, self.h + 10)
+        return QRectF(self.box[0] - 5, self.box[1] - 5, self.w + 10, self.h + 10)
 
     def shape(self):
         path = QPainterPath()
-        path.addRect(QRectF(-self.w / 2, -self.h / 2, self.w, self.h))
+        for rect in self.pieces:
+            path.addRect(rect)
         return path
 
     def paint(self, painter, option, widget=None):
         lod = option.levelOfDetailFromTransform(painter.worldTransform())
-        rect = QRectF(-self.w / 2, -self.h / 2, self.w, self.h)
+        first = self.pieces[0]
         if self.compact:
-            painter.fillRect(rect, QColor(lighten(self.colour.name(), 0.7)))
+            painter.fillRect(first, QColor(lighten(self.colour.name(), 0.7)))
         elif self.hidden:
-            painter.fillRect(rect, QColor("#000"))
+            painter.fillRect(first, QColor("#000"))
             font = QFont()
             font.setPixelSize(40)
             font.setBold(True)
             painter.setFont(font)
             painter.setPen(QColor("#555"))
-            painter.drawText(rect, Qt.AlignCenter, "?")
+            painter.drawText(first, Qt.AlignCenter, "?")
         else:
-            pixmap = self.page.assets.tile(self.tile, THUMB * lod * painter.device().devicePixelRatioF())
-            painter.drawPixmap(rect, pixmap, QRectF(pixmap.rect()))
+            pixmap = self.page.assets.tile(
+                self.tile, THUMB * lod * painter.device().devicePixelRatioF(), blank_dead=self.blank_dead
+            )
+            # Each piece shows the part of the picture that falls inside it
+            per_unit = pixmap.width() / THUMB
+            for rect in self.pieces:
+                source = QRectF(
+                    (rect.left() + THUMB / 2) * per_unit,
+                    (rect.top() + THUMB / 2) * per_unit,
+                    rect.width() * per_unit,
+                    rect.height() * per_unit,
+                )
+                painter.drawPixmap(rect, pixmap, source)
 
-        if self.keep_expanded:
-            painter.setPen(QPen(QColor("#18c418"), 5))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRect(rect.adjusted(1.5, 1.5, -1.5, -1.5))
-        painter.setPen(QPen(self.colour, 2))
         painter.setBrush(Qt.NoBrush)
-        painter.drawRect(rect)
+        for rect in self.pieces:
+            if self.keep_expanded:
+                painter.setPen(QPen(QColor("#18c418"), 5))
+                painter.drawRect(rect.adjusted(1.5, 1.5, -1.5, -1.5))
+            painter.setPen(QPen(self.colour, 2))
+            painter.drawRect(rect)
 
         if lod * 11 >= 5:
             font = QFont()
@@ -178,22 +214,18 @@ class RoomItem(QGraphicsItem):
             metrics = QFontMetricsF(font)
             if self.compact:
                 painter.setPen(QColor("#111"))
-                text = metrics.elidedText(self.title, Qt.ElideRight, self.w - 6)
-                painter.drawText(rect, Qt.AlignCenter, text)
-            else:
-                text = metrics.elidedText(self.title, Qt.ElideRight, self.w - 8)
-                tag = QRectF(rect.left(), rect.top(), metrics.horizontalAdvance(text) + 7, metrics.height() + 2)
-                painter.fillRect(tag, self.colour)
-                painter.setPen(QColor("white"))
-                painter.drawText(tag.adjusted(3, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, text)
+                text = metrics.elidedText(self.title, Qt.ElideRight, first.width() - 6)
+                painter.drawText(first, Qt.AlignCenter, text)
+            # Full-size rooms get their name from a LabelItem, which is never cut to the room's width
 
         if self.pinned:
-            self._paint_pin(painter, rect)
+            self._paint_pin(painter, first)
 
         if self.page.model.player is not None and self.page.model.player[0] == self.tile:
             painter.setPen(QPen(QColor(PLAYER), 3))
             painter.setBrush(Qt.NoBrush)
-            painter.drawRect(rect.adjusted(-3, -3, 3, 3))
+            for rect in self.pieces:
+                painter.drawRect(rect.adjusted(-3, -3, 3, 3))
 
     @staticmethod
     def _paint_pin(painter, rect):
@@ -216,6 +248,41 @@ class RoomItem(QGraphicsItem):
         painter.drawEllipse(QRectF(box.left() + size * 0.52, box.top() + size * 0.24, size * 0.14, size * 0.14))
 
 
+class LabelItem(QGraphicsItem):
+    """A room's name, written out in full at the top-left corner of its first piece.
+
+    It sits on a layer above every room, so a name that is wider than its room runs over whatever is
+    next to it and is never cut short or hidden behind a neighbour.
+    """
+
+    def __init__(self, room):
+        super().__init__()
+        self.text = room.title
+        self.colour = room.colour
+        self.font = QFont()
+        self.font.setPixelSize(11)
+        self.font.setBold(True)
+        metrics = QFontMetricsF(self.font)
+        first = room.pieces[0]
+        self.tag = QRectF(first.left(), first.top(), metrics.horizontalAdvance(self.text) + 7, metrics.height() + 2)
+        self.setZValue(1.5)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+
+    def boundingRect(self):
+        return self.tag
+
+    def shape(self):
+        return QPainterPath()
+
+    def paint(self, painter, option, widget=None):
+        if option.levelOfDetailFromTransform(painter.worldTransform()) * 11 < 5:
+            return
+        painter.fillRect(self.tag, self.colour)
+        painter.setFont(self.font)
+        painter.setPen(QColor("white"))
+        painter.drawText(self.tag.adjusted(3, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, self.text)
+
+
 class DoorsItem(QGraphicsItem):
     """The doors of one room, and the player marker. Sits above the links so a door is never hidden."""
 
@@ -225,7 +292,8 @@ class DoorsItem(QGraphicsItem):
         self.tile = tile
         self.kind = "card"
         self.payload = tile
-        self.w, self.h = page.model._size(tile)
+        # Doors keep their place on the full supertile, whatever part of the room is drawn
+        self.w, self.h = (page.model._size(tile) if tile in page.model.compact else (THUMB, THUMB))
         self.dots = page.model._door_dots(tile)
         self.setZValue(3)
         # Only the dots count as this item; clicks elsewhere fall through to the link or the room below
@@ -537,6 +605,7 @@ class GraphPage(QWidget):
         self._press = None
         self._rooms = {}
         self._doors = {}
+        self._labels = {}
         self._links = []
         self._hulls = []
         self._rubber = None
@@ -647,6 +716,7 @@ class GraphPage(QWidget):
         model = self.model
         self.scene.clear()
         self._rooms, self._doors, self._links, self._hulls = {}, {}, [], []
+        self._labels = {}
         self._rubber = None
         self._focus = None
         self.hot_door = None
@@ -673,6 +743,10 @@ class GraphPage(QWidget):
             self.scene.addItem(doors)
             self._rooms[tile] = room
             self._doors[tile] = doors
+            if not room.compact:
+                label = LabelItem(room)
+                self.scene.addItem(label)
+                self._labels[tile] = label
 
         for door, icon in model.special_doors.items():
             tile = door_tile(door)
@@ -726,6 +800,8 @@ class GraphPage(QWidget):
                 x, y = model.pos[tile]
                 room.setPos(x, y)
                 self._doors[tile].setPos(x, y)
+                if tile in self._labels:
+                    self._labels[tile].setPos(x, y)
         if links:
             for link in self._links:
                 link.update_path()
@@ -733,10 +809,10 @@ class GraphPage(QWidget):
             points = []
             for tile in hull.members:
                 x, y = model.pos[tile]
-                w, h = model._size(tile)
-                for sx in (-1, 1):
-                    for sy in (-1, 1):
-                        points.append((x + sx * (w / 2 + 16), y + sy * (h / 2 + 16)))
+                left, top, right, bottom = model._box(tile)
+                for px in (left - 16, right + 16):
+                    for py in (top - 16, bottom + 16):
+                        points.append((x + px, y + py))
             hull.setPolygon(QPolygonF([QPointF(px, py) for px, py in convex_hull(points)]))
         if self._rubber is not None and self.selected_door:
             line = self._rubber.line()
@@ -788,8 +864,10 @@ class GraphPage(QWidget):
 
     def room_at(self, scene_pos):
         for tile, (x, y) in self.model.pos.items():
-            w, h = self.model._size(tile)
-            if abs(scene_pos.x() - x) <= w / 2 and abs(scene_pos.y() - y) <= h / 2:
+            if any(
+                left <= scene_pos.x() - x <= right and top <= scene_pos.y() - y <= bottom
+                for left, top, right, bottom in self.model._pieces(tile)
+            ):
                 return tile
         return None
 

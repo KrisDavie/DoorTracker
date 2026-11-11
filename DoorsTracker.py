@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
             "prefer_fill_map": False,
             "decoupled_doors": False,
             "vanilla_drops": True,
+            "hide_dead_rooms": True,
         }
         self.device = None
         self.sni_task = None
@@ -160,6 +161,7 @@ class MainWindow(QMainWindow):
             ("Hide Single Route Tiles", "hide_single_route_tiles"),
             ("Enable Decoupled Support", "decoupled_doors"),
             ("Drops Are Not Shuffled", "vanilla_drops"),
+            ("Hide Dead Rooms", "hide_dead_rooms"),
         ):
             action = QAction(label, self, checkable=True)
             action.setChecked(self.experimental_flags[flag])
@@ -174,7 +176,11 @@ class MainWindow(QMainWindow):
     def _set_flag(self, flag, checked):
         self.experimental_flags[flag] = checked
         for page in self.pages.values():
-            page.redraw_canvas()
+            if flag == "hide_dead_rooms":
+                # Rooms change size, so blocks have to be fitted together again
+                page.relayout()
+            else:
+                page.redraw_canvas()
 
     def current_dungeon(self):
         return self.tabs.currentWidget().dungeon_name
