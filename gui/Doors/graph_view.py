@@ -123,6 +123,7 @@ DOOR_INTERIOR = "#1b2a8a"
 DOOR_SELECTED = "#ff9800"
 PLAYER = "#e60000"
 EDGE_FADED = "#c9cdd4"
+DROP_COLOUR = "#4a4f57"  # fixed pit drops: drawn like links, but not one of the tracked colours
 
 
 def door_tile(door):
@@ -679,6 +680,18 @@ class GraphDoorPage(ttk.Frame):
             if not self._door_visible(a) or not self._door_visible(b):
                 continue
             edges.append((a, b, "interior", None))
+        # Where a pit lands can be shuffled, so a drop is only a connection once it has been tracked like
+        # any other link. Only when the seed is known to keep drops vanilla (an opt-in setting) are they
+        # filled in from the game's own layout.
+        vanilla_drops = MANUAL_DROPS if self.experimental_flags.get("vanilla_drops") else {}
+        for a, b in vanilla_drops.items():
+            if frozenset((a, b)) in seen or self.has_target(a):
+                continue
+            if door_tile(a) not in known or door_tile(b) not in known:
+                continue
+            if not self._door_visible(a) or not self._door_visible(b):
+                continue
+            edges.append((a, b, "drop", None))
         return edges
 
     def _door_visible(self, door):
@@ -978,7 +991,9 @@ class GraphDoorPage(ttk.Frame):
                     push = REPEL_STRENGTH * max(0.0, reach - nearest) + CONTACT_STRENGTH * max(
                         0.0, CONTACT_RANGE - nearest
                     )
-                    share_a, share_b = ma / (ma + mb), mb / (ma + mb)
+                    # Heavier blocks give way less: a block's share falls with the number of rooms in it
+                    ease_a, ease_b = ma / weight[a], mb / weight[b]
+                    share_a, share_b = ease_a / (ease_a + ease_b), ease_b / (ease_a + ease_b)
                     xs[a] -= ux / norm * push * share_a
                     ys[a] -= uy / norm * push * share_a
                     xs[b] += ux / norm * push * share_b
@@ -1038,7 +1053,9 @@ class GraphDoorPage(ttk.Frame):
                     if not push_x and not push_y:
                         continue
                     moved = True
-                    share_a, share_b = ma / (ma + mb), mb / (ma + mb)
+                    # Heavier blocks give way less: a block's share falls with the number of rooms in it
+                    ease_a, ease_b = ma / weight[a], mb / weight[b]
+                    share_a, share_b = ease_a / (ease_a + ease_b), ease_b / (ease_a + ease_b)
                     xs[a] -= push_x * strength * share_a
                     xs[b] += push_x * strength * share_b
                     ys[a] -= push_y * strength * share_a
@@ -1098,11 +1115,13 @@ class GraphDoorPage(ttk.Frame):
                         ex, ey = ex / stretch * pull_limit[k], ey / stretch * pull_limit[k]
                 # Both ends get the same pull in opposite directions. Sharing it unevenly made any pair
                 # held apart by repulsion creep across the map for ever.
-                share = 1 / max(degree[ia], degree[ib])
-                tx[ib] += ex * share
-                ty[ib] += ey * share
-                tx[ia] -= ex * share
-                ty[ia] -= ey * share
+                # ...and split by mass, so a single room comes to a big block rather than towing it along.
+                # Everything that moves blocks uses the same masses, which keeps the map from creeping.
+                share = 2 / max(degree[ia], degree[ib]) / (weight[ia] + weight[ib])
+                tx[ib] += ex * share * weight[ia]
+                ty[ib] += ey * share * weight[ia]
+                tx[ia] -= ex * share * weight[ib]
+                ty[ia] -= ey * share * weight[ib]
 
             # There is no pull towards the middle of the map: links are what hold it together, and a
             # block with no links simply stays where it is. Only "Group by original dungeon" adds a pull,
@@ -1115,8 +1134,11 @@ class GraphDoorPage(ttk.Frame):
                 for i in members:
                     gx[i], gy[i] = mx, my
 
+            moves = []
+            fastest = 0.0
             for i in range(n):
                 if mobility[i] == 0:
+                    moves.append((0.0, 0.0))
                     continue
                 dx = dy = 0.0
                 if gx[i] is not None:
@@ -1127,8 +1149,16 @@ class GraphDoorPage(ttk.Frame):
                 dy += ty[i] * 0.45
                 dx *= mobility[i]
                 dy *= mobility[i]
+                moves.append((dx, dy))
+                fastest = max(fastest, math.hypot(dx, dy))
+            # While settling, the speed limit slows everything down together. Capping blocks one by one
+            # held a fast one back while its partner moved freely, and the pair then drifted off for good.
+            together = min(1.0, temperature / fastest) if cold and fastest else 1.0
+            for i, (dx, dy) in enumerate(moves):
                 step = math.hypot(dx, dy)
-                if step > temperature:
+                if cold:
+                    dx, dy = dx * together, dy * together
+                elif step > temperature:
                     dx, dy = dx / step * temperature, dy / step * temperature
                 xs[i] += dx
                 ys[i] += dy
@@ -1570,6 +1600,10 @@ class GraphDoorPage(ttk.Frame):
         for link in self.door_links:
             self._linked_doors.add(link["door"])
             self._linked_doors.add(link["linked_door"])
+        for a, b, kind, n in self._edges():
+            if kind == "drop":
+                self._linked_doors.add(a)
+                self._linked_doors.add(b)
         self._items = {}
         self._door_items = {}
         self._images = []
@@ -1681,10 +1715,11 @@ class GraphDoorPage(ttk.Frame):
             one_way = self._decoupled() or (
                 door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a
             )
+            colour = DROP_COLOUR if kind == "drop" else colours[n]
             item = c.create_line(
                 *points,
                 smooth=True,
-                fill=colours[n],
+                fill=colour,
                 width=width,
                 activefill=PLAYER,
                 activewidth=width + 2,
@@ -1693,7 +1728,7 @@ class GraphDoorPage(ttk.Frame):
                 tags=["edge"],
             )
             self._track(item, "edge", (a, b, n))
-            self._edge_fill[item] = colours[n]
+            self._edge_fill[item] = colour
         self._focus = None
 
     def _set_focus(self, tile):
@@ -1882,7 +1917,7 @@ class GraphDoorPage(ttk.Frame):
         kind, payload = self._hit(event)
         self._press = {"kind": kind, "payload": payload, "x": event.x, "y": event.y, "moved": False}
         if kind == "edge" and (
-            payload[2] is None or payload[2] in self.joined or door_tile(payload[0]) == door_tile(payload[1])
+            payload[2] in self.joined or door_tile(payload[0]) == door_tile(payload[1])
         ):
             # Lines and doorways that live inside a card or a stack drag it like the card itself
             self._press["kind"] = "card"
@@ -2126,7 +2161,7 @@ class GraphDoorPage(ttk.Frame):
         # Anywhere on the room counts, including on one of its doors
         if kind in ("door", "icon"):
             kind, payload = "card", door_tile(payload)
-        elif kind == "edge" and (payload[2] is None or payload[2] in self.joined):
+        elif kind == "edge" and (door_tile(payload[0]) == door_tile(payload[1]) or payload[2] in self.joined):
             kind, payload = "card", door_tile(payload[0])
         if kind == "card" and payload in self.pos:
             self._set_pinned(payload, payload not in self.fixed)

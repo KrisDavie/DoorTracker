@@ -115,10 +115,62 @@ DOOR_INTERIOR = "#1b2a8a"
 DOOR_SELECTED = "#ff9800"
 PLAYER = "#e60000"
 EDGE_FADED = "#c9cdd4"
+WARP_COLOUR = "#7b4fc4"  # warp tiles: fixed, drawn dashed
+DROP_COLOUR = "#4a4f57"  # fixed pit drops: drawn like links, but not one of the tracked colours
+
+
+def _build_room_links():
+    """Connections the game data only gives room to room: warp tiles, and holes without a marked pit.
+
+    Neither end is a door, so each gets a made-up port in the middle of the part of the supertile
+    its region occupies. Links whose rooms cannot be placed on the map are left out.
+    """
+    home = {}
+    for region, doors in regions_to_doors.items():
+        for name in doors:
+            home.setdefault(name, []).append(region)
+
+    def spot(regions):
+        """(tile, x, y) for a region: the average position of its real doors."""
+        points = {}
+        for region in regions:
+            for name in regions_to_doors.get(region, []):
+                if name in door_coordinates_key:
+                    tile, list_pos = door_coordinates_key[name]
+                    coords = door_coordinates[tile][list_pos]
+                    points.setdefault(tile, []).append((coords["x"] / 512, coords["y"] / 512))
+        if len(points) != 1:
+            return None
+        tile, found = next(iter(points.items()))
+        return tile, sum(p[0] for p in found) / len(found), sum(p[1] for p in found) / len(found)
+
+    ports, found = {}, {}
+    for kind, pairs in (("warp", dungeon_warps), ("hole", falldown_pits)):
+        for name, target in pairs:
+            if name in MANUAL_DROPS or name in door_coordinates_key:
+                continue  # has a real pit and landing point, handled as a door-to-door drop
+            start, end = spot(home.get(name, [])), spot([target])
+            if start is None or end is None or start[0] == end[0]:
+                continue
+            found[(start[0], end[0], kind)] = (name, start, end)
+    links = []
+    for (ta, tb, kind), (name, start, end) in found.items():
+        both_ways = (tb, ta, kind) in found
+        if both_ways and (tb, ta) < (ta, tb):
+            continue  # a pair of warps that lead to each other is one two-way connection
+        a, b = name, f"{name} landing"
+        ports[a], ports[b] = start, end
+        links.append({"a": a, "b": b, "kind": kind, "both_ways": both_ways})
+    return ports, links
+
+
+ROOM_PORTS, ROOM_LINKS = {}, []
 
 
 def door_tile(door):
     """Supertile (x, y) on the EG map a door belongs to, or None for regions and unknown names."""
+    if door in ROOM_PORTS:
+        return ROOM_PORTS[door][0]
     if door in door_coordinates_key:
         return door_coordinates_key[door][0]
     if door in doors_data:
@@ -136,6 +188,8 @@ def door_direction(door):
 
 def door_fraction(door):
     """Position of a door inside its supertile as 0..1 fractions."""
+    if door in ROOM_PORTS:
+        return ROOM_PORTS[door][1], ROOM_PORTS[door][2]
     if door in door_coordinates_key:
         tile, list_pos = door_coordinates_key[door]
         coords = door_coordinates[tile][list_pos]
@@ -179,6 +233,9 @@ def tile_title(tile):
     if doors:
         return " ".join(doors[0].split(" ")[:-1]) or doors[0]
     return f"Tile {tile[0]},{tile[1]}"
+
+
+ROOM_PORTS, ROOM_LINKS = _build_room_links()
 
 
 def lighten(colour, amount):
@@ -296,6 +353,11 @@ class GraphModel:
         for link in self.door_links:
             self._linked_doors.add(link["door"])
             self._linked_doors.add(link["linked_door"])
+        for a, b, kind, n in self._edges():
+            if kind == "drop":
+                # Nothing left to explore through a pit whose landing is already on the map
+                self._linked_doors.add(a)
+                self._linked_doors.add(b)
 
     def add_link(self, door, linked_door):
         self.door_links.append({"door": door, "linked_door": linked_door})
@@ -819,6 +881,26 @@ class GraphModel:
             if not self._door_visible(a) or not self._door_visible(b):
                 continue
             edges.append((a, b, "interior", None))
+        # Where a pit lands can be shuffled, so a drop is only a connection once it has been tracked like
+        # any other link. Only when the seed is known to keep drops vanilla (an opt-in setting) are they
+        # filled in from the game's own layout.
+        vanilla_drops = MANUAL_DROPS if self.experimental_flags.get("vanilla_drops") else {}
+        for a, b in vanilla_drops.items():
+            if frozenset((a, b)) in seen or self.has_target(a):
+                continue
+            if door_tile(a) not in known or door_tile(b) not in known:
+                continue
+            if not self._door_visible(a) or not self._door_visible(b):
+                continue
+            edges.append((a, b, "drop", None))
+        # Warp tiles always lead to the same room. Holes without a marked pit follow the same rule as pits.
+        for link in ROOM_LINKS:
+            if link["kind"] == "hole" and not self.experimental_flags.get("vanilla_drops"):
+                continue
+            ta, tb = door_tile(link["a"]), door_tile(link["b"])
+            if ta not in known or tb not in known or self._is_hidden_dark(ta) or self._is_hidden_dark(tb):
+                continue
+            edges.append((link["a"], link["b"], link["kind"] + ("_both" if link["both_ways"] else ""), None))
         return edges
 
     def _door_visible(self, door):
@@ -1116,7 +1198,9 @@ class GraphModel:
                     push = REPEL_STRENGTH * max(0.0, reach - nearest) + CONTACT_STRENGTH * max(
                         0.0, CONTACT_RANGE - nearest
                     )
-                    share_a, share_b = ma / (ma + mb), mb / (ma + mb)
+                    # Heavier blocks give way less: a block's share falls with the number of rooms in it
+                    ease_a, ease_b = ma / weight[a], mb / weight[b]
+                    share_a, share_b = ease_a / (ease_a + ease_b), ease_b / (ease_a + ease_b)
                     xs[a] -= ux / norm * push * share_a
                     ys[a] -= uy / norm * push * share_a
                     xs[b] += ux / norm * push * share_b
@@ -1176,7 +1260,9 @@ class GraphModel:
                     if not push_x and not push_y:
                         continue
                     moved = True
-                    share_a, share_b = ma / (ma + mb), mb / (ma + mb)
+                    # Heavier blocks give way less: a block's share falls with the number of rooms in it
+                    ease_a, ease_b = ma / weight[a], mb / weight[b]
+                    share_a, share_b = ease_a / (ease_a + ease_b), ease_b / (ease_a + ease_b)
                     xs[a] -= push_x * strength * share_a
                     xs[b] += push_x * strength * share_b
                     ys[a] -= push_y * strength * share_a
@@ -1236,11 +1322,13 @@ class GraphModel:
                         ex, ey = ex / stretch * pull_limit[k], ey / stretch * pull_limit[k]
                 # Both ends get the same pull in opposite directions. Sharing it unevenly made any pair
                 # held apart by repulsion creep across the map for ever.
-                share = 1 / max(degree[ia], degree[ib])
-                tx[ib] += ex * share
-                ty[ib] += ey * share
-                tx[ia] -= ex * share
-                ty[ia] -= ey * share
+                # ...and split by mass, so a single room comes to a big block rather than towing it along.
+                # Everything that moves blocks uses the same masses, which keeps the map from creeping.
+                share = 2 / max(degree[ia], degree[ib]) / (weight[ia] + weight[ib])
+                tx[ib] += ex * share * weight[ia]
+                ty[ib] += ey * share * weight[ia]
+                tx[ia] -= ex * share * weight[ib]
+                ty[ia] -= ey * share * weight[ib]
 
             # There is no pull towards the middle of the map: links are what hold it together, and a
             # block with no links simply stays where it is. Only "Group by original dungeon" adds a pull,
@@ -1253,8 +1341,11 @@ class GraphModel:
                 for i in members:
                     gx[i], gy[i] = mx, my
 
+            moves = []
+            fastest = 0.0
             for i in range(n):
                 if mobility[i] == 0:
+                    moves.append((0.0, 0.0))
                     continue
                 dx = dy = 0.0
                 if gx[i] is not None:
@@ -1265,8 +1356,16 @@ class GraphModel:
                 dy += ty[i] * 0.45
                 dx *= mobility[i]
                 dy *= mobility[i]
+                moves.append((dx, dy))
+                fastest = max(fastest, math.hypot(dx, dy))
+            # While settling, the speed limit slows everything down together. Capping blocks one by one
+            # held a fast one back while its partner moved freely, and the pair then drifted off for good.
+            together = min(1.0, temperature / fastest) if cold and fastest else 1.0
+            for i, (dx, dy) in enumerate(moves):
                 step = math.hypot(dx, dy)
-                if step > temperature:
+                if cold:
+                    dx, dy = dx * together, dy * together
+                elif step > temperature:
                     dx, dy = dx / step * temperature, dy / step * temperature
                 xs[i] += dx
                 ys[i] += dy

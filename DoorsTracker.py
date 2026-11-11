@@ -149,6 +149,7 @@ def customizerGUI(mainWindow, args=None):
         "hide_single_route_tiles": False,
         "prefer_fill_map": False,
         "decoupled_doors": False,
+        "vanilla_drops": True,
     }
 
     def create_vanilla_window(layout_name: str):
@@ -289,6 +290,13 @@ def customizerGUI(mainWindow, args=None):
     )
     experimentalMenu.add_checkbutton(
         label="Enable Decoupled Support", command=lambda: set_experimental_flag(self, "decoupled_doors")
+    )
+    # On by default, so the menu entry has to start ticked
+    self.vanilla_drops_var = BooleanVar(value=self.experimental_flags["vanilla_drops"])
+    experimentalMenu.add_checkbutton(
+        label="Drops Are Not Shuffled",
+        variable=self.vanilla_drops_var,
+        command=lambda: set_experimental_flag(self, "vanilla_drops"),
     )
 
     self.eg_tile_window.withdraw()

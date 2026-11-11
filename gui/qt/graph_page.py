@@ -48,6 +48,7 @@ from gui.Doors.graph_model import (
     COMPACT_W,
     DIRECTIONS,
     DOOR_RADIUS,
+    DROP_COLOUR,
     DOOR_SELECTED,
     DUNGEON_COLOURS,
     EDGE_FADED,
@@ -57,6 +58,7 @@ from gui.Doors.graph_model import (
     PLAYER,
     THUMB,
     UNKNOWN_DUNGEON_COLOUR,
+    WARP_COLOUR,
     GraphModel,
     convex_hull,
     door_direction,
@@ -324,6 +326,8 @@ class LinkItem(QGraphicsPathItem):
         self.kind = "edge"
         self.payload = (a, b, n)
         self.interior = kind == "interior"
+        self.link_kind = kind
+        self.dashed = kind.startswith("warp")
         self.colour = QColor("#222") if self.interior else QColor(colour)
         self.arrow = None
         self.setZValue(2)
@@ -334,7 +338,12 @@ class LinkItem(QGraphicsPathItem):
         if self.interior:
             pen = QPen(self.colour, 1.5, Qt.DashLine)
         else:
-            pen = QPen(QColor(EDGE_FADED) if faded else self.colour, 4 if strong else 3, Qt.SolidLine, Qt.RoundCap)
+            pen = QPen(
+                QColor(EDGE_FADED) if faded else self.colour,
+                4 if strong else 3,
+                Qt.DashLine if self.dashed else Qt.SolidLine,
+                Qt.RoundCap,
+            )
         self.setPen(pen)
         if self.arrow is not None:
             self.arrow.setBrush(pen.color())
@@ -363,9 +372,14 @@ class LinkItem(QGraphicsPathItem):
             path.lineTo(end)
         self.setPath(path)
 
-        one_way = not self.interior and (
-            model._decoupled() or (door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a)
-        )
+        if self.link_kind in ("warp", "hole", "drop"):
+            one_way = True
+        elif self.link_kind.endswith("_both"):
+            one_way = False
+        else:
+            one_way = not self.interior and (
+                model._decoupled() or (door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a)
+            )
         if one_way:
             # Arrow head at the far end, pointing along the last bit of the curve
             tail = path.pointAtPercent(0.92) if dist > 1 else QPointF(ax, ay)
@@ -676,7 +690,13 @@ class GraphPage(QWidget):
         for a, b, kind, n in model._edges():
             if n in model.joined:
                 continue
-            link = LinkItem(self, a, b, n, kind, colours[n] if n is not None else "#222")
+            if kind.startswith("warp"):
+                colour = WARP_COLOUR
+            elif kind in ("drop", "hole", "hole_both"):
+                colour = DROP_COLOUR
+            else:
+                colour = colours[n] if n is not None else "#222"
+            link = LinkItem(self, a, b, n, kind, colour)
             self.scene.addItem(link)
             self._links.append(link)
 
@@ -795,7 +815,7 @@ class GraphPage(QWidget):
 
         press = {"kind": kind, "payload": payload, "pos": event.position(), "moved": False, "tile": None}
         inside = kind == "edge" and (
-            payload[2] is None or payload[2] in self.model.joined or door_tile(payload[0]) == door_tile(payload[1])
+            payload[2] in self.model.joined or door_tile(payload[0]) == door_tile(payload[1])
         )
         if kind in ("card", "icon", "door") or inside:
             press["tile"] = self._room_of(kind, payload, scene_pos)
@@ -811,7 +831,9 @@ class GraphPage(QWidget):
             return door_tile(payload)
         if kind == "edge":
             return self.room_at(scene_pos) or (
-                door_tile(payload[0]) if payload[2] is None or payload[2] in self.model.joined else None
+                door_tile(payload[0])
+                if door_tile(payload[0]) == door_tile(payload[1]) or payload[2] in self.model.joined
+                else None
             )
         return None
 
@@ -929,6 +951,10 @@ class GraphPage(QWidget):
                 text += "   (stacked — middle click to split)"
             elif payload[2] is not None and model._join_offset(payload[0], payload[1]) is not None:
                 text += "   (middle click to stack)"
+            elif payload[2] is None and door_tile(payload[0]) != door_tile(payload[1]):
+                if payload[1].endswith(" landing"):
+                    text = f"{payload[0]}  →  {tile_title(door_tile(payload[1]))}"
+                text += "   (warp)" if "Warp" in payload[0] else "   (vanilla drop, assumed)"
             focus = self._focus
         elif kind == "card":
             text = f"{', '.join(tile_regions(payload)[:4]) or tile_title(payload)}   (EG {payload[0]},{payload[1]})"
