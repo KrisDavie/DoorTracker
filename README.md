@@ -16,9 +16,11 @@ This tracker will auto-track dungeon layouts from the Doors branch of ALttPR usi
 
 The map is drawn as a graph. Every supertile is a card (a cluster of its doors, drawn at their real positions on a thumbnail of the room) and every door link is an edge between two doors. Cards are laid out automatically so that a link through a north door puts the linked room above, an east door to the right, and so on. Cards are coloured by the dungeon the supertile originally belongs to, which is what you want in crossed door shuffle.
 
+Rooms whose linked doorways fit together (a north door onto a south door, an east door onto a west door) are stacked: they snap together wall to wall into one bigger block that moves as a single piece, and the shared doorway is drawn as an opening in the wall instead of a line. Links that cannot be stacked (stairs, drops, or rooms that would land on top of each other) stay as edges between the blocks.
+
 Auto-tracking will track supertiles, links between doors and lobbies. Dark rooms are only visible if the player has a lamp or a torch lit, otherwise they are obscured. The card the player is in is outlined in red.
 
-Green doors are still unexplored, grey doors are linked. Hover anything to see its name in the toolbar. Lobbies hang off the door they lead to as a small entrance node.
+Green doors are still unexplored, grey doors are linked. Hover anything to see its name in the toolbar. Hovering a room also fades every link that does not touch it. Lobbies hang off the door they lead to as a small entrance node.
 
 You can save the current state of the tracker with File -> Save Tracker Data, including where you dragged the cards. Files saved by older versions load fine and are laid out automatically.
 
@@ -43,11 +45,12 @@ Start SNI and launch the tracker. The tracker will automatically connect to SNI 
 ## Controls
 
 - Mouse wheel - Zoom, drag the background - Pan, `Fit` - Show everything
-- Drag a card - Move it. Dragged cards stay where you put them (yellow dot); middle click one to hand it back to the layout
-- `Re-layout` - Lay the whole graph out again around the cards you placed
+- Drag a card - Move it, together with everything stacked on it. Dragged cards stay where you put them (yellow dot); middle click one to hand it back to the layout
+- `Re-layout` - Lay the whole graph out again around the cards you placed. This also re-picks which doorways get stacked so that as many links as possible become shared doorways
 - Left click door, then another door - Link them (Esc cancels)
 - Right click door - Add annotation or lobby. Right click the annotation to remove it
 - Right click link - Remove link
+- Middle click a stacked doorway - Split the two rooms apart. Middle click a link - Stack the rooms on it (takes priority over automatic stacking)
 - Double click the background (or right click -> Add supertile here) - Add a supertile from the EG map
 - Double click an unlinked door - Add a supertile next to that door
 - Ctrl+Right click card - Remove supertile
@@ -55,6 +58,7 @@ Start SNI and launch the tracker. The tracker will automatically connect to SNI 
 
 ### Options
 
+- `Stack fitting rooms` - Stack rooms automatically as links are made. Turn it off to only stack the links you middle click
 - `Group by original dungeon` - Pull supertiles of the same vanilla dungeon together and draw a hull around them
 - Experimental -> Hide Single Route Tiles - Fully linked pass-through rooms shrink to a small pill instead of a full card
 

@@ -11,11 +11,12 @@ the same as the old grid renderer, so existing tracker files load unchanged.
 """
 
 import math
+import random
 from collections import defaultdict, deque
 from pathlib import Path
 from tkinter import BOTH, LAST, LEFT, NW, RIGHT, X, BooleanVar, Canvas, Menu, StringVar, ttk
 
-from PIL import Image, ImageColor, ImageOps, ImageTk
+from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps, ImageTk
 
 import data.doors_sprite_data as doors_sprite_data
 from data.doors_data import (
@@ -45,8 +46,10 @@ THUMB = 128  # supertile thumbnail edge
 TITLE_H = 18  # card title bar
 COMPACT_W = 104  # pass-through tiles collapse to a pill
 COMPACT_H = 26
+DOOR_RADIUS = 5.5  # an unexplored door; linked and interior doors are drawn smaller
 LINK_GAP = 46  # preferred port-to-port distance of a link
-CARD_MARGIN = 34  # minimum space kept between cards
+CARD_MARGIN = 34
+SNAP = THUMB / 8  # stacked rooms line up on this grid along the shared wall  # minimum space kept between cards
 SCROLL_EXTENT = 200000
 TOOLBAR_HEIGHT = 30
 
@@ -112,6 +115,7 @@ DOOR_LINKED = "#9aa0a6"
 DOOR_INTERIOR = "#1b2a8a"
 DOOR_SELECTED = "#ff9800"
 PLAYER = "#e60000"
+EDGE_FADED = "#c9cdd4"
 
 
 def door_tile(door):
@@ -232,7 +236,14 @@ class GraphDoorPage(ttk.Frame):
         self.eg_selection_mode = False
 
         self.zoom = 1.0
+        self._drawn_zoom = 1.0
         self._thumb_cache = {}
+        self._card_cache = {}
+        self._dots_by_tile = {}
+        self._seam_doors = set()
+        self._linked_doors = set()
+        self._hot_door = None
+        self._drawn_zoom = 1.0
         self._sprite_cache = {}
         self._items = {}  # canvas item id -> (kind, payload)
         self._door_items = {}
@@ -256,10 +267,12 @@ class GraphDoorPage(ttk.Frame):
         ttk.Checkbutton(
             toolbar, text="Group by original dungeon", variable=self.group_by_dungeon, command=self.relayout
         ).pack(side=LEFT, padx=8)
+        self.auto_stack = BooleanVar(value=True)
+        ttk.Checkbutton(toolbar, text="Stack fitting rooms", variable=self.auto_stack, command=self.relayout).pack(
+            side=LEFT, padx=8
+        )
         self.status = StringVar(value="")
         ttk.Label(toolbar, textvariable=self.status, anchor="w").pack(side=LEFT, padx=8, fill=X, expand=True)
-        self.summary = StringVar(value="")
-        ttk.Label(toolbar, textvariable=self.summary, anchor="e").pack(side=RIGHT, padx=8)
 
         self.canvas = Canvas(
             self,
@@ -301,6 +314,17 @@ class GraphDoorPage(ttk.Frame):
         self.fixed = set()  # tiles the user dragged; the layout never moves them
         self.unsettled = set()  # freshly added tiles, free to move until they are linked
         self.compact = set()
+        self.stack_root = {}
+        self.stack_off = {}
+        self.stack_members = {}
+        self.joined = set()
+        self._layout_signature = None
+        self._stack_rank = {}
+        self._focus = None
+        self._edge_fill = {}
+        self._door_style = {}
+        self._hot_door = None
+        self._zoom_job = None
         self.doors_available = set()
         self.player = None
         self.selected_door = None
@@ -377,6 +401,7 @@ class GraphDoorPage(ttk.Frame):
                 self._ensure_tile(tile)
 
         self.compact = self._compact_tiles()
+        self._build_stacks()
 
     def _reachable_doors(self):
         """Everything reachable from the lobbies through regions, fixed connections and tracked links."""
@@ -455,7 +480,7 @@ class GraphDoorPage(ttk.Frame):
     def _size(self, tile):
         if tile in self.compact:
             return COMPACT_W, COMPACT_H
-        return THUMB, THUMB + TITLE_H
+        return THUMB, THUMB
 
     def _port_offset(self, door):
         """Offset of a door port from the centre of its card, world units."""
@@ -475,7 +500,122 @@ class GraphDoorPage(ttk.Frame):
             return (fx - 0.5) * w * 0.8, (fy - 0.5) * h * 0.6
         if self._is_hidden_dark(tile):
             fx = fy = 0.5
-        return (fx - 0.5) * THUMB, -h / 2 + TITLE_H + fy * THUMB
+        return (fx - 0.5) * THUMB, (fy - 0.5) * THUMB
+
+    # ------------------------------------------------------------------- stacks
+
+    def _stackable(self, tile):
+        return tile in self.tiles and tile not in self.compact and not self._is_hidden_dark(tile)
+
+    def _join_offset(self, a, b):
+        """Where the room of door b sits relative to the room of door a when the two doorways meet.
+
+        Only doorways that face each other fit: north onto south, east onto west.
+        """
+        da, db = DIRECTIONS.get(door_direction(a)), DIRECTIONS.get(door_direction(b))
+        if da is None or db is None or (da[0] + db[0], da[1] + db[1]) != (0, 0):
+            return None
+        ta, tb = door_tile(a), door_tile(b)
+        if ta == tb or not self._stackable(ta) or not self._stackable(tb):
+            return None
+        if a not in door_coordinates_key or b not in door_coordinates_key:
+            return None
+        fax, fay = door_fraction(a)
+        fbx, fby = door_fraction(b)
+        if da[0] == 0:
+            return round((fax - fbx) * THUMB / SNAP) * SNAP, da[1] * THUMB
+        return da[0] * THUMB, round((fay - fby) * THUMB / SNAP) * SNAP
+
+    def _stack_order(self, rank=None):
+        """Links in the order they get to claim a doorway: stacked by hand first, then by rank, then by age."""
+        rank = self._stack_rank if rank is None else rank
+        big = len(rank) + len(self.door_links)
+
+        def key(n):
+            link = self.door_links[n]
+            return (link.get("stack") is not True, rank.get((link["door"], link["linked_door"]), big + n), n)
+
+        return sorted(range(len(self.door_links)), key=key)
+
+    def _compute_stacks(self, order):
+        """Snap linked doorways together, taking links in the given order.
+
+        A link is left as a normal edge when its rooms would land on top of rooms already in the stack.
+        """
+        root = {t: t for t in self.tiles}
+        off = {t: (0.0, 0.0) for t in self.tiles}
+        members = {t: [t] for t in self.tiles}
+        joined = set()
+        auto = self.auto_stack.get()
+        for n in order:
+            link = self.door_links[n]
+            wanted = link.get("stack")
+            if wanted is False or (wanted is None and not auto):
+                continue
+            a, b = link["door"], link["linked_door"]
+            rel = self._join_offset(a, b)
+            if rel is None:
+                continue
+            ta, tb = door_tile(a), door_tile(b)
+            ra, rb = root[ta], root[tb]
+            # Shift that takes everything in b's stack into a's frame
+            sx = off[ta][0] + rel[0] - off[tb][0]
+            sy = off[ta][1] + rel[1] - off[tb][1]
+            if ra == rb:
+                if abs(sx) < 1 and abs(sy) < 1:
+                    joined.add(n)
+                continue
+            clash = any(
+                abs(off[m][0] + sx - off[k][0]) < THUMB - 1 and abs(off[m][1] + sy - off[k][1]) < THUMB - 1
+                for m in members[rb]
+                for k in members[ra]
+            )
+            if clash:
+                continue
+            if len(members[rb]) > len(members[ra]):
+                # Keep the bigger stack's frame so it is the small one that moves
+                ra, rb, sx, sy = rb, ra, -sx, -sy
+            for m in members[rb]:
+                off[m] = (off[m][0] + sx, off[m][1] + sy)
+                root[m] = ra
+            members[ra] += members.pop(rb)
+            joined.add(n)
+        return root, off, members, joined
+
+    def _build_stacks(self):
+        self.stack_root, self.stack_off, self.stack_members, self.joined = self._compute_stacks(self._stack_order())
+
+    def _optimise_stack_order(self):
+        """Look for the order of claiming doorways that stacks the most links.
+
+        Only done on a full re-layout: while tracking, stacks must not reshuffle under the player.
+        """
+        keys = [(x["door"], x["linked_door"]) for x in self.door_links]
+        candidates = [n for n, x in enumerate(self.door_links) if self._join_offset(*keys[n]) is not None]
+        if len(candidates) < 3:
+            return
+        rng = random.Random(len(self.door_links))
+        best_rank = {keys[n]: i for i, n in enumerate(self._stack_order())}
+        best_score = len(self._compute_stacks(self._stack_order(best_rank))[3])
+        for _ in range(60):
+            shuffled = candidates[:]
+            rng.shuffle(shuffled)
+            rank = {keys[n]: i for i, n in enumerate(shuffled)}
+            score = len(self._compute_stacks(self._stack_order(rank))[3])
+            if score > best_score:
+                best_score, best_rank = score, rank
+        self._stack_rank = best_rank
+        self._build_stacks()
+
+    def _stack_of(self, tile):
+        return self.stack_members.get(self.stack_root.get(tile, tile), [tile])
+
+    def _place_stack(self, anchor, x, y):
+        """Position a whole stack so that the given member's centre lands on (x, y)."""
+        ax, ay = self.stack_off[anchor]
+        for m in self._stack_of(anchor):
+            mx, my = self.stack_off[m]
+            self.pos[m] = [x + mx - ax, y + my - ay]
 
     def _port(self, door):
         tile = door_tile(door)
@@ -517,6 +657,16 @@ class GraphDoorPage(ttk.Frame):
 
     # ------------------------------------------------------------------- layout
 
+    def _signature(self):
+        """Everything the arrangement depends on; the layout only runs again when this changes."""
+        return (
+            tuple(sorted(self.tiles)),
+            tuple(sorted(self.joined)),
+            tuple(sorted(self.compact)),
+            len(self.door_links),
+            tuple(sorted(tuple(sorted(m)) for m in self.stack_members.values())),
+        )
+
     def _layout(self, full=False):
         tiles = list(self.tiles)
         if not tiles:
@@ -527,20 +677,28 @@ class GraphDoorPage(ttk.Frame):
         self.fixed &= set(tiles)
         self.unsettled &= set(tiles)
 
+        signature = self._signature()
+        if not full and signature == self._layout_signature and all(t in self.pos for t in tiles):
+            return
+        self._layout_signature = signature
+
         if full:
             for tile in tiles:
                 if tile not in self.fixed:
                     self.pos.pop(tile, None)
 
-        new_tiles = [t for t in tiles if t not in self.pos]
-        if not new_tiles and not full and not self.unsettled:
-            return
+        # Rooms that joined a stack snap onto the part of it that is already on the map
+        for root, members in self.stack_members.items():
+            placed = [m for m in members if m in self.pos]
+            if not placed:
+                continue
+            anchor = next((m for m in placed if m in self.fixed), root if root in self.pos else placed[0])
+            self.unsettled -= set(members)
+            self._place_stack(anchor, *self.pos[anchor])
 
-        # Temporary positions so port offsets can be computed for unplaced tiles
-        pending = set(new_tiles)
-        edges = []
-        for a, b, kind, _ in self._all_layout_edges():
-            edges.append((a, b))
+        edges = [(a, b) for a, b, kind, n in self._layout_edges()]
+        pending = {root for root in self.stack_members if root not in self.pos}
+        new_tiles = [m for root in pending for m in self.stack_members[root]]
 
         def place_from(anchor_door, new_door):
             anchor = door_tile(anchor_door)
@@ -552,156 +710,254 @@ class GraphDoorPage(ttk.Frame):
             if direction is None:
                 opposite = DIRECTIONS.get(door_direction(new_door))
                 direction = (-opposite[0], -opposite[1]) if opposite else (1, 0.35)
-            self.pos[new] = [
-                ax + aox + direction[0] * LINK_GAP - nox,
-                ay + aoy + direction[1] * LINK_GAP - noy,
-            ]
+            self._place_stack(new, ax + aox + direction[0] * LINK_GAP - nox, ay + aoy + direction[1] * LINK_GAP - noy)
 
-        def place_loose(tile):
-            placed = [self.pos[t] for t in self.pos]
-            w, h = self._size(tile)
+        def place_loose(root):
+            placed = list(self.pos.values())
             if not placed:
-                self.pos[tile] = [0.0, 0.0]
-            elif self.player and self.player[0] in self.pos and self.player[0] != tile:
+                self._place_stack(root, 0.0, 0.0)
+            elif self.player and self.player[0] in self.pos and self.player[0] not in self._stack_of(root):
                 px, py = self.pos[self.player[0]]
-                self.pos[tile] = [px + THUMB + CARD_MARGIN * 2, py + 20.0]
+                self._place_stack(root, px + THUMB + CARD_MARGIN * 2, py + 20.0)
             else:
                 max_x = max(p[0] for p in placed)
                 min_y = min(p[1] for p in placed)
-                self.pos[tile] = [max_x + THUMB + CARD_MARGIN * 3, min_y + (len(placed) % 5) * (h + CARD_MARGIN)]
+                self._place_stack(
+                    root, max_x + THUMB + CARD_MARGIN * 3, min_y + (len(placed) % 5) * (THUMB + CARD_MARGIN)
+                )
 
         # Seed with lobbies first so the entrances anchor the picture
-        lobby_tiles = [door_tile(x["door"]) for x in self.lobby_doors]
-        order = [t for t in lobby_tiles if t in pending] + [t for t in new_tiles if t not in lobby_tiles]
+        lobby_roots = [self.stack_root.get(door_tile(x["door"])) for x in self.lobby_doors]
+        order = [r for r in lobby_roots if r in pending] + sorted(pending, key=lambda r: -len(self.stack_members[r]))
         while pending:
             progressed = True
             while progressed:
                 progressed = False
                 for a, b in edges:
-                    ta, tb = door_tile(a), door_tile(b)
-                    if ta in pending and tb in self.pos and tb not in pending:
+                    ra, rb = self.stack_root[door_tile(a)], self.stack_root[door_tile(b)]
+                    if ra in pending and rb not in pending:
                         place_from(b, a)
-                        pending.discard(ta)
+                        pending.discard(ra)
                         progressed = True
-                    elif tb in pending and ta in self.pos and ta not in pending:
+                    elif rb in pending and ra not in pending:
                         place_from(a, b)
-                        pending.discard(tb)
+                        pending.discard(rb)
                         progressed = True
             if pending:
-                tile = next(t for t in order if t in pending)
-                place_loose(tile)
-                pending.discard(tile)
+                root = next(r for r in order if r in pending)
+                place_loose(root)
+                pending.discard(root)
 
         self.unsettled |= set(new_tiles)
-        self._relax(iterations=320 if full else 90, old_mobility=1.0 if full else 0.12, edges=edges, swap=full)
-        if full:
-            # Settle again around the improved arrangement
-            self._relax(iterations=120, old_mobility=0.5, edges=edges, swap=True)
+        if not full:
+            self._relax(iterations=90, old_mobility=0.12, edges=edges)
+        else:
+            # The result depends a lot on where things start: try a few shaken starts and keep the best
+            rng = random.Random(len(tiles) * 1000 + len(edges))
+            start = {t: list(p) for t, p in self.pos.items()}
+            best = None
+            for attempt in range(5):
+                self.pos = {t: list(p) for t, p in start.items()}
+                if attempt:
+                    for root, members in self.stack_members.items():
+                        if not any(m in self.fixed for m in members):
+                            x, y = self.pos[root]
+                            self._place_stack(root, x + rng.uniform(-260, 260), y + rng.uniform(-260, 260))
+                self._relax(iterations=260, old_mobility=1.0, edges=edges, improve=True)
+                cost = self._relax(iterations=80, old_mobility=0.5, edges=edges, improve=True)
+                if best is None or cost < best[0]:
+                    best = (cost, {t: list(p) for t, p in self.pos.items()})
+            self.pos = best[1]
 
         linked = set()
         for a, b in edges:
-            linked.add(door_tile(a))
-            linked.add(door_tile(b))
+            linked.update(self._stack_of(door_tile(a)))
+            linked.update(self._stack_of(door_tile(b)))
         self.unsettled -= linked
 
-    def _all_layout_edges(self):
-        return [e for e in self._edges(known=self.tiles) if door_tile(e[0]) != door_tile(e[1])]
+    def _layout_edges(self):
+        """Links that still pull two different stacks towards each other."""
+        return [
+            e
+            for e in self._edges(known=self.tiles)
+            if e[3] not in self.joined and self.stack_root[door_tile(e[0])] != self.stack_root[door_tile(e[1])]
+        ]
 
-    def _relax(self, iterations, old_mobility, edges, swap=False):
-        tiles = list(self.tiles)
-        index = {t: i for i, t in enumerate(tiles)}
-        n = len(tiles)
-        xs = [self.pos[t][0] for t in tiles]
-        ys = [self.pos[t][1] for t in tiles]
-        sizes = [self._size(t) for t in tiles]
-        mobility = [0.0 if t in self.fixed else (1.0 if t in self.unsettled else old_mobility) for t in tiles]
+    def _relax(self, iterations, old_mobility, edges, improve=False):
+        """Force layout over stacks: each stack is one rigid body made of its rooms.
+
+        Returns the total length of the links between stacks, lower is better.
+        """
+        roots = list(self.stack_members)
+        index = {r: i for i, r in enumerate(roots)}
+        n = len(roots)
+        xs = [self.pos[r][0] for r in roots]
+        ys = [self.pos[r][1] for r in roots]
+        # Rooms of each stack as (dx, dy, half width, half height) around the stack origin
+        rects = []
+        centres = []
+        extents = []
+        mobility = []
+        for r in roots:
+            members = self.stack_members[r]
+            boxes = []
+            for m in members:
+                w, h = self._size(m)
+                boxes.append((self.stack_off[m][0], self.stack_off[m][1], w / 2, h / 2))
+            rects.append(boxes)
+            centres.append((sum(b[0] for b in boxes) / len(boxes), sum(b[1] for b in boxes) / len(boxes)))
+            extents.append(
+                (
+                    min(b[0] - b[2] for b in boxes),
+                    max(b[0] + b[2] for b in boxes),
+                    min(b[1] - b[3] for b in boxes),
+                    max(b[1] + b[3] for b in boxes),
+                )
+            )
+            if any(m in self.fixed for m in members):
+                mobility.append(0.0)
+            elif all(m in self.unsettled for m in members):
+                mobility.append(1.0)
+            else:
+                mobility.append(old_mobility)
 
         springs = []
         for a, b in edges:
-            ia, ib = index[door_tile(a)], index[door_tile(b)]
+            ta, tb = door_tile(a), door_tile(b)
+            ia, ib = index[self.stack_root[ta]], index[self.stack_root[tb]]
             aox, aoy = self._port_offset(a)
             box, boy = self._port_offset(b)
-            springs.append((ia, aox, aoy, DIRECTIONS.get(door_direction(a)), ib, box, boy, DIRECTIONS.get(door_direction(b))))
+            da, db = DIRECTIONS.get(door_direction(a)), DIRECTIONS.get(door_direction(b))
+            # Where the far port should sit relative to the near one; None for stairs and drops
+            if da is not None and db is not None:
+                want = ((da[0] - db[0]) / 2 * LINK_GAP, (da[1] - db[1]) / 2 * LINK_GAP)
+            elif da is not None:
+                want = (da[0] * LINK_GAP, da[1] * LINK_GAP)
+            elif db is not None:
+                want = (-db[0] * LINK_GAP, -db[1] * LINK_GAP)
+            else:
+                want = None
+            springs.append(
+                (
+                    ia,
+                    aox + self.stack_off[ta][0],
+                    aoy + self.stack_off[ta][1],
+                    ib,
+                    box + self.stack_off[tb][0],
+                    boy + self.stack_off[tb][1],
+                    want,
+                )
+            )
+        incident = [[] for _ in range(n)]
+        for spring in springs:
+            incident[spring[0]].append(spring)
+            incident[spring[3]].append(spring)
 
         groups = []
         if self.group_by_dungeon.get():
             by_dungeon = defaultdict(list)
-            for t in tiles:
-                by_dungeon[tile_dungeon(t)].append(index[t])
+            for r in roots:
+                by_dungeon[tile_dungeon(r)].append(index[r])
             groups = [members for members in by_dungeon.values() if len(members) > 1]
 
         # A wide window has room to spare sideways: use it as routing space between cards
         vw, vh = self._viewport()
         margin_x = CARD_MARGIN * max(1.0, min(1.5, vw / vh))
+        margin_y = CARD_MARGIN
+
+        def overlap(a, b):
+            """How far stack b has to move to clear stack a, as (x, y); (0, 0) when they are apart."""
+            ea, eb = extents[a], extents[b]
+            sx, sy = xs[b] - xs[a], ys[b] - ys[a]
+            if (
+                sx + eb[0] - margin_x >= ea[1]
+                or sx + eb[1] + margin_x <= ea[0]
+                or sy + eb[2] - margin_y >= ea[3]
+                or sy + eb[3] + margin_y <= ea[2]
+            ):
+                return 0.0, 0.0
+            # Deepest overlap between any room of one stack and any room of the other
+            push_x = push_y = 0.0
+            for ax, ay, ahw, ahh in rects[a]:
+                for bx, by, bhw, bhh in rects[b]:
+                    dx = sx + bx - ax
+                    dy = sy + by - ay
+                    ox = ahw + bhw + margin_x - abs(dx)
+                    oy = ahh + bhh + margin_y - abs(dy)
+                    if ox <= 0 or oy <= 0:
+                        continue
+                    # Split along the axis the two rooms are already most apart on
+                    if abs(dx) * (ahh + bhh) >= abs(dy) * (ahw + bhw):
+                        if ox > abs(push_x):
+                            push_x = ox if dx >= 0 else -ox
+                    elif oy > abs(push_y):
+                        push_y = oy if dy >= 0 else -oy
+            return push_x, push_y
 
         def separate(strength):
             moved = False
             for a in range(n):
-                wa, ha = sizes[a]
                 for b in range(a + 1, n):
-                    wb, hb = sizes[b]
-                    dx = xs[b] - xs[a]
-                    dy = ys[b] - ys[a]
-                    ox = (wa + wb) / 2 + margin_x - abs(dx)
-                    oy = (ha + hb) / 2 + CARD_MARGIN - abs(dy)
-                    if ox <= 0 or oy <= 0:
-                        continue
                     ma, mb = mobility[a], mobility[b]
                     if ma + mb == 0:
                         continue
-                    share_a, share_b = ma / (ma + mb), mb / (ma + mb)
+                    push_x, push_y = overlap(a, b)
+                    if not push_x and not push_y:
+                        continue
                     moved = True
-                    # Split along the axis the two cards are already most apart on
-                    if abs(dx) * (ha + hb) >= abs(dy) * (wa + wb):
-                        push = ox * strength * (1 if dx >= 0 else -1)
-                        xs[a] -= push * share_a
-                        xs[b] += push * share_b
-                    else:
-                        push = oy * strength * (1 if dy >= 0 else -1)
-                        ys[a] -= push * share_a
-                        ys[b] += push * share_b
+                    share_a, share_b = ma / (ma + mb), mb / (ma + mb)
+                    xs[a] -= push_x * strength * share_a
+                    xs[b] += push_x * strength * share_b
+                    ys[a] -= push_y * strength * share_a
+                    ys[b] += push_y * strength * share_b
             return moved
 
-        # Aspect of the window: pull harder along the short axis so the map fills the view
+        def cost(i):
+            total = 0.0
+            for ia, aox, aoy, ib, box, boy, want in incident[i]:
+                dx = xs[ib] + box - xs[ia] - aox
+                dy = ys[ib] + boy - ys[ia] - aoy
+                if want is not None:
+                    dx -= want[0]
+                    dy -= want[1]
+                # Length along the short side of the window costs more, so the map grows the long way
+                total += math.hypot(dx, dy * stretch)
+            return total
+
+        stretch = max(1.0, min(2.0, vw / vh))
         gravity_x = 0.02
         gravity_y = gravity_x * max(1.0, min(6.0, (vw / vh) ** 2.5))
-        degree = [0] * n
-        for spring in springs:
-            degree[spring[0]] += 1
-            degree[spring[4]] += 1
+        degree = [len(x) for x in incident]
+        weight = [len(r) for r in rects]
+        total_weight = sum(weight)
 
         for it in range(iterations):
             cooling = 1 - it / iterations
             temperature = 80 * cooling + 4
             tx = [0.0] * n
             ty = [0.0] * n
-            for ia, aox, aoy, da, ib, box, boy, db in springs:
+            for ia, aox, aoy, ib, box, boy, want in springs:
                 pax, pay = xs[ia] + aox, ys[ia] + aoy
                 pbx, pby = xs[ib] + box, ys[ib] + boy
-                # Where the far port should sit relative to the near one
-                if da is not None and db is not None:
-                    vx, vy = (da[0] - db[0]) / 2 * LINK_GAP, (da[1] - db[1]) / 2 * LINK_GAP
-                elif da is not None:
-                    vx, vy = da[0] * LINK_GAP, da[1] * LINK_GAP
-                elif db is not None:
-                    vx, vy = -db[0] * LINK_GAP, -db[1] * LINK_GAP
-                else:
-                    # Stairs and drops have no heading: keep them a card apart, any direction
+                if want is None:
+                    # No heading: keep them a card apart, any direction
                     dx, dy = pbx - pax, pby - pay
                     dist = math.hypot(dx, dy) or 0.01
                     vx, vy = dx / dist * LINK_GAP * 2, dy / dist * LINK_GAP * 2
+                else:
+                    vx, vy = want
                 tx[ib] += pax + vx - box
                 ty[ib] += pay + vy - boy
                 tx[ia] += pbx - vx - aox
                 ty[ia] += pby - vy - aoy
 
-            cx = sum(xs) / n
-            cy = sum(ys) / n
+            cx = sum((xs[i] + centres[i][0]) * weight[i] for i in range(n)) / total_weight
+            cy = sum((ys[i] + centres[i][1]) * weight[i] for i in range(n)) / total_weight
             gx = [cx] * n
             gy = [cy] * n
             for members in groups:
-                mx = sum(xs[i] for i in members) / len(members)
-                my = sum(ys[i] for i in members) / len(members)
+                mx = sum(xs[i] + centres[i][0] for i in members) / len(members)
+                my = sum(ys[i] + centres[i][1] for i in members) / len(members)
                 for i in members:
                     gx[i], gy[i] = mx, my
             group_pull = 0.25 if groups else 0.0
@@ -709,10 +965,11 @@ class GraphDoorPage(ttk.Frame):
             for i in range(n):
                 if mobility[i] == 0:
                     continue
-                dx = (cx - xs[i]) * gravity_x + (gx[i] - xs[i]) * group_pull
-                dy = (cy - ys[i]) * gravity_y + (gy[i] - ys[i]) * group_pull
+                px, py = xs[i] + centres[i][0], ys[i] + centres[i][1]
+                dx = (cx - px) * gravity_x + (gx[i] - px) * group_pull
+                dy = (cy - py) * gravity_y + (gy[i] - py) * group_pull
                 if degree[i]:
-                    # Move towards the average of where each link wants this card to be
+                    # Move towards the average of where each link wants this stack to be
                     dx += (tx[i] / degree[i] - xs[i]) * 0.45
                     dy += (ty[i] / degree[i] - ys[i]) * 0.45
                 dx *= mobility[i]
@@ -724,49 +981,70 @@ class GraphDoorPage(ttk.Frame):
                 ys[i] += dy
             separate(0.3 + 0.5 * (1 - cooling))
 
-        for _ in range(60):
+        for _ in range(80):
             if not separate(1.0):
                 break
 
-        if swap:
-            # Cards end up packed, so trading places is the cheap way out of a bad local arrangement
-            def cost(i):
-                total = 0.0
-                for ia, aox, aoy, da, ib, box, boy, db in incident[i]:
-                    dx = xs[ib] + box - xs[ia] - aox
-                    dy = ys[ib] + boy - ys[ia] - aoy
-                    if da is not None:
-                        dx -= da[0] * LINK_GAP
-                        dy -= da[1] * LINK_GAP
-                    elif db is not None:
-                        dx += db[0] * LINK_GAP
-                        dy += db[1] * LINK_GAP
-                    total += math.hypot(dx, dy)
-                return total
+        if improve:
+            # Forces alone leave stacks stranded on the wrong side of their neighbours. Lift each one out,
+            # drop it where one of its links wants it, slide it clear of the others, and keep it if shorter.
+            def settle(i):
+                for _ in range(40):
+                    clear = True
+                    for other in range(n):
+                        if other == i:
+                            continue
+                        push_x, push_y = overlap(other, i)
+                        if push_x or push_y:
+                            clear = False
+                            xs[i] += push_x
+                            ys[i] += push_y
+                    if clear:
+                        return True
+                return False
 
-            incident = [[] for _ in range(n)]
-            for spring in springs:
-                incident[spring[0]].append(spring)
-                incident[spring[4]].append(spring)
-            movable = [i for i in range(n) if mobility[i] > 0 and sizes[i] == (THUMB, THUMB + TITLE_H)]
-            for _ in range(6):
+            movable = [i for i in range(n) if mobility[i] > 0 and degree[i]]
+            for _ in range(5):
                 improved = False
-                for ai, a in enumerate(movable):
-                    for b in movable[ai + 1 :]:
-                        before = cost(a) + cost(b)
-                        xs[a], xs[b], ys[a], ys[b] = xs[b], xs[a], ys[b], ys[a]
-                        if cost(a) + cost(b) < before - 1:
-                            improved = True
+                for i in sorted(movable, key=cost, reverse=True):
+                    before = cost(i)
+                    best = (before - 1, xs[i], ys[i])
+                    home = (xs[i], ys[i])
+                    spots = []
+                    sum_x = sum_y = 0.0
+                    for ia, aox, aoy, ib, box, boy, want in incident[i]:
+                        vx, vy = want if want is not None else (0.0, LINK_GAP * 2)
+                        if ib == i and ia != i:
+                            spot = (xs[ia] + aox + vx - box, ys[ia] + aoy + vy - boy)
+                        elif ia == i and ib != i:
+                            spot = (xs[ib] + box - vx - aox, ys[ib] + boy - vy - aoy)
                         else:
-                            xs[a], xs[b], ys[a], ys[b] = xs[b], xs[a], ys[b], ys[a]
+                            continue
+                        spots.append(spot)
+                        sum_x += spot[0]
+                        sum_y += spot[1]
+                    if not spots:
+                        continue
+                    spots.append((sum_x / len(spots), sum_y / len(spots)))
+                    for spot_x, spot_y in spots:
+                        xs[i], ys[i] = spot_x, spot_y
+                        if settle(i):
+                            value = cost(i)
+                            if value < best[0]:
+                                best = (value, xs[i], ys[i])
+                    xs[i], ys[i] = best[1], best[2]
+                    if (xs[i], ys[i]) != home:
+                        improved = True
                 if not improved:
                     break
 
-        for i, t in enumerate(tiles):
-            self.pos[t] = [xs[i], ys[i]]
+        for i, r in enumerate(roots):
+            self._place_stack(r, xs[i], ys[i])
+        return sum(cost(i) for i in range(n)) / 2
 
     def relayout(self):
         self._sync_model()
+        self._optimise_stack_order()
         self._layout(full=True)
         self._needs_fit = True
         self._render()
@@ -815,18 +1093,157 @@ class GraphDoorPage(ttk.Frame):
         cx, cy = (x0 + x1) / 2 * self.zoom, (y0 + y1) / 2 * self.zoom
         self._scroll_to(cx - vw / 2, cy - vh / 2)
 
+    _mips = {}  # supertile -> (512px, 256px) opaque copies, shared by every dungeon tab
+    _fonts = {}
+    _dot_sprites = {}
+
     def _thumbnail(self, tile, size):
+        """The supertile picture at the given pixel size, as a PIL image."""
         key = (tile, size)
         if key not in self._thumb_cache:
-            x, y = tile
+            if len(self._thumb_cache) > 400:
+                self._thumb_cache.clear()
             if self.eg_img is None:
                 img = Image.new("RGB", (size, size), "#444")
             else:
-                img = self.eg_img.crop((x * 512, y * 512, (x + 1) * 512, (y + 1) * 512)).resize(
-                    (size, size), Image.LANCZOS
-                )
-            self._thumb_cache[key] = ImageTk.PhotoImage(img)
+                if tile not in GraphDoorPage._mips:
+                    x, y = tile
+                    crop = self.eg_img.crop((x * 512, y * 512, (x + 1) * 512, (y + 1) * 512)).convert("RGB")
+                    GraphDoorPage._mips[tile] = (crop, crop.resize((256, 256), Image.LANCZOS))
+                full, half = GraphDoorPage._mips[tile]
+                img = (half if size <= 256 else full).resize((size, size), Image.BILINEAR)
+            self._thumb_cache[key] = img
         return self._thumb_cache[key]
+
+    def _font(self, px):
+        px = max(7, int(round(px)))
+        if px not in GraphDoorPage._fonts:
+            font = None
+            for name in ("segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"):
+                try:
+                    font = ImageFont.truetype(name, px)
+                    break
+                except OSError:
+                    continue
+            if font is None:
+                try:
+                    font = ImageFont.load_default(px)
+                except TypeError:
+                    font = ImageFont.load_default()
+            GraphDoorPage._fonts[px] = font
+        return GraphDoorPage._fonts[px]
+
+    def _dot_sprite(self, fill, size, width):
+        """An anti-aliased door dot, pasted into card images."""
+        key = (fill, size, width)
+        if key not in GraphDoorPage._dot_sprites:
+            scale = 4
+            img = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
+            ImageDraw.Draw(img).ellipse(
+                (0, 0, size * scale - 1, size * scale - 1),
+                fill=fill,
+                outline="#111111",
+                width=max(1, int(round(width * scale))),
+            )
+            GraphDoorPage._dot_sprites[key] = img.resize((size, size), Image.LANCZOS)
+        return GraphDoorPage._dot_sprites[key]
+
+    def _door_dots(self, tile):
+        """Every door drawn on a card as (door, x, y, radius, fill, outline), offsets in world units from its centre."""
+        lobby_doors = set(self._lobby_door_names())
+        dots = []
+        for door in tile_door_names(tile):
+            if door in ENTRANCE_ONLY_DOORS or door.startswith("Skull Drop Entrance"):
+                continue
+            if door in self._seam_doors or not self._door_visible(door):
+                continue
+            interior = door in INTERIOR_DOORS
+            if interior and tile in self.compact:
+                continue
+            linked = door in self._linked_doors or door in lobby_doors
+            if interior:
+                fill = DOOR_INTERIOR
+            elif linked:
+                fill = DOOR_LINKED
+            else:
+                fill = DOOR_OPEN
+            ox, oy = self._port_offset(door)
+            small = interior or linked
+            dots.append((door, ox, oy, DOOR_RADIUS * (0.7 if small else 1.0), fill, 1 if small else 1.5))
+        return dots
+
+    def _card_image(self, tile, show_text):
+        """One supertile baked into a single image: picture, border, name and door dots.
+
+        Tk repaints the whole canvas on every pan and drag step, and hundreds of small items on top of
+        the pictures made that slow. One opaque image per room keeps a frame cheap.
+        """
+        z = self.zoom
+        w, h = self._size(tile)
+        pw, ph = max(8, int(round(w * z))), max(6, int(round(h * z)))
+        colour = DUNGEON_COLOURS.get(tile_dungeon(tile), UNKNOWN_DUNGEON_COLOUR)
+        hidden = self._is_hidden_dark(tile)
+        compact = tile in self.compact
+        title = ("Dark room" if hidden else tile_title(tile)) if show_text else None
+        dots = self._door_dots(tile)
+        self._dots_by_tile[tile] = dots
+        key = (
+            tile,
+            pw,
+            ph,
+            colour,
+            hidden,
+            compact,
+            title,
+            tile in self.pinned_eg_tiles,
+            tile in self.fixed,
+            tuple(d[1:] for d in dots),
+        )
+        photo = self._card_cache.get(key)
+        if photo is not None:
+            return photo
+        if len(self._card_cache) > 500:
+            self._card_cache.clear()
+
+        if compact:
+            img = Image.new("RGB", (pw, ph), lighten(colour, 0.7))
+        elif hidden:
+            img = Image.new("RGB", (pw, ph), "#000000")
+        else:
+            img = self._thumbnail(tile, pw).copy()
+        draw = ImageDraw.Draw(img)
+        border = max(2, int(round(2 * z)))
+        if tile in self.pinned_eg_tiles:
+            draw.rectangle((0, 0, pw - 1, ph - 1), outline="#18c418", width=border + max(2, int(round(3 * z))))
+        draw.rectangle((0, 0, pw - 1, ph - 1), outline=colour, width=border)
+
+        if hidden and not compact:
+            draw.text((pw / 2, ph / 2), "?", fill="#555555", font=self._font(40 * z), anchor="mm")
+        if title:
+            font = self._font(11 * z)
+            room = pw - 2 * border - 4
+            while len(title) > 3 and draw.textlength(title, font=font) > room:
+                title = title[:-2].rstrip() + "…"
+            if compact:
+                draw.text((pw / 2, ph / 2), title, fill="#111111", font=font, anchor="mm")
+            else:
+                # The name is a tag in the top left corner; doors are drawn after it so it never hides one
+                left, top, right, bottom = draw.textbbox((border + 2, border), title, font=font)
+                draw.rectangle((0, 0, right + 3, bottom + 2), fill=colour)
+                draw.text((border + 2, border), title, fill="#ffffff", font=font)
+        if tile in self.fixed:
+            r = max(2, int(round(3 * z)))
+            draw.ellipse((pw - border - 3 * r, border + r, pw - border - r, border + 3 * r), fill="#ffd54a", outline="#333333")
+
+        for door, ox, oy, radius, fill, outline in dots:
+            size = max(5, int(round(radius * 2 * z)) | 1)
+            sprite = self._dot_sprite(fill, size, outline)
+            cx, cy = (ox + w / 2) * z, (oy + h / 2) * z
+            img.paste(sprite, (int(round(cx - size / 2)), int(round(cy - size / 2))), sprite)
+
+        photo = ImageTk.PhotoImage(img)
+        self._card_cache[key] = photo
+        return photo
 
     def _sprite(self, icon, scale):
         key = (icon, scale)
@@ -854,6 +1271,16 @@ class GraphDoorPage(ttk.Frame):
 
         c = self.canvas
         c.delete("all")
+        self._drawn_zoom = self.zoom
+        self._dots_by_tile = {}
+        self._seam_doors = set()
+        for n in self.joined:
+            self._seam_doors.add(self.door_links[n]["door"])
+            self._seam_doors.add(self.door_links[n]["linked_door"])
+        self._linked_doors = set()
+        for link in self.door_links:
+            self._linked_doors.add(link["door"])
+            self._linked_doors.add(link["linked_door"])
         self._items = {}
         self._door_items = {}
         self._images = []
@@ -876,12 +1303,6 @@ class GraphDoorPage(ttk.Frame):
             vw, vh = self._viewport()
             self._scroll_to(-vw / 2, -vh / 2)
             c.create_text(0, 0, text="Double-click to add a supertile", fill="#888", font=("TkDefaultFont", 12))
-
-        open_doors = sum(1 for d, item in self._door_items.items() if d not in INTERIOR_DOORS and not self._is_linked(d))
-        self.summary.set(
-            f"{self.dungeon_name.replace('_', ' ')}   {len(self.tiles)} supertiles · "
-            f"{len(self.door_links)} links · {open_doors} open doors"
-        )
 
     def _is_linked(self, door):
         if door in self._lobby_door_names():
@@ -921,79 +1342,16 @@ class GraphDoorPage(ttk.Frame):
 
     def _draw_card(self, tile, font_size, show_text):
         c = self.canvas
-        z = self.zoom
         x, y = self.pos[tile]
         w, h = self._size(tile)
         left, top = self._w2c(x - w / 2, y - h / 2)
-        right, bottom = self._w2c(x + w / 2, y + h / 2)
-        colour = DUNGEON_COLOURS.get(tile_dungeon(tile), UNKNOWN_DUNGEON_COLOUR)
-        hidden = self._is_hidden_dark(tile)
-        is_player = self.player is not None and self.player[0] == tile
         tag = f"tile_{tile[0]}_{tile[1]}"
-        title = "Dark room" if hidden else tile_title(tile)
-        max_chars = max(3, int((right - left) / (font_size * 0.72)))
-        if len(title) > max_chars:
-            title = title[: max_chars - 1] + "…"
-
-        if tile in self.pinned_eg_tiles:
-            c.create_rectangle(left - 4, top - 4, right + 4, bottom + 4, fill="#18c418", outline="", tags=[tag, "card"])
-
-        if tile in self.compact:
-            item = c.create_rectangle(
-                left, top, right, bottom, fill=lighten(colour, 0.7), outline=colour, width=2, tags=[tag, "card"]
-            )
-            self._track(item, "card", tile)
-            if show_text:
-                text = c.create_text(
-                    (left + right) / 2,
-                    (top + bottom) / 2,
-                    text=title,
-                    fill="#111",
-                    font=("TkDefaultFont", font_size),
-                    tags=[tag, "card"],
-                )
-                self._track(text, "card", tile)
-        else:
-            title_bottom = top + TITLE_H * z
-            bar = c.create_rectangle(left, top, right, title_bottom, fill=colour, outline=colour, tags=[tag, "card"])
-            self._track(bar, "card", tile)
-            if show_text:
-                text = c.create_text(
-                    left + 4 * z,
-                    (top + title_bottom) / 2,
-                    text=title,
-                    anchor="w",
-                    fill="white",
-                    font=("TkDefaultFont", font_size, "bold"),
-                    tags=[tag, "card"],
-                )
-                self._track(text, "card", tile)
-            size = max(8, int(round(THUMB * z)))
-            if hidden:
-                body = c.create_rectangle(left, title_bottom, right, bottom, fill="#000", outline="", tags=[tag, "card"])
-                c.create_text(
-                    (left + right) / 2,
-                    (title_bottom + bottom) / 2,
-                    text="?",
-                    fill="#555",
-                    font=("TkDefaultFont", max(8, int(28 * z)), "bold"),
-                    tags=[tag, "card"],
-                    state="disabled",
-                )
-            else:
-                img = self._thumbnail(tile, size)
-                self._images.append(img)
-                body = c.create_image(left, title_bottom, image=img, anchor=NW, tags=[tag, "card"])
-            self._track(body, "card", tile)
-            c.create_rectangle(left, top, right, bottom, outline=colour, width=2, tags=[tag, "card"], state="disabled")
-
-        if tile in self.fixed:
-            r = max(2, 3 * z)
-            c.create_oval(
-                right - 3 * r, top + r, right - r, top + 3 * r, fill="#ffd54a", outline="#333", tags=[tag, "card"],
-                state="disabled",
-            )
-        if is_player:
+        photo = self._card_image(tile, show_text)
+        self._images.append(photo)
+        item = c.create_image(round(left), round(top), image=photo, anchor=NW, tags=[tag, "card"])
+        self._track(item, "card", tile)
+        if self.player is not None and self.player[0] == tile:
+            right, bottom = self._w2c(x + w / 2, y + h / 2)
             c.create_rectangle(
                 left - 3, top - 3, right + 3, bottom + 3, outline=PLAYER, width=3, tags=["player"], state="disabled"
             )
@@ -1019,8 +1377,12 @@ class GraphDoorPage(ttk.Frame):
         c = self.canvas
         z = self.zoom
         colours = link_colours(len(self.door_links))
+        self._edge_fill = {}
         width = max(1.5, 3 * z)
         for a, b, kind, n in self._edges():
+            if n in self.joined:
+                # The two rooms are stacked on this doorway: there is no line to draw
+                continue
             points = self._edge_points(a, b)
             if kind == "interior":
                 item = c.create_line(
@@ -1028,7 +1390,9 @@ class GraphDoorPage(ttk.Frame):
                 )
                 self._track(item, "edge", (a, b, n))
                 continue
-            one_way = self._decoupled() or door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a
+            one_way = self._decoupled() or (
+                door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a
+            )
             item = c.create_line(
                 *points,
                 smooth=True,
@@ -1041,45 +1405,82 @@ class GraphDoorPage(ttk.Frame):
                 tags=["edge"],
             )
             self._track(item, "edge", (a, b, n))
+            self._edge_fill[item] = colours[n]
+        self._focus = None
+
+    def _set_focus(self, tile):
+        """Fade every link that does not touch the room under the mouse."""
+        if tile == self._focus:
+            return
+        self._focus = tile
+        c = self.canvas
+        width = max(1.5, 3 * self.zoom)
+        for item, colour in self._edge_fill.items():
+            a, b, n = self._items[item][1]
+            touches = tile is None or door_tile(a) == tile or door_tile(b) == tile
+            c.itemconfigure(item, fill=colour if touches else EDGE_FADED, width=width + 1 if touches and tile else width)
+            if touches and tile is not None:
+                c.tag_raise(item)
+        c.tag_raise("door")
+        c.tag_raise("icon")
+        c.tag_raise("player")
 
     def _draw_doors(self):
+        """Doorways shared by two stacked rooms: one opening across the wall instead of two dots and a line."""
         c = self.canvas
         z = self.zoom
-        lobby_doors = set(self._lobby_door_names())
-        radius = max(2.5, 5.5 * z)
-        for tile in self.tiles:
-            for door in tile_door_names(tile):
-                if door in ENTRANCE_ONLY_DOORS or door.startswith("Skull Drop Entrance"):
-                    continue
-                if not self._door_visible(door):
-                    continue
-                interior = door in INTERIOR_DOORS
-                if interior and tile in self.compact:
-                    continue
-                x, y = self._w2c(*self._port(door))
-                linked = self._is_linked(door) or door in lobby_doors
-                r = radius * (0.7 if interior or linked else 1.0)
-                if door == self.selected_door:
-                    fill = DOOR_SELECTED
-                elif interior:
-                    fill = DOOR_INTERIOR
-                elif linked:
-                    fill = DOOR_LINKED
-                else:
-                    fill = DOOR_OPEN
-                item = c.create_oval(
-                    x - r,
-                    y - r,
-                    x + r,
-                    y + r,
-                    fill=fill,
-                    outline="#111",
-                    width=1 if linked or interior else 2,
-                    activefill=PLAYER,
-                    tags=["door", f"tile_{tile[0]}_{tile[1]}"],
-                )
-                self._track(item, "door", door)
-                self._door_items[door] = item
+        long_side, short_side = max(4, 11 * z), max(2.5, 5 * z)
+        for n in sorted(self.joined):
+            a, b = self.door_links[n]["door"], self.door_links[n]["linked_door"]
+            ax, ay = self._w2c(*self._port(a))
+            bx, by = self._w2c(*self._port(b))
+            x, y = (ax + bx) / 2, (ay + by) / 2
+            vertical = DIRECTIONS[door_direction(a)][0] == 0
+            hw, hh = (long_side, short_side) if vertical else (short_side, long_side)
+            ta = door_tile(a)
+            item = c.create_rectangle(
+                x - hw,
+                y - hh,
+                x + hw,
+                y + hh,
+                fill="#fffbe0",
+                outline="#111",
+                width=max(1, 2 * z),
+                activefill=PLAYER,
+                tags=["door", "seam", f"tile_{ta[0]}_{ta[1]}"],
+            )
+            self._track(item, "edge", (a, b, n))
+        self._draw_door_marks()
+
+    def _draw_door_marks(self):
+        """The only doors that are canvas items: the one being linked from and the one under the mouse."""
+        c = self.canvas
+        c.delete("mark")
+        for door, colour in ((self.selected_door, DOOR_SELECTED), (self._hot_door, PLAYER)):
+            if door is None or door_tile(door) not in self.pos or door not in door_coordinates_key:
+                continue
+            x, y = self._w2c(*self._port(door))
+            r = max(3.5, (DOOR_RADIUS + 1) * self.zoom)
+            c.create_oval(
+                x - r, y - r, x + r, y + r, fill=colour, outline="#111", width=2, tags=["mark"], state="disabled"
+            )
+
+    def _door_at(self, event):
+        """The door dot under the mouse, found by geometry since dots are part of the card images."""
+        wx, wy = self._event_world(event)
+        best = None
+        for tile, dots in self._dots_by_tile.items():
+            if tile not in self.pos:
+                continue
+            x, y = self.pos[tile]
+            w, h = self._size(tile)
+            if abs(wx - x) > w / 2 + 10 or abs(wy - y) > h / 2 + 10:
+                continue
+            for door, ox, oy, radius, fill, outline in dots:
+                distance = math.hypot(wx - x - ox, wy - y - oy)
+                if distance <= max(radius, 6 / self._drawn_zoom) + 1 and (best is None or distance < best[0]):
+                    best = (distance, door)
+        return best[1] if best else None
 
     def _draw_annotations(self, font_size, show_text):
         c = self.canvas
@@ -1147,10 +1548,7 @@ class GraphDoorPage(ttk.Frame):
         if tile not in self.pos or tile in self.compact:
             return
         x, y = self.pos[tile]
-        w, h = self._size(tile)
-        wx = x - w / 2 + (px / 512) * THUMB
-        wy = y - h / 2 + TITLE_H + (py / 512) * THUMB
-        cx, cy = self._w2c(wx, wy)
+        cx, cy = self._w2c(x + (px / 512 - 0.5) * THUMB, y + (py / 512 - 0.5) * THUMB)
         s = max(4, 7 * self.zoom)
         width = max(2, 3 * self.zoom)
         c.create_line(cx - s, cy - s, cx + s, cy + s, fill=PLAYER, width=width, tags=["player"], state="disabled")
@@ -1158,14 +1556,19 @@ class GraphDoorPage(ttk.Frame):
 
     # ------------------------------------------------------------- interactions
 
-    def _hit(self):
+    def _hit(self, event):
+        """What is under the mouse, as (kind, payload)."""
         current = self.canvas.find_withtag("current")
-        if not current:
-            return None, None
-        return self._items.get(current[0], (None, None))
+        kind, payload = self._items.get(current[0], (None, None)) if current else (None, None)
+        if kind in (None, "card"):
+            door = self._door_at(event)
+            if door is not None:
+                return "door", door
+        return kind, payload
 
     def _event_world(self, event):
-        return self.canvas.canvasx(event.x) / self.zoom, self.canvas.canvasy(event.y) / self.zoom
+        zoom = self._drawn_zoom
+        return self.canvas.canvasx(event.x) / zoom, self.canvas.canvasy(event.y) / zoom
 
     def _on_configure(self, event):
         # Keep the whole map in view while the window changes size, until the user takes over the camera
@@ -1180,9 +1583,15 @@ class GraphDoorPage(ttk.Frame):
 
     def _on_press(self, event):
         self.canvas.focus_set()
-        kind, payload = self._hit()
+        kind, payload = self._hit(event)
         self._press = {"kind": kind, "payload": payload, "x": event.x, "y": event.y, "moved": False}
-        if kind is None or kind == "edge":
+        if kind == "edge" and (
+            payload[2] is None or payload[2] in self.joined or door_tile(payload[0]) == door_tile(payload[1])
+        ):
+            # Lines and doorways that live inside a card or a stack drag it like the card itself
+            self._press["kind"] = "card"
+            self._press["payload"] = door_tile(payload[0])
+        elif kind is None or kind == "edge":
             self._press["kind"] = "pan"
             self.canvas.scan_mark(event.x, event.y)
         elif kind == "icon":
@@ -1205,17 +1614,20 @@ class GraphDoorPage(ttk.Frame):
         tile = press["payload"] if press["kind"] == "card" else door_tile(press["payload"])
         if tile not in self.pos:
             return
-        self.pos[tile][0] += dx / self.zoom
-        self.pos[tile][1] += dy / self.zoom
         press["x"], press["y"] = event.x, event.y
         press["dragged_tile"] = tile
-        self.canvas.move(f"tile_{tile[0]}_{tile[1]}", dx, dy)
+        # A stack moves as one piece
+        for member in self._stack_of(tile):
+            self.pos[member][0] += dx / self.zoom
+            self.pos[member][1] += dy / self.zoom
+            self.canvas.move(f"tile_{member[0]}_{member[1]}", dx, dy)
         self.canvas.delete("edge")
-        self._items = {k: v for k, v in self._items.items() if v[0] != "edge"}
+        self._items = {k: v for k, v in self._items.items() if v[0] != "edge" or self.canvas.type(k) == "rectangle"}
         self._draw_edges()
         self.canvas.tag_raise("door")
         self.canvas.tag_raise("icon")
         self.canvas.tag_raise("player")
+        self._draw_door_marks()
 
     def _on_release(self, event):
         press, self._press = self._press, None
@@ -1224,8 +1636,9 @@ class GraphDoorPage(ttk.Frame):
         if press["moved"]:
             tile = press.get("dragged_tile")
             if tile is not None:
-                self.fixed.add(tile)
-                self.unsettled.discard(tile)
+                members = self._stack_of(tile)
+                self.fixed.update(members)
+                self.unsettled.difference_update(members)
                 self._render()
             return
         if press["kind"] == "door":
@@ -1245,7 +1658,7 @@ class GraphDoorPage(ttk.Frame):
             if self.has_target(door):
                 return
             self.selected_door = door
-            self.canvas.itemconfigure(self._door_items[door], fill=DOOR_SELECTED)
+            self._draw_door_marks()
             return
         if door == self.selected_door:
             self._cancel_selection()
@@ -1257,8 +1670,21 @@ class GraphDoorPage(ttk.Frame):
         self.door_links.append({"door": source, "linked_door": door})
         self.redraw_canvas()
 
+    def _highlight_door(self, door):
+        if door != self._hot_door:
+            self._hot_door = door
+            self._draw_door_marks()
+
     def _on_motion(self, event):
-        kind, payload = self._hit()
+        kind, payload = self._hit(event)
+        self._highlight_door(payload if kind == "door" else None)
+        if not self._press:
+            if kind == "card":
+                self._set_focus(payload)
+            elif kind == "door":
+                self._set_focus(door_tile(payload))
+            elif kind != "edge":
+                self._set_focus(None)
         if kind == "door":
             links = self._link_map()
             target = links.get(payload)
@@ -1267,6 +1693,10 @@ class GraphDoorPage(ttk.Frame):
                 text += f"   [{self.special_doors[payload]}]"
         elif kind == "edge":
             text = f"{payload[0]}  ↔  {payload[1]}"
+            if payload[2] in self.joined:
+                text += "   (stacked — middle click to split)"
+            elif payload[2] is not None and self._join_offset(payload[0], payload[1]) is not None:
+                text += "   (middle click to stack)"
         elif kind == "card":
             text = f"{', '.join(tile_regions(payload)[:4]) or tile_title(payload)}   (EG {payload[0]},{payload[1]})"
         elif kind == "icon":
@@ -1288,7 +1718,7 @@ class GraphDoorPage(ttk.Frame):
                 tags=["rubber"],
                 state="disabled",
             )
-            self.canvas.tag_lower("rubber", "door")
+            self.canvas.tag_raise("mark")
         if text != self.status.get():
             self.status.set(text)
 
@@ -1299,14 +1729,24 @@ class GraphDoorPage(ttk.Frame):
         new_zoom = max(0.15, min(2.5, self.zoom * factor))
         if abs(new_zoom - self.zoom) < 1e-6:
             return
-        wx, wy = self.canvas.canvasx(sx) / self.zoom, self.canvas.canvasy(sy) / self.zoom
+        if self._zoom_job is None:
+            # World point under the mouse, as drawn right now
+            self._zoom_anchor = (self.canvas.canvasx(sx) / self._drawn_zoom, self.canvas.canvasy(sy) / self._drawn_zoom)
+            self._zoom_job = self.after_idle(self._apply_zoom)
+        self._zoom_screen = (sx, sy)
         self.zoom = new_zoom
         self._auto_view = False
+
+    def _apply_zoom(self):
+        """Redraw once for however many wheel ticks arrived since the last frame."""
+        self._zoom_job = None
+        wx, wy = self._zoom_anchor
+        sx, sy = self._zoom_screen
         self._render()
-        self._scroll_to(wx * new_zoom - sx, wy * new_zoom - sy)
+        self._scroll_to(wx * self.zoom - sx, wy * self.zoom - sy)
 
     def _on_double_click(self, event):
-        kind, payload = self._hit()
+        kind, payload = self._hit(event)
         self._press = None
         if kind == "door":
             if self.has_target(payload) or payload in INTERIOR_DOORS:
@@ -1347,7 +1787,7 @@ class GraphDoorPage(ttk.Frame):
         self.redraw_canvas()
 
     def _on_right_click(self, event):
-        kind, payload = self._hit()
+        kind, payload = self._hit(event)
         if kind == "door":
             self._annotate_door(payload, event)
         elif kind == "edge":
@@ -1391,7 +1831,7 @@ class GraphDoorPage(ttk.Frame):
         self.redraw_canvas()
 
     def _on_ctrl_right_click(self, event):
-        kind, tile = self._hit()
+        kind, tile = self._hit(event)
         if kind != "card" or tile in mandatory_tiles[self.tab_world]:
             return
         doors = set(tile_door_names(tile))
@@ -1408,24 +1848,53 @@ class GraphDoorPage(ttk.Frame):
         self.redraw_canvas()
 
     def _on_middle_click(self, event):
-        kind, tile = self._hit()
+        kind, payload = self._hit(event)
+        if kind == "edge":
+            self._toggle_stack(payload)
+            return
         if kind != "card":
             return
+        tile = payload
         if tile in self.fixed:
-            # Middle click on a dragged tile hands it back to the layout
-            self.fixed.discard(tile)
+            # Middle click on a dragged tile hands it (and its stack) back to the layout
+            self.fixed.difference_update(self._stack_of(tile))
         elif tile in self.pinned_eg_tiles:
             self.pinned_eg_tiles.discard(tile)
         else:
             self.pinned_eg_tiles.add(tile)
         self.redraw_canvas()
 
+    def _toggle_stack(self, payload):
+        """Split two rooms stacked on a doorway, or stack the rooms at either end of a link."""
+        a, b, n = payload
+        if n is None:
+            return
+        link = self.door_links[n]
+        if n in self.joined:
+            link["stack"] = False
+            self.redraw_canvas()
+            return
+        if self._join_offset(a, b) is None:
+            self.status.set("These two doors cannot be stacked: only north/south and east/west doorways fit together")
+            return
+        link["stack"] = True
+        self._sync_model()
+        if n not in self.joined:
+            link.pop("stack")
+            self._sync_model()
+            self.status.set("Cannot stack here: the rooms would land on top of rooms already in the stack")
+            return
+        self.redraw_canvas()
+
     # --------------------------------------------------------- save / load / api
 
     def load_yaml(self, yaml_data):
-        self.door_links = [
-            {"door": x["door"], "linked_door": x["linked_door"]} for x in yaml_data.get("door_links", [])
-        ]
+        self.door_links = []
+        for x in yaml_data.get("door_links", []):
+            link = {"door": x["door"], "linked_door": x["linked_door"]}
+            if x.get("stack") is not None:
+                link["stack"] = bool(x["stack"])
+            self.door_links.append(link)
         self.lobby_doors = [{"door": x["door"], "lobby": x["lobby"]} for x in yaml_data.get("lobby_doors", [])]
         self.special_doors = dict(yaml_data.get("special_doors", {}))
         self.tiles = {}
@@ -1434,6 +1903,7 @@ class GraphDoorPage(ttk.Frame):
         self.unsettled = set()
         self.player = None
         self.selected_door = None
+        self._layout_signature = None
         for key, lit in yaml_data.get("tiles", {}).items():
             tile = tuple(int(x) for x in str(key).split("__"))
             self._ensure_tile(tile, has_been_lit=bool(lit))
@@ -1445,12 +1915,24 @@ class GraphDoorPage(ttk.Frame):
                     self.fixed.add(tile)
         self._needs_fit = True
         self._sync_model()
+        if self.pos and all(t in self.pos for t in self.tiles):
+            # A saved arrangement is shown exactly as it was left
+            self._layout_signature = self._signature()
+        else:
+            self._optimise_stack_order()
         self._layout(full=not self.pos)
         self._render()
 
     def return_connections(self):
+        door_links = []
+        for x in self.door_links:
+            link = {"door": x["door"], "linked_door": x["linked_door"]}
+            if x.get("stack") is not None:
+                # Only present when a doorway was split or stacked by hand
+                link["stack"] = x["stack"]
+            door_links.append(link)
         return {
-            "door_links": [{"door": x["door"], "linked_door": x["linked_door"]} for x in self.door_links],
+            "door_links": door_links,
             "lobby_doors": [{"door": x["door"], "lobby": x["lobby"]} for x in self.lobby_doors],
             "tiles": {f"{t[0]}__{t[1]}": data["has_been_lit"] for t, data in self.tiles.items()},
             "special_doors": dict(self.special_doors),
