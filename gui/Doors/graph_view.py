@@ -803,6 +803,7 @@ class GraphDoorPage(ttk.Frame):
                     best = (cost, {t: list(p) for t, p in self.pos.items()})
             self.pos = best[1]
             self._relax(iterations=150, old_mobility=1.0, edges=edges, cold=True)
+            self._park_unlinked(edges)
         self._laid_spacing = self.spacing
 
         linked = set()
@@ -810,6 +811,34 @@ class GraphDoorPage(ttk.Frame):
             linked.update(self._stack_of(door_tile(a)))
             linked.update(self._stack_of(door_tile(b)))
         self.unsettled -= linked
+
+    def _park_unlinked(self, edges):
+        """Line blocks that have no links to anything up beside the map.
+
+        Nothing pulls on them, so without this they would be left wherever the search happened to drop them.
+        """
+        linked = set()
+        for a, b in edges:
+            linked.add(self.stack_root[door_tile(a)])
+            linked.add(self.stack_root[door_tile(b)])
+        loose = [
+            r
+            for r, members in self.stack_members.items()
+            if r not in linked and not any(m in self.fixed for m in members)
+        ]
+        rest = [t for r in self.stack_members if r not in loose for t in self.stack_members[r]]
+        if not loose or not rest:
+            return
+        right = max(self.pos[t][0] + self._size(t)[0] / 2 for t in rest)
+        y = min(self.pos[t][1] - self._size(t)[1] / 2 for t in rest)
+        gap = max(self.spacing, LINK_GAP)
+        for r in sorted(loose):
+            members = self.stack_members[r]
+            left = min(self.stack_off[m][0] - self._size(m)[0] / 2 for m in members)
+            top = min(self.stack_off[m][1] - self._size(m)[1] / 2 for m in members)
+            bottom = max(self.stack_off[m][1] + self._size(m)[1] / 2 for m in members)
+            self._place_stack(r, right + gap * 2 - left, y - top)
+            y += bottom - top + gap
 
     def _layout_edges(self):
         """Links that still pull two different stacks towards each other."""
@@ -1023,8 +1052,6 @@ class GraphDoorPage(ttk.Frame):
                 total += math.hypot(dx, dy)
             return total
 
-        # Just enough pull towards the middle to stop unconnected pieces drifting away
-        gravity_x = gravity_y = 0.004
         degree = [len(x) for x in incident]
         # Experiment: a block whose links all lead to one other block is a satellite of it, and its
         # links are allowed to pull harder so it tucks in next to that block instead of floating off.
@@ -1073,23 +1100,24 @@ class GraphDoorPage(ttk.Frame):
                 tx[ia] -= ex * share
                 ty[ia] -= ey * share
 
-            cx = sum((xs[i] + centres[i][0]) * weight[i] for i in range(n)) / total_weight
-            cy = sum((ys[i] + centres[i][1]) * weight[i] for i in range(n)) / total_weight
-            gx = [cx] * n
-            gy = [cy] * n
+            # There is no pull towards the middle of the map: links are what hold it together, and a
+            # block with no links simply stays where it is. Only "Group by original dungeon" adds a pull,
+            # towards the middle of each dungeon's rooms.
+            gx = [None] * n
+            gy = [None] * n
             for members in groups:
                 mx = sum(xs[i] + centres[i][0] for i in members) / len(members)
                 my = sum(ys[i] + centres[i][1] for i in members) / len(members)
                 for i in members:
                     gx[i], gy[i] = mx, my
-            group_pull = 0.25 if groups else 0.0
 
             for i in range(n):
                 if mobility[i] == 0:
                     continue
-                px, py = xs[i] + centres[i][0], ys[i] + centres[i][1]
-                dx = (cx - px) * gravity_x + (gx[i] - px) * group_pull
-                dy = (cy - py) * gravity_y + (gy[i] - py) * group_pull
+                dx = dy = 0.0
+                if gx[i] is not None:
+                    dx = (gx[i] - xs[i] - centres[i][0]) * 0.25
+                    dy = (gy[i] - ys[i] - centres[i][1]) * 0.25
                 # Part of the way towards where its links want this stack to be
                 dx += tx[i] * 0.45
                 dy += ty[i] * 0.45
