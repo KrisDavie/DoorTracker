@@ -240,6 +240,23 @@ def tile_title(tile):
 ROOM_PORTS, ROOM_LINKS = _build_room_links()
 
 
+def _dungeon_backgrounds():
+    """Each dungeon's own background: the colour between the rooms in its supertile pictures.
+
+    A dungeon can have more than one (Hyrule Castle has the castle and the sewers); the one most of
+    its supertiles use wins.
+    """
+    counts = {}
+    for tile, entry in room_bounds.items():
+        colour = "#%02x%02x%02x" % tuple(entry["background"])
+        tally = counts.setdefault(tile_dungeon(tile), {})
+        tally[colour] = tally.get(colour, 0) + 1
+    return {dungeon: max(tally, key=tally.get) for dungeon, tally in counts.items() if dungeon}
+
+
+DUNGEON_BACKGROUNDS = _dungeon_backgrounds()
+
+
 def enclosing_circle(points):
     """Smallest circle containing every point, as (x, y, radius)."""
 

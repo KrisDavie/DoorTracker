@@ -51,6 +51,7 @@ from gui.Doors.graph_model import (
     DOOR_RADIUS,
     DROP_COLOUR,
     DOOR_SELECTED,
+    DUNGEON_BACKGROUNDS,
     DUNGEON_COLOURS,
     EDGE_FADED,
     INTERIOR_DOORS,
@@ -379,7 +380,8 @@ class IconItem(QGraphicsItem):
                 font.setPixelSize(10)
                 font.setBold(True)
                 painter.setFont(font)
-                painter.setPen(QColor("#111"))
+                # Written straight on the map, so it has to stand out against that dungeon's background
+                painter.setPen(self.page.text_colour)
                 below = self.direction[1] >= 0
                 text_rect = QRectF(self.spot.x() - 60, self.spot.y() + (12 if below else -26), 120, 14)
                 painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignVCenter, self.lobby.replace("_", " "))
@@ -497,7 +499,8 @@ class GraphView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.NoAnchor)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
-        self.setBackgroundBrush(QColor(BACKGROUND))
+        # Each dungeon's map sits on that dungeon's own background, the colour between the rooms in its pictures
+        self.setBackgroundBrush(QColor(DUNGEON_BACKGROUNDS.get(page.dungeon_name, BACKGROUND)))
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setDragMode(QGraphicsView.NoDrag)
         self.gl = False
@@ -559,8 +562,13 @@ class GraphView(QGraphicsView):
 
     # ---- input goes to the page, which knows what the map means
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.page.view_resized()
+
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
+        self.page._settling_size = False
         if delta:
             self.zoom_at(event.position().toPoint(), 1.0015**delta)
         event.accept()
@@ -599,6 +607,8 @@ class GraphPage(QWidget):
         self.model = GraphModel(tab_world, top.experimental_flags)
         self.dungeon_name = self.model.dungeon_name
 
+        background = QColor(DUNGEON_BACKGROUNDS.get(self.dungeon_name, BACKGROUND))
+        self.text_colour = QColor("#111") if background.lightness() > 150 else QColor("white")
         self.selected_door = None
         self.hot_door = None
         self._focus = None
@@ -610,6 +620,7 @@ class GraphPage(QWidget):
         self._hulls = []
         self._rubber = None
         self._needs_fit = True
+        self._settling_size = False
 
         self.scene = QGraphicsScene(self)
         self.scene.setItemIndexMethod(QGraphicsScene.NoIndex)
@@ -826,11 +837,17 @@ class GraphPage(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         if self._needs_fit and self.model.pos:
-            # The first time a tab is shown is the first time its real size is known
-            QTimer.singleShot(0, self._first_fit)
+            # A tab that has never been shown does not have its real size yet. Fit now, and again as the
+            # size arrives, until the user takes over the camera.
+            self._settling_size = True
+            self.fit_view()
+            QTimer.singleShot(400, self._stop_settling)
 
-    def _first_fit(self):
-        if self._needs_fit and self.model.pos:
+    def _stop_settling(self):
+        self._settling_size = False
+
+    def view_resized(self):
+        if self._settling_size and self.model.pos:
             self.fit_view()
 
     def relayout(self):
@@ -943,6 +960,7 @@ class GraphPage(QWidget):
         press["moved"] = True
         press["pos"] = event.position()
         if press["tile"] is None or press["tile"] not in self.model.pos:
+            self._settling_size = False
             self.view.pan(delta.x(), delta.y())
             return
         # A stack moves as one piece; with Simulate on everything else reacts while it is held
