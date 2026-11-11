@@ -1112,7 +1112,11 @@ class GraphDoorPage(ttk.Frame):
                 if cold:
                     stretch = math.hypot(ex, ey)
                     if stretch > pull_limit[k]:
-                        ex, ey = ex / stretch * pull_limit[k], ey / stretch * pull_limit[k]
+                        # Past the limit the pull keeps growing with the stretch, but as its square root:
+                        # a long link does try harder than a short one, without a handful of long links
+                        # being able to flatten the repulsion the way a plain spring would.
+                        pull = math.sqrt(stretch * pull_limit[k])
+                        ex, ey = ex / stretch * pull, ey / stretch * pull
                 # Both ends get the same pull in opposite directions. Sharing it unevenly made any pair
                 # held apart by repulsion creep across the map for ever.
                 # ...and split by mass, so a single room comes to a big block rather than towing it along.
