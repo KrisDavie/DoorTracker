@@ -60,6 +60,7 @@ Start SNI and launch the tracker. The tracker will automatically connect to SNI 
 ### Options
 
 - `Spacing` slider - How far rooms push each other away. Linked rooms stay closer together than unrelated ones. The map moves to its new resting place as you drag the slider; the value is saved with the tracker file
+- `Satellite pull` slider (experimental) - How much harder links pull on a block whose links all lead to one other block, so it tucks in beside that block. Far left is no extra pull
 - `Simulate` - Keep the forces running all the time, so the map keeps adjusting, including while you drag a block through it. When it is off nothing moves on its own: the only thing that rearranges the map is moving the slider, which does it in one step
 - `Follow player` - Centre the view on the player's room whenever it is not fully on screen. Off by default
 - `Stack fitting rooms` - Stack rooms automatically as links are made. Turn it off to only stack the links you middle click

@@ -260,6 +260,7 @@ class GraphDoorPage(ttk.Frame):
         self._fit_provisional = False
         self.spacing = float(REPEL_RANGE)  # blocks closer than this push each other away
         self._laid_spacing = None
+        self.leaf_pull = 2.5  # how much harder a block's links pull when they all lead to one other block
         self._held = set()  # rooms being dragged right now
         self._damping = {}
         self._tick_job = None
@@ -290,6 +291,11 @@ class GraphDoorPage(ttk.Frame):
         self.spacing_var = DoubleVar(value=self.spacing)
         ttk.Scale(
             toolbar, from_=10, to=200, length=120, variable=self.spacing_var, command=self._on_spacing
+        ).pack(side=LEFT)
+        ttk.Label(toolbar, text="Satellite pull").pack(side=LEFT, padx=(8, 2))
+        self.leaf_pull_var = DoubleVar(value=self.leaf_pull)
+        ttk.Scale(
+            toolbar, from_=1, to=4, length=80, variable=self.leaf_pull_var, command=self._on_leaf_pull
         ).pack(side=LEFT)
         self.simulate = BooleanVar(value=False)
         ttk.Checkbutton(toolbar, text="Simulate", variable=self.simulate, command=self._on_simulate).pack(side=LEFT, padx=8)
@@ -1020,6 +1026,18 @@ class GraphDoorPage(ttk.Frame):
         # Just enough pull towards the middle to stop unconnected pieces drifting away
         gravity_x = gravity_y = 0.004
         degree = [len(x) for x in incident]
+        # Experiment: a block whose links all lead to one other block is a satellite of it, and its
+        # links are allowed to pull harder so it tucks in next to that block instead of floating off.
+        # The slider is cubed: 1 is no boost, 4 lets those links pull 64 times as hard, which in
+        # practice means nothing short of another block in the way keeps the satellite off.
+        neighbours = [set() for _ in range(n)]
+        for spring in springs:
+            neighbours[spring[0]].add(spring[3])
+            neighbours[spring[3]].add(spring[0])
+        pull_limit = [
+            LINK_PULL_MAX * (self.leaf_pull**3 if len(neighbours[sp[0]]) == 1 or len(neighbours[sp[3]]) == 1 else 1.0)
+            for sp in springs
+        ]
         weight = [len(r) for r in rects]
         total_weight = sum(weight)
 
@@ -1031,7 +1049,7 @@ class GraphDoorPage(ttk.Frame):
                 prev_x, prev_y = xs[:], ys[:]
             tx = [0.0] * n
             ty = [0.0] * n
-            for ia, aox, aoy, ib, box, boy, want in springs:
+            for k, (ia, aox, aoy, ib, box, boy, want) in enumerate(springs):
                 pax, pay = xs[ia] + aox, ys[ia] + aoy
                 pbx, pby = xs[ib] + box, ys[ib] + boy
                 if want is None:
@@ -1045,8 +1063,8 @@ class GraphDoorPage(ttk.Frame):
                 ex, ey = pax + vx - pbx, pay + vy - pby
                 if cold:
                     stretch = math.hypot(ex, ey)
-                    if stretch > LINK_PULL_MAX:
-                        ex, ey = ex / stretch * LINK_PULL_MAX, ey / stretch * LINK_PULL_MAX
+                    if stretch > pull_limit[k]:
+                        ex, ey = ex / stretch * pull_limit[k], ey / stretch * pull_limit[k]
                 # Both ends get the same pull in opposite directions. Sharing it unevenly made any pair
                 # held apart by repulsion creep across the map for ever.
                 share = 1 / max(degree[ia], degree[ib])
@@ -1196,6 +1214,12 @@ class GraphDoorPage(ttk.Frame):
         self.spacing = float(round(float(value)))
         if self.spacing != self._laid_spacing:
             self._laid_spacing = self.spacing
+            self._kick()
+
+    def _on_leaf_pull(self, value):
+        value = round(float(value), 1)
+        if value != self.leaf_pull:
+            self.leaf_pull = value
             self._kick()
 
     def _on_simulate(self):
@@ -2194,6 +2218,9 @@ class GraphDoorPage(ttk.Frame):
                 if len(value) > 2 and value[2]:
                     self.fixed.add(tile)
         self._needs_fit = True
+        if yaml_data.get("satellite_pull"):
+            self.leaf_pull = max(1.0, min(4.0, float(yaml_data["satellite_pull"])))
+            self.leaf_pull_var.set(self.leaf_pull)
         if yaml_data.get("spacing"):
             self.spacing = max(10.0, min(200.0, float(yaml_data["spacing"])))
             self.spacing_var.set(self.spacing)
@@ -2230,6 +2257,7 @@ class GraphDoorPage(ttk.Frame):
             },
             "camera": [round(self.camera[0], 1), round(self.camera[1], 1), round(self.zoom, 4)],
             "spacing": round(self.spacing, 1),
+            "satellite_pull": self.leaf_pull,
         }
 
     def update_size(self, size):
