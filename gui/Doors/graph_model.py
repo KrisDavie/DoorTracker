@@ -429,6 +429,10 @@ class GraphModel:
             if x.get("stack") is not None:
                 link["stack"] = bool(x["stack"])
             self.door_links.append(link)
+        self._stack_rank = {}
+        for rank, n in enumerate(data.get("stacked_links") or []):
+            if 0 <= n < len(self.door_links):
+                self._stack_rank[(self.door_links[n]["door"], self.door_links[n]["linked_door"])] = rank
         self.lobby_doors = [{"door": x["door"], "lobby": x["lobby"]} for x in data.get("lobby_doors", [])]
         self.special_doors = dict(data.get("special_doors", {}))
         self.tiles = {}
@@ -453,6 +457,23 @@ class GraphModel:
             self.spacing = max(10.0, min(200.0, float(data["spacing"])))
         had_positions = bool(self.pos)
         self._sync_model()
+        if self.pos and "stacked_links" not in data:
+            # A file from before stacked doorways were saved: read them back off the saved positions,
+            # so rooms that were sitting together stay one block instead of being regrouped
+            rank = 0
+            for link in self.door_links:
+                a, b = link["door"], link["linked_door"]
+                rel = self._join_offset(a, b)
+                ta, tb = door_tile(a), door_tile(b)
+                if rel is None or ta not in self.pos or tb not in self.pos:
+                    continue
+                if (
+                    abs(self.pos[tb][0] - self.pos[ta][0] - rel[0]) < 2
+                    and abs(self.pos[tb][1] - self.pos[ta][1] - rel[1]) < 2
+                ):
+                    self._stack_rank[(a, b)] = rank
+                    rank += 1
+            self._build_stacks()
         if self.pos and all(t in self.pos for t in self.tiles):
             # A saved arrangement is shown exactly as it was left
             self._layout_signature = self._signature()
@@ -472,6 +493,9 @@ class GraphModel:
             door_links.append(link)
         return {
             "door_links": door_links,
+            # Which doorways are stacked, in the order they claimed their place, so the same blocks
+            # come back on load instead of being worked out afresh
+            "stacked_links": [n for n in self._stack_order() if n in self.joined],
             "lobby_doors": [{"door": x["door"], "lobby": x["lobby"]} for x in self.lobby_doors],
             "tiles": {f"{t[0]}__{t[1]}": data["has_been_lit"] for t, data in self.tiles.items()},
             "special_doors": dict(self.special_doors),
@@ -898,7 +922,11 @@ class GraphModel:
 
         self.unsettled |= set(new_tiles)
         if not full:
-            self._relax(iterations=90, old_mobility=0.3, edges=edges, cold=True)
+            # Fitting something new in must not rearrange what is already there. Only the new
+            # blocks are moved to where their links want them...
+            self._relax(iterations=90, old_mobility=0.0, edges=edges, cold=True)
+            # ...and then anything left physically overlapping is nudged apart, and nothing else.
+            self._relax(iterations=0, old_mobility=1.0, edges=edges, cold=True)
         else:
             # The result depends a lot on where things start: try a few shaken starts and keep the best
             rng = random.Random(len(tiles) * 1000 + len(edges))
@@ -1318,7 +1346,7 @@ class GraphModel:
                 if not improved:
                     break
 
-        if cold and all(mobility):
+        if cold and iterations and all(mobility):
             # Uneven pulls would otherwise make the whole map creep sideways while it settles
             shift_x = sum((xs[i] - start_x[i]) * weight[i] for i in range(n)) / total_weight
             shift_y = sum((ys[i] - start_y[i]) * weight[i] for i in range(n)) / total_weight
