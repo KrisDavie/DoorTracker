@@ -1,7 +1,7 @@
 """Auto-tracking: reads the game's memory through SNI and turns it into rooms, links and lobbies.
 
-Both trackers (Tk and Qt) run this one loop. Every call into the window goes through a small `ui`
-object, so nothing here knows which toolkit is drawing the map.
+Every call into the window goes through a small `ui` object (set_title, set_devices,
+race_rom_warning, highlight_dungeon, select_dungeon, pages), so nothing here depends on how the map is drawn.
 """
 
 import argparse

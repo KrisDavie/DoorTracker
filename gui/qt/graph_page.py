@@ -585,6 +585,9 @@ class GraphPage(QWidget):
         self.pull_slider.valueChanged.connect(self._on_pull)
         self.simulate_box = QCheckBox("Simulate")
         self.simulate_box.toggled.connect(self._on_simulate)
+        self.circle_box = QCheckBox("Circle repulsion")
+        self.circle_box.setToolTip("Experiment: each block repels as one circle around all its rooms")
+        self.circle_box.toggled.connect(self._on_circle)
         self.follow_box = QCheckBox("Follow player")
         self.status = QLabel("")
         self.status.setMinimumWidth(50)
@@ -594,6 +597,7 @@ class GraphPage(QWidget):
         row.addWidget(self.spacing_slider)
         row.addWidget(QLabel("Satellite pull"))
         row.addWidget(self.pull_slider)
+        row.addWidget(self.circle_box)
         row.addWidget(self.simulate_box)
         row.addWidget(self.follow_box)
         row.addWidget(self.status, 1)
@@ -608,6 +612,10 @@ class GraphPage(QWidget):
 
     def _on_spacing(self, value):
         self.model.spacing = float(value)
+        self._forces_changed()
+
+    def _on_circle(self, checked):
+        self.model.circle_repulsion = checked
         self._forces_changed()
 
     def _on_pull(self, value):

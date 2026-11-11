@@ -238,6 +238,40 @@ def tile_title(tile):
 ROOM_PORTS, ROOM_LINKS = _build_room_links()
 
 
+def enclosing_circle(points):
+    """Smallest circle containing every point, as (x, y, radius)."""
+
+    def from_two(a, b):
+        return (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, math.dist(a, b) / 2
+
+    def from_three(a, b, c):
+        d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
+        if abs(d) < 1e-9:
+            return None
+        ux = ((a[0] ** 2 + a[1] ** 2) * (b[1] - c[1]) + (b[0] ** 2 + b[1] ** 2) * (c[1] - a[1]) + (c[0] ** 2 + c[1] ** 2) * (a[1] - b[1])) / d
+        uy = ((a[0] ** 2 + a[1] ** 2) * (c[0] - b[0]) + (b[0] ** 2 + b[1] ** 2) * (a[0] - c[0]) + (c[0] ** 2 + c[1] ** 2) * (b[0] - a[0])) / d
+        return ux, uy, math.dist((ux, uy), a)
+
+    def holds(circle, point):
+        return circle is not None and math.dist(circle[:2], point) <= circle[2] + 1e-6
+
+    # Few points per block, so the simple incremental construction is plenty
+    points = list(dict.fromkeys(points))
+    circle = None
+    for i, p in enumerate(points):
+        if holds(circle, p):
+            continue
+        circle = (p[0], p[1], 0.0)
+        for j, q in enumerate(points[:i]):
+            if holds(circle, q):
+                continue
+            circle = from_two(p, q)
+            for r in points[:j]:
+                if not holds(circle, r):
+                    circle = from_three(p, q, r) or circle
+    return circle
+
+
 def lighten(colour, amount):
     r, g, b = ImageColor.getrgb(colour)
     r, g, b = (int(c + (255 - c) * amount) for c in (r, g, b))
@@ -287,6 +321,7 @@ class GraphModel:
         self.group_by_dungeon = False
         self.spacing = float(REPEL_RANGE)  # blocks closer than this push each other away
         self.leaf_pull = 2.5  # how much harder a block's links pull when they all lead to one other block
+        self.circle_repulsion = False  # experiment: a block repels as one circle around all its rooms
         self.reset()
 
     def reset(self):
@@ -1158,25 +1193,52 @@ class GraphModel:
         reach = self.spacing
         far = max(reach, CONTACT_RANGE)
 
+        # One circle per block, just big enough to hold all of its rooms
+        circles = []
+        if self.circle_repulsion:
+            for boxes in rects:
+                corners = [(bx + sx * hw, by + sy * hh) for bx, by, hw, hh in boxes for sx in (-1, 1) for sy in (-1, 1)]
+                circles.append(enclosing_circle(corners))
+
         def repulsion():
             """Blocks closer than the reach push each other apart, harder the closer they are."""
+            # As circles, a block repels as a whole and the same in every direction. Rooms pressing
+            # right up against each other are still told apart wall to wall, whatever the shape.
+            near = CONTACT_RANGE if circles else far
             for a in range(n):
                 ea = extents[a]
                 for b in range(a + 1, n):
                     ma, mb = mobility[a], mobility[b]
                     if ma + mb == 0:
                         continue
+                    # Heavier blocks give way less: a block's share falls with the number of rooms in it
+                    ease_a, ease_b = ma / weight[a], mb / weight[b]
+                    share_a, share_b = ease_a / (ease_a + ease_b), ease_b / (ease_a + ease_b)
+                    if circles:
+                        ca, cb = circles[a], circles[b]
+                        cx = xs[b] + cb[0] - xs[a] - ca[0]
+                        cy = ys[b] + cb[1] - ys[a] - ca[1]
+                        apart = math.hypot(cx, cy)
+                        gap = apart - ca[2] - cb[2]
+                        if gap < reach:
+                            if apart < 1e-6:
+                                cx, cy, apart = 1.0, 0.0, 1.0
+                            push = REPEL_STRENGTH * (reach - max(0.0, gap))
+                            xs[a] -= cx / apart * push * share_a
+                            ys[a] -= cy / apart * push * share_a
+                            xs[b] += cx / apart * push * share_b
+                            ys[b] += cy / apart * push * share_b
                     eb = extents[b]
                     sx, sy = xs[b] - xs[a], ys[b] - ys[a]
                     if (
-                        sx + eb[0] - far >= ea[1]
-                        or sx + eb[1] + far <= ea[0]
-                        or sy + eb[2] - far >= ea[3]
-                        or sy + eb[3] + far <= ea[2]
+                        sx + eb[0] - near >= ea[1]
+                        or sx + eb[1] + near <= ea[0]
+                        or sy + eb[2] - near >= ea[3]
+                        or sy + eb[3] + near <= ea[2]
                     ):
                         continue
                     # Measured wall to wall between the two closest rooms
-                    nearest = far
+                    nearest = near
                     ux = uy = 0.0
                     for ax, ay, ahw, ahh in rects[a]:
                         for bx, by, bhw, bhh in rects[b]:
@@ -1191,16 +1253,13 @@ class GraphModel:
                                     ux, uy = (gap_x if dx >= 0 else -gap_x), (gap_y if dy >= 0 else -gap_y)
                                 else:
                                     ux, uy = dx, dy
-                    if nearest >= far:
+                    if nearest >= near:
                         continue
                     norm = math.hypot(ux, uy) or 1.0
                     # Applied straight away, pair by pair, which keeps a crowd of blocks from overshooting
-                    push = REPEL_STRENGTH * max(0.0, reach - nearest) + CONTACT_STRENGTH * max(
-                        0.0, CONTACT_RANGE - nearest
-                    )
-                    # Heavier blocks give way less: a block's share falls with the number of rooms in it
-                    ease_a, ease_b = ma / weight[a], mb / weight[b]
-                    share_a, share_b = ease_a / (ease_a + ease_b), ease_b / (ease_a + ease_b)
+                    push = CONTACT_STRENGTH * max(0.0, CONTACT_RANGE - nearest)
+                    if not circles:
+                        push += REPEL_STRENGTH * max(0.0, reach - nearest)
                     xs[a] -= ux / norm * push * share_a
                     ys[a] -= uy / norm * push * share_a
                     xs[b] += ux / norm * push * share_b
