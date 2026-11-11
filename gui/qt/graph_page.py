@@ -381,14 +381,20 @@ class LinkItem(QGraphicsPathItem):
                 model._decoupled() or (door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a)
             )
         if one_way:
-            # Arrow head at the far end, pointing along the last bit of the curve
-            tail = path.pointAtPercent(0.92) if dist > 1 else QPointF(ax, ay)
-            angle = math.atan2(by - tail.y(), bx - tail.x())
+            # A tracked drop can be stored either way round. You fall from the pit (facing down) to the
+            # drop entrance (facing up), so that is the way the arrow points whichever came first.
+            backwards = (
+                not model._decoupled() and door_direction(a) == "Up" and door_direction(b) == "Dn"
+            )
+            tip_x, tip_y = (ax, ay) if backwards else (bx, by)
+            # Arrow head at the landing end, pointing along the last bit of the curve
+            tail = path.pointAtPercent(0.08 if backwards else 0.92) if dist > 1 else QPointF(bx, by)
+            angle = math.atan2(tip_y - tail.y(), tip_x - tail.x())
             head = QPolygonF(
                 [
-                    end,
-                    QPointF(bx - 16 * math.cos(angle - 0.4), by - 16 * math.sin(angle - 0.4)),
-                    QPointF(bx - 16 * math.cos(angle + 0.4), by - 16 * math.sin(angle + 0.4)),
+                    QPointF(tip_x, tip_y),
+                    QPointF(tip_x - 16 * math.cos(angle - 0.4), tip_y - 16 * math.sin(angle - 0.4)),
+                    QPointF(tip_x - 16 * math.cos(angle + 0.4), tip_y - 16 * math.sin(angle + 0.4)),
                 ]
             )
             if self.arrow is None:

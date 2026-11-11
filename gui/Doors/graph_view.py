@@ -15,7 +15,7 @@ import random
 from collections import defaultdict, deque
 from pathlib import Path
 from tkinter import messagebox
-from tkinter import BOTH, LAST, LEFT, NW, RIGHT, X, BooleanVar, Canvas, DoubleVar, Menu, StringVar, ttk
+from tkinter import BOTH, FIRST, LAST, LEFT, NW, RIGHT, X, BooleanVar, Canvas, DoubleVar, Menu, StringVar, ttk
 
 from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps, ImageTk
 
@@ -1716,6 +1716,8 @@ class GraphDoorPage(ttk.Frame):
                 door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a
             )
             colour = DROP_COLOUR if kind == "drop" else colours[n]
+            # You fall from the pit (facing down) to the drop entrance (facing up), whichever was stored first
+            backwards = not self._decoupled() and door_direction(a) == "Up" and door_direction(b) == "Dn"
             item = c.create_line(
                 *points,
                 smooth=True,
@@ -1723,7 +1725,7 @@ class GraphDoorPage(ttk.Frame):
                 width=width,
                 activefill=PLAYER,
                 activewidth=width + 2,
-                arrow=LAST if one_way else None,
+                arrow=(FIRST if backwards else LAST) if one_way else None,
                 arrowshape=(12 * z + 4, 15 * z + 5, 5 * z + 2),
                 tags=["edge"],
             )
