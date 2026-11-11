@@ -89,11 +89,14 @@ def customizerGUI(mainWindow, args=None):
     self = mainWindow
     self.args = args
 
-    def load_yaml(self):
-        file = filedialog.askopenfilename(
-            filetypes=[("Yaml Files", (".yaml", ".yml")), ("All Files", "*")],
-            initialdir=os.path.join("."),
-        )
+    def load_yaml(self, file=None):
+        if file is None:
+            file = filedialog.askopenfilename(
+                filetypes=[("Yaml Files", (".yaml", ".yml")), ("All Files", "*")],
+                initialdir=os.path.join("."),
+            )
+        if not file:
+            return
         with open(file, mode="r") as fh:
             try:
                 yaml_data = yaml.safe_load(fh)
@@ -108,6 +111,8 @@ def customizerGUI(mainWindow, args=None):
                 del yaml_data['Agahnims_Tower']
             for dungeon, dungeon_data in yaml_data.items():
                 self.pages[dungeon].content.load_yaml(dungeon_data)
+
+    self.load_tracker_file = lambda file: load_yaml(self, file)
 
     def save_yaml(self, save=True):
         yaml_data = {}
@@ -311,8 +316,6 @@ def customizerGUI(mainWindow, args=None):
     def close_window():
         self.eg_tile_window.destroy()
         self.destroy()
-        # kill asyncio loop
-        asyncio.get_event_loop().stop()
 
     mainWindow.protocol("WM_DELETE_WINDOW", close_window)
 
@@ -441,10 +444,15 @@ def des_data(mem_request_names, mem_data):
     return data
 
 
-async def tk_main(root):
-    while True:
-        root.update()
-        await asyncio.sleep(0.05)
+def pump_asyncio(root, loop, interval_ms=10):
+    """Give asyncio (the SNI polling) a turn, then hand control straight back to Tk.
+
+    Tk owns the main loop so the window redraws as fast as the display allows. Running it the other
+    way round, with asyncio calling root.update() between sleeps, capped the whole UI at 20 fps.
+    """
+    loop.call_soon(loop.stop)
+    loop.run_forever()
+    root.after(interval_ms, pump_asyncio, root, loop, interval_ms)
 
 
 def get_cur_page(nb):
@@ -760,6 +768,9 @@ if __name__ == "__main__":
         default="medium",
         help="Set the window size",
     )
+    parser.add_argument(
+        "tracker_file", nargs="?", default=None, help="Tracker data (yaml) or spoiler to load on startup"
+    )
     parser.add_argument("--port", type=int, default=8191, help="SNI connection port")
     parser.add_argument("--debug", action="store_true", default=False, help="Enable debug logging")
     # parser.add_argument(
@@ -794,20 +805,22 @@ if __name__ == "__main__":
     mainWindow.aspect_ratio = (1, 2)  # type: ignore
     mainWindow.size = args.size
     customizerGUI(mainWindow, args=args)
+    if args.tracker_file:
+        mainWindow.load_tracker_file(args.tracker_file)  # type: ignore
 
-    tkmain = asyncio.ensure_future(tk_main(mainWindow))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     sn_probe = None
     if not args.no_autotrack:
         sn_probe = start_sni_tracking(mainWindow, args)
 
     mainWindow.sni_task = sn_probe  # type: ignore
 
-    loop = asyncio.get_event_loop()
+    pump_asyncio(mainWindow, loop)
     try:
-        loop.run_forever()
+        mainWindow.mainloop()
     except KeyboardInterrupt:
         pass
 
-    tkmain.cancel()
     if sn_probe:
         sn_probe.cancel()  # type: ignore

@@ -14,7 +14,8 @@ import math
 import random
 from collections import defaultdict, deque
 from pathlib import Path
-from tkinter import BOTH, LAST, LEFT, NW, RIGHT, X, BooleanVar, Canvas, Menu, StringVar, ttk
+from tkinter import messagebox
+from tkinter import BOTH, LAST, LEFT, NW, RIGHT, X, BooleanVar, Canvas, DoubleVar, Menu, StringVar, ttk
 
 from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps, ImageTk
 
@@ -47,8 +48,14 @@ TITLE_H = 18  # card title bar
 COMPACT_W = 104  # pass-through tiles collapse to a pill
 COMPACT_H = 26
 DOOR_RADIUS = 5.5  # an unexplored door; linked and interior doors are drawn smaller
-LINK_GAP = 46  # preferred port-to-port distance of a link
-CARD_MARGIN = 34
+LINK_GAP = 46  # preferred door-to-door distance of a link
+MIN_GAP = 14  # blocks are never packed closer than this when searching for an arrangement
+CONTACT_RANGE = 44  # inside this distance blocks push back hard, so links cannot press them together
+CONTACT_STRENGTH = 0.5
+HARD_GAP = 4  # last resort while settling: rooms that actually touch are moved apart outright
+REPEL_RANGE = 60  # default reach of the repulsion between blocks; the toolbar slider changes it per tab
+REPEL_STRENGTH = 0.12  # share of the missing distance two blocks are pushed apart each step
+LINK_PULL_MAX = 10  # a link never pulls harder than one stretched this far, so repulsion can hold it off
 SNAP = THUMB / 8  # stacked rooms line up on this grid along the shared wall  # minimum space kept between cards
 SCROLL_EXTENT = 200000
 TOOLBAR_HEIGHT = 30
@@ -250,7 +257,15 @@ class GraphDoorPage(ttk.Frame):
         self._images = []  # keep PhotoImage references alive
         self._press = None
         self._needs_fit = True
-        self._auto_view = True
+        self._fit_provisional = False
+        self.spacing = float(REPEL_RANGE)  # blocks closer than this push each other away
+        self._laid_spacing = None
+        self._held = set()  # rooms being dragged right now
+        self._damping = {}
+        self._tick_job = None
+        self._last_step = 0.0
+        self._spacing_job = None
+        self.camera = [0.0, 0.0]  # world point shown at the centre of the window
 
         self._build_widgets()
         self.init_page()
@@ -271,6 +286,15 @@ class GraphDoorPage(ttk.Frame):
         ttk.Checkbutton(toolbar, text="Stack fitting rooms", variable=self.auto_stack, command=self.relayout).pack(
             side=LEFT, padx=8
         )
+        ttk.Label(toolbar, text="Spacing").pack(side=LEFT, padx=(8, 2))
+        self.spacing_var = DoubleVar(value=self.spacing)
+        ttk.Scale(
+            toolbar, from_=10, to=200, length=120, variable=self.spacing_var, command=self._on_spacing
+        ).pack(side=LEFT)
+        self.simulate = BooleanVar(value=False)
+        ttk.Checkbutton(toolbar, text="Simulate", variable=self.simulate, command=self._on_simulate).pack(side=LEFT, padx=8)
+        self.follow_player = BooleanVar(value=False)
+        ttk.Checkbutton(toolbar, text="Follow player", variable=self.follow_player).pack(side=LEFT, padx=8)
         self.status = StringVar(value="")
         ttk.Label(toolbar, textvariable=self.status, anchor="w").pack(side=LEFT, padx=8, fill=X, expand=True)
 
@@ -291,7 +315,7 @@ class GraphDoorPage(ttk.Frame):
         c.bind("<ButtonRelease-1>", self._on_release)
         c.bind("<Double-Button-1>", self._on_double_click)
         c.bind("<Button-3>", self._on_right_click)
-        c.bind("<Control-Button-3>", self._on_ctrl_right_click)
+        c.bind("<Control-ButtonPress-1>", self._on_ctrl_click)
         c.bind("<Button-2>", self._on_middle_click)
         c.bind("<MouseWheel>", self._on_wheel)
         c.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, 1.15))
@@ -299,6 +323,7 @@ class GraphDoorPage(ttk.Frame):
         c.bind("<Motion>", self._on_motion)
         c.bind("<Escape>", lambda e: self._cancel_selection())
         c.bind("<Configure>", self._on_configure)
+        c.bind("<Map>", self._on_configure)
 
     # -------------------------------------------------------------------- model
 
@@ -311,7 +336,7 @@ class GraphDoorPage(ttk.Frame):
         self.sanc_dungeon = False
 
         self.pos = {}  # tile -> [x, y] centre of the card, world units
-        self.fixed = set()  # tiles the user dragged; the layout never moves them
+        self.fixed = set()  # pinned rooms: neither the layout nor the simulation moves them
         self.unsettled = set()  # freshly added tiles, free to move until they are linked
         self.compact = set()
         self.stack_root = {}
@@ -668,6 +693,7 @@ class GraphDoorPage(ttk.Frame):
         )
 
     def _layout(self, full=False):
+        gap = LINK_GAP
         tiles = list(self.tiles)
         if not tiles:
             return
@@ -683,6 +709,8 @@ class GraphDoorPage(ttk.Frame):
         self._layout_signature = signature
 
         if full:
+            # Start from a clean slate so the same map always lays out the same way
+            self._damping = {}
             for tile in tiles:
                 if tile not in self.fixed:
                     self.pos.pop(tile, None)
@@ -710,7 +738,7 @@ class GraphDoorPage(ttk.Frame):
             if direction is None:
                 opposite = DIRECTIONS.get(door_direction(new_door))
                 direction = (-opposite[0], -opposite[1]) if opposite else (1, 0.35)
-            self._place_stack(new, ax + aox + direction[0] * LINK_GAP - nox, ay + aoy + direction[1] * LINK_GAP - noy)
+            self._place_stack(new, ax + aox + direction[0] * gap - nox, ay + aoy + direction[1] * gap - noy)
 
         def place_loose(root):
             placed = list(self.pos.values())
@@ -718,12 +746,12 @@ class GraphDoorPage(ttk.Frame):
                 self._place_stack(root, 0.0, 0.0)
             elif self.player and self.player[0] in self.pos and self.player[0] not in self._stack_of(root):
                 px, py = self.pos[self.player[0]]
-                self._place_stack(root, px + THUMB + CARD_MARGIN * 2, py + 20.0)
+                self._place_stack(root, px + THUMB + LINK_GAP * 2, py + 20.0)
             else:
                 max_x = max(p[0] for p in placed)
                 min_y = min(p[1] for p in placed)
                 self._place_stack(
-                    root, max_x + THUMB + CARD_MARGIN * 3, min_y + (len(placed) % 5) * (THUMB + CARD_MARGIN)
+                    root, max_x + THUMB + LINK_GAP * 3, min_y + (len(placed) % 5) * (THUMB + LINK_GAP)
                 )
 
         # Seed with lobbies first so the entrances anchor the picture
@@ -750,7 +778,7 @@ class GraphDoorPage(ttk.Frame):
 
         self.unsettled |= set(new_tiles)
         if not full:
-            self._relax(iterations=90, old_mobility=0.12, edges=edges)
+            self._relax(iterations=90, old_mobility=0.3, edges=edges, cold=True)
         else:
             # The result depends a lot on where things start: try a few shaken starts and keep the best
             rng = random.Random(len(tiles) * 1000 + len(edges))
@@ -768,6 +796,8 @@ class GraphDoorPage(ttk.Frame):
                 if best is None or cost < best[0]:
                     best = (cost, {t: list(p) for t, p in self.pos.items()})
             self.pos = best[1]
+            self._relax(iterations=150, old_mobility=1.0, edges=edges, cold=True)
+        self._laid_spacing = self.spacing
 
         linked = set()
         for a, b in edges:
@@ -783,16 +813,20 @@ class GraphDoorPage(ttk.Frame):
             if e[3] not in self.joined and self.stack_root[door_tile(e[0])] != self.stack_root[door_tile(e[1])]
         ]
 
-    def _relax(self, iterations, old_mobility, edges, improve=False):
+    def _relax(self, iterations, old_mobility, edges, improve=False, cold=False):
         """Force layout over stacks: each stack is one rigid body made of its rooms.
 
         Returns the total length of the links between stacks, lower is better.
         """
+        gap = LINK_GAP
         roots = list(self.stack_members)
         index = {r: i for i, r in enumerate(roots)}
         n = len(roots)
         xs = [self.pos[r][0] for r in roots]
         ys = [self.pos[r][1] for r in roots]
+        start_x, start_y = xs[:], ys[:]
+        # Per block: how freely it may move, and which way it last went (kept between simulation frames)
+        damping = [self._damping.setdefault(r, [1.0, 0.0, 0.0]) for r in roots]
         # Rooms of each stack as (dx, dy, half width, half height) around the stack origin
         rects = []
         centres = []
@@ -814,7 +848,7 @@ class GraphDoorPage(ttk.Frame):
                     max(b[1] + b[3] for b in boxes),
                 )
             )
-            if any(m in self.fixed for m in members):
+            if any(m in self.fixed or m in self._held for m in members):
                 mobility.append(0.0)
             elif all(m in self.unsettled for m in members):
                 mobility.append(1.0)
@@ -830,11 +864,11 @@ class GraphDoorPage(ttk.Frame):
             da, db = DIRECTIONS.get(door_direction(a)), DIRECTIONS.get(door_direction(b))
             # Where the far port should sit relative to the near one; None for stairs and drops
             if da is not None and db is not None:
-                want = ((da[0] - db[0]) / 2 * LINK_GAP, (da[1] - db[1]) / 2 * LINK_GAP)
+                want = ((da[0] - db[0]) / 2 * gap, (da[1] - db[1]) / 2 * gap)
             elif da is not None:
-                want = (da[0] * LINK_GAP, da[1] * LINK_GAP)
+                want = (da[0] * gap, da[1] * gap)
             elif db is not None:
-                want = (-db[0] * LINK_GAP, -db[1] * LINK_GAP)
+                want = (-db[0] * gap, -db[1] * gap)
             else:
                 want = None
             springs.append(
@@ -860,10 +894,56 @@ class GraphDoorPage(ttk.Frame):
                 by_dungeon[tile_dungeon(r)].append(index[r])
             groups = [members for members in by_dungeon.values() if len(members) > 1]
 
-        # A wide window has room to spare sideways: use it as routing space between cards
-        vw, vh = self._viewport()
-        margin_x = CARD_MARGIN * max(1.0, min(1.5, vw / vh))
-        margin_y = CARD_MARGIN
+        # The arrangement depends only on the links and the repulsion, never on the window looking at it
+        margin_x = margin_y = HARD_GAP if cold else MIN_GAP
+        reach = self.spacing
+        far = max(reach, CONTACT_RANGE)
+
+        def repulsion():
+            """Blocks closer than the reach push each other apart, harder the closer they are."""
+            for a in range(n):
+                ea = extents[a]
+                for b in range(a + 1, n):
+                    ma, mb = mobility[a], mobility[b]
+                    if ma + mb == 0:
+                        continue
+                    eb = extents[b]
+                    sx, sy = xs[b] - xs[a], ys[b] - ys[a]
+                    if (
+                        sx + eb[0] - far >= ea[1]
+                        or sx + eb[1] + far <= ea[0]
+                        or sy + eb[2] - far >= ea[3]
+                        or sy + eb[3] + far <= ea[2]
+                    ):
+                        continue
+                    # Measured wall to wall between the two closest rooms
+                    nearest = far
+                    ux = uy = 0.0
+                    for ax, ay, ahw, ahh in rects[a]:
+                        for bx, by, bhw, bhh in rects[b]:
+                            dx = sx + bx - ax
+                            dy = sy + by - ay
+                            gap_x = max(0.0, abs(dx) - ahw - bhw)
+                            gap_y = max(0.0, abs(dy) - ahh - bhh)
+                            distance = math.hypot(gap_x, gap_y)
+                            if distance < nearest:
+                                nearest = distance
+                                if distance > 1e-6:
+                                    ux, uy = (gap_x if dx >= 0 else -gap_x), (gap_y if dy >= 0 else -gap_y)
+                                else:
+                                    ux, uy = dx, dy
+                    if nearest >= far:
+                        continue
+                    norm = math.hypot(ux, uy) or 1.0
+                    # Applied straight away, pair by pair, which keeps a crowd of blocks from overshooting
+                    push = REPEL_STRENGTH * max(0.0, reach - nearest) + CONTACT_STRENGTH * max(
+                        0.0, CONTACT_RANGE - nearest
+                    )
+                    share_a, share_b = ma / (ma + mb), mb / (ma + mb)
+                    xs[a] -= ux / norm * push * share_a
+                    ys[a] -= uy / norm * push * share_a
+                    xs[b] += ux / norm * push * share_b
+                    ys[b] += uy / norm * push * share_b
 
         def overlap(a, b):
             """How far stack b has to move to clear stack a, as (x, y); (0, 0) when they are apart."""
@@ -876,23 +956,37 @@ class GraphDoorPage(ttk.Frame):
                 or sy + eb[3] + margin_y <= ea[2]
             ):
                 return 0.0, 0.0
-            # Deepest overlap between any room of one stack and any room of the other
-            push_x = push_y = 0.0
+            # Blocks are not simple boxes: one can sit in a notch of another, where pushing two rooms
+            # apart only drives it into a third. So look for one straight move that clears every room:
+            # right, left, down or up, whichever is shortest.
+            right = left = down = up = 0.0
+            touching = False
             for ax, ay, ahw, ahh in rects[a]:
                 for bx, by, bhw, bhh in rects[b]:
                     dx = sx + bx - ax
                     dy = sy + by - ay
-                    ox = ahw + bhw + margin_x - abs(dx)
-                    oy = ahh + bhh + margin_y - abs(dy)
-                    if ox <= 0 or oy <= 0:
-                        continue
-                    # Split along the axis the two rooms are already most apart on
-                    if abs(dx) * (ahh + bhh) >= abs(dy) * (ahw + bhw):
-                        if ox > abs(push_x):
-                            push_x = ox if dx >= 0 else -ox
-                    elif oy > abs(push_y):
-                        push_y = oy if dy >= 0 else -oy
-            return push_x, push_y
+                    wsum = ahw + bhw + margin_x
+                    hsum = ahh + bhh + margin_y
+                    in_row = abs(dy) < hsum
+                    in_column = abs(dx) < wsum
+                    if in_row:
+                        right = max(right, wsum - dx)
+                        left = max(left, wsum + dx)
+                    if in_column:
+                        down = max(down, hsum - dy)
+                        up = max(up, hsum + dy)
+                    if in_row and in_column:
+                        touching = True
+            if not touching:
+                return 0.0, 0.0
+            shortest = min(right, left, down, up)
+            if shortest == right:
+                return right, 0.0
+            if shortest == left:
+                return -left, 0.0
+            if shortest == down:
+                return 0.0, down
+            return 0.0, -up
 
         def separate(strength):
             moved = False
@@ -920,20 +1014,21 @@ class GraphDoorPage(ttk.Frame):
                 if want is not None:
                     dx -= want[0]
                     dy -= want[1]
-                # Length along the short side of the window costs more, so the map grows the long way
-                total += math.hypot(dx, dy * stretch)
+                total += math.hypot(dx, dy)
             return total
 
-        stretch = max(1.0, min(2.0, vw / vh))
-        gravity_x = 0.02
-        gravity_y = gravity_x * max(1.0, min(6.0, (vw / vh) ** 2.5))
+        # Just enough pull towards the middle to stop unconnected pieces drifting away
+        gravity_x = gravity_y = 0.004
         degree = [len(x) for x in incident]
         weight = [len(r) for r in rects]
         total_weight = sum(weight)
 
         for it in range(iterations):
             cooling = 1 - it / iterations
-            temperature = 80 * cooling + 4
+            # A cold run only settles what is already there, it never throws blocks around
+            temperature = 10 if cold else 80 * cooling + 4
+            if cold:
+                prev_x, prev_y = xs[:], ys[:]
             tx = [0.0] * n
             ty = [0.0] * n
             for ia, aox, aoy, ib, box, boy, want in springs:
@@ -943,13 +1038,22 @@ class GraphDoorPage(ttk.Frame):
                     # No heading: keep them a card apart, any direction
                     dx, dy = pbx - pax, pby - pay
                     dist = math.hypot(dx, dy) or 0.01
-                    vx, vy = dx / dist * LINK_GAP * 2, dy / dist * LINK_GAP * 2
+                    vx, vy = dx / dist * gap * 2, dy / dist * gap * 2
                 else:
                     vx, vy = want
-                tx[ib] += pax + vx - box
-                ty[ib] += pay + vy - boy
-                tx[ia] += pbx - vx - aox
-                ty[ia] += pby - vy - aoy
+                # How far each end is from where this link wants it
+                ex, ey = pax + vx - pbx, pay + vy - pby
+                if cold:
+                    stretch = math.hypot(ex, ey)
+                    if stretch > LINK_PULL_MAX:
+                        ex, ey = ex / stretch * LINK_PULL_MAX, ey / stretch * LINK_PULL_MAX
+                # Both ends get the same pull in opposite directions. Sharing it unevenly made any pair
+                # held apart by repulsion creep across the map for ever.
+                share = 1 / max(degree[ia], degree[ib])
+                tx[ib] += ex * share
+                ty[ib] += ey * share
+                tx[ia] -= ex * share
+                ty[ia] -= ey * share
 
             cx = sum((xs[i] + centres[i][0]) * weight[i] for i in range(n)) / total_weight
             cy = sum((ys[i] + centres[i][1]) * weight[i] for i in range(n)) / total_weight
@@ -968,10 +1072,9 @@ class GraphDoorPage(ttk.Frame):
                 px, py = xs[i] + centres[i][0], ys[i] + centres[i][1]
                 dx = (cx - px) * gravity_x + (gx[i] - px) * group_pull
                 dy = (cy - py) * gravity_y + (gy[i] - py) * group_pull
-                if degree[i]:
-                    # Move towards the average of where each link wants this stack to be
-                    dx += (tx[i] / degree[i] - xs[i]) * 0.45
-                    dy += (ty[i] / degree[i] - ys[i]) * 0.45
+                # Part of the way towards where its links want this stack to be
+                dx += tx[i] * 0.45
+                dy += ty[i] * 0.45
                 dx *= mobility[i]
                 dy *= mobility[i]
                 step = math.hypot(dx, dy)
@@ -979,7 +1082,24 @@ class GraphDoorPage(ttk.Frame):
                     dx, dy = dx / step * temperature, dy / step * temperature
                 xs[i] += dx
                 ys[i] += dy
-            separate(0.3 + 0.5 * (1 - cooling))
+            repulsion()
+            separate(1.0 if cold else 0.3 + 0.5 * (1 - cooling))
+            if cold:
+                # Go only half way to where this step wanted everything. The resting places are the
+                # same, but two blocks can no longer swap back and forth on alternate steps.
+                # A block that reverses direction is hunting around its resting place: each reversal
+                # halves how far it may move, and steady movement lets it speed up again.
+                for i in range(n):
+                    dx = (xs[i] - prev_x[i]) / 2
+                    dy = (ys[i] - prev_y[i]) / 2
+                    state = damping[i]
+                    if dx * state[1] + dy * state[2] < 0:
+                        state[0] = max(0.02, state[0] * 0.5)
+                    else:
+                        state[0] = min(1.0, state[0] * 1.15)
+                    state[1], state[2] = dx, dy
+                    xs[i] = prev_x[i] + dx * state[0]
+                    ys[i] = prev_y[i] + dy * state[0]
 
         for _ in range(80):
             if not separate(1.0):
@@ -1013,7 +1133,7 @@ class GraphDoorPage(ttk.Frame):
                     spots = []
                     sum_x = sum_y = 0.0
                     for ia, aox, aoy, ib, box, boy, want in incident[i]:
-                        vx, vy = want if want is not None else (0.0, LINK_GAP * 2)
+                        vx, vy = want if want is not None else (0.0, gap * 2)
                         if ib == i and ia != i:
                             spot = (xs[ia] + aox + vx - box, ys[ia] + aoy + vy - boy)
                         elif ia == i and ib != i:
@@ -1038,16 +1158,107 @@ class GraphDoorPage(ttk.Frame):
                 if not improved:
                     break
 
+        if cold and all(mobility):
+            # Uneven pulls would otherwise make the whole map creep sideways while it settles
+            shift_x = sum((xs[i] - start_x[i]) * weight[i] for i in range(n)) / total_weight
+            shift_y = sum((ys[i] - start_y[i]) * weight[i] for i in range(n)) / total_weight
+            xs = [x - shift_x for x in xs]
+            ys = [y - shift_y for y in ys]
+        # How fast things were still moving: the simulation stops by itself once this is tiny
+        self._last_step = max(
+            (math.hypot(xs[i] - start_x[i], ys[i] - start_y[i]) for i in range(n)), default=0.0
+        ) / max(1, iterations)
         for i, r in enumerate(roots):
             self._place_stack(r, xs[i], ys[i])
         return sum(cost(i) for i in range(n)) / 2
 
+    def _keep_centre(self, before):
+        """Shift the map back to where it was, so a new arrangement does not jump out from under the view."""
+        after = self._bounds()
+        dx = (before[0] + before[2] - after[0] - after[2]) / 2
+        dy = (before[1] + before[3] - after[1] - after[3]) / 2
+        for position in self.pos.values():
+            position[0] += dx
+            position[1] += dy
+
     def relayout(self):
         self._sync_model()
         self._optimise_stack_order()
+        before = self._bounds() if self.pos else None
         self._layout(full=True)
-        self._needs_fit = True
+        if before is None:
+            self._needs_fit = True
+        else:
+            self._keep_centre(before)
         self._render()
+
+    def _on_spacing(self, value):
+        self.spacing = float(round(float(value)))
+        if self.spacing != self._laid_spacing:
+            self._laid_spacing = self.spacing
+            self._kick()
+
+    def _on_simulate(self):
+        if self.simulate.get() and self._tick_job is None:
+            self._tick_job = self.after(1, self._tick)
+
+    def _kick(self):
+        """Something changed the forces (slider, a dropped block, a pin).
+
+        With Simulate ticked the running simulation picks it up. Without it the map is moved to its
+        new resting place in one go, and then nothing moves again until the next change.
+        """
+        if self.simulate.get():
+            if self._tick_job is None:
+                self._tick_job = self.after(1, self._tick)
+            return
+        if not self.pos:
+            return
+        before = {t: (p[0], p[1]) for t, p in self.pos.items()}
+        edges = [(a, b) for a, b, kind, n in self._layout_edges()]
+        self._relax(iterations=150, old_mobility=1.0, edges=edges, cold=True)
+        self._slide(before)
+
+    def _tick(self):
+        """One frame of the simulation: a few solver steps, then slide the drawn rooms to match."""
+        self._tick_job = None
+        if not self.simulate.get() or not self.winfo_exists():
+            # Unticked: stop here. Nothing moves on its own while Simulate is off.
+            return
+        if self.pos and self._zoom_job is None and self.canvas.winfo_viewable():
+            before = {t: (p[0], p[1]) for t, p in self.pos.items()}
+            edges = [(a, b) for a, b, kind, n in self._layout_edges()]
+            self._relax(iterations=3, old_mobility=1.0, edges=edges, cold=True)
+            self._slide(before)
+        self._tick_job = self.after(15, self._tick)
+
+    def _slide(self, before):
+        """Move what is already drawn instead of drawing everything again."""
+        if self._drawn_zoom != self.zoom or self.group_by_dungeon.get():
+            self._render()
+            return
+        z = self.zoom
+        moved = False
+        for tile, (old_x, old_y) in before.items():
+            if tile not in self.pos:
+                continue
+            dx, dy = (self.pos[tile][0] - old_x) * z, (self.pos[tile][1] - old_y) * z
+            if abs(dx) > 0.01 or abs(dy) > 0.01:
+                self.canvas.move(f"tile_{tile[0]}_{tile[1]}", dx, dy)
+                moved = True
+        if moved:
+            self._redraw_edges()
+
+    def _redraw_edges(self):
+        self.canvas.delete("edge")
+        self._items = {k: v for k, v in self._items.items() if v[0] != "edge" or self.canvas.type(k) == "rectangle"}
+        focus = self._focus
+        self._draw_edges()
+        self._set_focus(focus)
+        self.canvas.tag_raise("door")
+        self.canvas.tag_raise("icon")
+        self.canvas.tag_raise("player")
+        self._draw_door_marks()
 
     # ---------------------------------------------------------------- rendering
 
@@ -1066,7 +1277,11 @@ class GraphDoorPage(ttk.Frame):
             w, h = self.cwidth + 50, self.cheight + 50 - TOOLBAR_HEIGHT
         return w, h
 
-    def _scroll_to(self, left, top):
+    def _apply_camera(self):
+        """Point the window at the camera. The camera is the only thing that decides what is on screen."""
+        vw, vh = self._viewport()
+        left = self.camera[0] * self._drawn_zoom - vw / 2
+        top = self.camera[1] * self._drawn_zoom - vh / 2
         span = SCROLL_EXTENT * 2
         self.canvas.xview_moveto((left + SCROLL_EXTENT) / span)
         self.canvas.yview_moveto((top + SCROLL_EXTENT) / span)
@@ -1081,17 +1296,17 @@ class GraphDoorPage(ttk.Frame):
         return x0, y0, x1, y1
 
     def fit_view(self):
+        """Move the camera so the whole map is in view. Only run when asked for, or for a freshly loaded map."""
         x0, y0, x1, y1 = self._bounds()
         pad = 70
         vw, vh = self._viewport()
         zoom = min(vw / (x1 - x0 + pad * 2), vh / (y1 - y0 + pad * 2))
-        self.zoom = max(0.15, min(1.6, zoom))
+        self.zoom = max(0.15, min(1.0, zoom))
+        self.camera = [(x0 + x1) / 2, (y0 + y1) / 2]
         self._needs_fit = False
-        self._auto_view = True
-        self._fit_job = None
+        # A tab that has never been shown does not know its real size yet
+        self._fit_provisional = not self.canvas.winfo_viewable()
         self._render()
-        cx, cy = (x0 + x1) / 2 * self.zoom, (y0 + y1) / 2 * self.zoom
-        self._scroll_to(cx - vw / 2, cy - vh / 2)
 
     _mips = {}  # supertile -> (512px, 256px) opaque copies, shared by every dungeon tab
     _fonts = {}
@@ -1147,6 +1362,24 @@ class GraphDoorPage(ttk.Frame):
             )
             GraphDoorPage._dot_sprites[key] = img.resize((size, size), Image.LANCZOS)
         return GraphDoorPage._dot_sprites[key]
+
+    _pin_sprites = {}
+
+    def _pin_sprite(self, size):
+        """A pushpin, drawn in the corner of a pinned room."""
+        if size not in GraphDoorPage._pin_sprites:
+            scale = 4
+            n = size * scale
+            img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            # White backing so it reads on any room, then needle, then the red head on top
+            draw.ellipse((0, 0, n - 1, n - 1), fill=(255, 255, 255, 235), outline="#222222", width=scale)
+            draw.line((n * 0.46, n * 0.54, n * 0.2, n * 0.8), fill="#222222", width=max(2, int(n * 0.08)))
+            head = (n * 0.36, n * 0.16, n * 0.84, n * 0.64)
+            draw.ellipse(head, fill="#e53935", outline="#7a1512", width=max(2, int(n * 0.05)))
+            draw.ellipse((n * 0.52, n * 0.24, n * 0.66, n * 0.38), fill="#ff8a80")
+            GraphDoorPage._pin_sprites[size] = img.resize((size, size), Image.LANCZOS)
+        return GraphDoorPage._pin_sprites[size]
 
     def _door_dots(self, tile):
         """Every door drawn on a card as (door, x, y, radius, fill, outline), offsets in world units from its centre."""
@@ -1232,8 +1465,8 @@ class GraphDoorPage(ttk.Frame):
                 draw.rectangle((0, 0, right + 3, bottom + 2), fill=colour)
                 draw.text((border + 2, border), title, fill="#ffffff", font=font)
         if tile in self.fixed:
-            r = max(2, int(round(3 * z)))
-            draw.ellipse((pw - border - 3 * r, border + r, pw - border - r, border + 3 * r), fill="#ffd54a", outline="#333333")
+            pin = self._pin_sprite(max(11, int(round(20 * z))))
+            img.paste(pin, (pw - border - pin.width - 1, border + 1), pin)
 
         for door, ox, oy, radius, fill, outline in dots:
             size = max(5, int(round(radius * 2 * z)) | 1)
@@ -1300,9 +1533,8 @@ class GraphDoorPage(ttk.Frame):
         self._draw_player()
 
         if not self.tiles:
-            vw, vh = self._viewport()
-            self._scroll_to(-vw / 2, -vh / 2)
             c.create_text(0, 0, text="Double-click to add a supertile", fill="#888", font=("TkDefaultFont", 12))
+        self._apply_camera()
 
     def _is_linked(self, door):
         if door in self._lobby_door_names():
@@ -1353,7 +1585,7 @@ class GraphDoorPage(ttk.Frame):
         if self.player is not None and self.player[0] == tile:
             right, bottom = self._w2c(x + w / 2, y + h / 2)
             c.create_rectangle(
-                left - 3, top - 3, right + 3, bottom + 3, outline=PLAYER, width=3, tags=["player"], state="disabled"
+                left - 3, top - 3, right + 3, bottom + 3, outline=PLAYER, width=3, tags=["player", tag], state="disabled"
             )
 
     def _edge_points(self, a, b):
@@ -1551,8 +1783,9 @@ class GraphDoorPage(ttk.Frame):
         cx, cy = self._w2c(x + (px / 512 - 0.5) * THUMB, y + (py / 512 - 0.5) * THUMB)
         s = max(4, 7 * self.zoom)
         width = max(2, 3 * self.zoom)
-        c.create_line(cx - s, cy - s, cx + s, cy + s, fill=PLAYER, width=width, tags=["player"], state="disabled")
-        c.create_line(cx + s, cy - s, cx - s, cy + s, fill=PLAYER, width=width, tags=["player"], state="disabled")
+        tags = ["player", f"tile_{tile[0]}_{tile[1]}"]
+        c.create_line(cx - s, cy - s, cx + s, cy + s, fill=PLAYER, width=width, tags=tags, state="disabled")
+        c.create_line(cx + s, cy - s, cx - s, cy + s, fill=PLAYER, width=width, tags=tags, state="disabled")
 
     # ------------------------------------------------------------- interactions
 
@@ -1560,7 +1793,8 @@ class GraphDoorPage(ttk.Frame):
         """What is under the mouse, as (kind, payload)."""
         current = self.canvas.find_withtag("current")
         kind, payload = self._items.get(current[0], (None, None)) if current else (None, None)
-        if kind in (None, "card"):
+        if kind != "icon":
+            # Doors are small targets: one under a link line or a doorway bar still wins the click
             door = self._door_at(event)
             if door is not None:
                 return "door", door
@@ -1571,15 +1805,21 @@ class GraphDoorPage(ttk.Frame):
         return self.canvas.canvasx(event.x) / zoom, self.canvas.canvasy(event.y) / zoom
 
     def _on_configure(self, event):
-        # Keep the whole map in view while the window changes size, until the user takes over the camera
-        size = (event.width, event.height)
-        if size == getattr(self, "_last_size", None):
-            return
-        self._last_size = size
-        if self._auto_view and self.pos:
-            if getattr(self, "_fit_job", None):
-                self.after_cancel(self._fit_job)
-            self._fit_job = self.after(60, self.fit_view)
+        # A resized window shows more or less of the world around the same camera; it never zooms.
+        # The one exception is a fit that had to guess the window size because this tab was never shown.
+        if self._fit_provisional and self.pos and self.canvas.winfo_viewable():
+            self.after_idle(self.fit_view)
+        else:
+            self._apply_camera()
+
+    def _room_at(self, event):
+        """The room whose card is under the mouse, whatever is drawn on top of it."""
+        wx, wy = self._event_world(event)
+        for tile, (x, y) in self.pos.items():
+            w, h = self._size(tile)
+            if abs(wx - x) <= w / 2 and abs(wy - y) <= h / 2:
+                return tile
+        return None
 
     def _on_press(self, event):
         self.canvas.focus_set()
@@ -1591,9 +1831,12 @@ class GraphDoorPage(ttk.Frame):
             # Lines and doorways that live inside a card or a stack drag it like the card itself
             self._press["kind"] = "card"
             self._press["payload"] = door_tile(payload[0])
+        elif kind == "edge" and self._room_at(event) is not None:
+            # A link passing over a room does not get in the way of dragging that room
+            self._press["kind"] = "card"
+            self._press["payload"] = self._room_at(event)
         elif kind is None or kind == "edge":
             self._press["kind"] = "pan"
-            self.canvas.scan_mark(event.x, event.y)
         elif kind == "icon":
             tile = door_tile(payload)
             self._press["kind"] = "card"
@@ -1608,8 +1851,11 @@ class GraphDoorPage(ttk.Frame):
             return
         press["moved"] = True
         if press["kind"] == "pan":
-            self._auto_view = False
-            self.canvas.scan_dragto(event.x, event.y, gain=1)
+            self._fit_provisional = False
+            self.camera[0] -= dx / self._drawn_zoom
+            self.camera[1] -= dy / self._drawn_zoom
+            press["x"], press["y"] = event.x, event.y
+            self._apply_camera()
             return
         tile = press["payload"] if press["kind"] == "card" else door_tile(press["payload"])
         if tile not in self.pos:
@@ -1617,29 +1863,26 @@ class GraphDoorPage(ttk.Frame):
         press["x"], press["y"] = event.x, event.y
         press["dragged_tile"] = tile
         # A stack moves as one piece
-        for member in self._stack_of(tile):
+        self._held = set(self._stack_of(tile))
+        for member in self._held:
             self.pos[member][0] += dx / self.zoom
             self.pos[member][1] += dy / self.zoom
             self.canvas.move(f"tile_{member[0]}_{member[1]}", dx, dy)
-        self.canvas.delete("edge")
-        self._items = {k: v for k, v in self._items.items() if v[0] != "edge" or self.canvas.type(k) == "rectangle"}
-        self._draw_edges()
-        self.canvas.tag_raise("door")
-        self.canvas.tag_raise("icon")
-        self.canvas.tag_raise("player")
-        self._draw_door_marks()
+        self._redraw_edges()
+        if self.simulate.get():
+            self._kick()
 
     def _on_release(self, event):
         press, self._press = self._press, None
+        self._held = set()
         if not press:
             return
         if press["moved"]:
             tile = press.get("dragged_tile")
             if tile is not None:
-                members = self._stack_of(tile)
-                self.fixed.update(members)
-                self.unsettled.difference_update(members)
-                self._render()
+                # A dropped block stays exactly where it was put and nothing else moves. It is not
+                # pinned though: a running simulation or a later layout is free to move it.
+                self.unsettled.difference_update(self._stack_of(tile))
             return
         if press["kind"] == "door":
             self._door_clicked(press["payload"])
@@ -1729,21 +1972,20 @@ class GraphDoorPage(ttk.Frame):
         new_zoom = max(0.15, min(2.5, self.zoom * factor))
         if abs(new_zoom - self.zoom) < 1e-6:
             return
-        if self._zoom_job is None:
-            # World point under the mouse, as drawn right now
-            self._zoom_anchor = (self.canvas.canvasx(sx) / self._drawn_zoom, self.canvas.canvasy(sy) / self._drawn_zoom)
-            self._zoom_job = self.after_idle(self._apply_zoom)
-        self._zoom_screen = (sx, sy)
+        vw, vh = self._viewport()
+        # Keep the world point under the mouse where it is on screen
+        wx = self.camera[0] + (sx - vw / 2) / self.zoom
+        wy = self.camera[1] + (sy - vh / 2) / self.zoom
         self.zoom = new_zoom
-        self._auto_view = False
+        self.camera = [wx - (sx - vw / 2) / new_zoom, wy - (sy - vh / 2) / new_zoom]
+        self._fit_provisional = False
+        if self._zoom_job is None:
+            self._zoom_job = self.after_idle(self._apply_zoom)
 
     def _apply_zoom(self):
         """Redraw once for however many wheel ticks arrived since the last frame."""
         self._zoom_job = None
-        wx, wy = self._zoom_anchor
-        sx, sy = self._zoom_screen
         self._render()
-        self._scroll_to(wx * self.zoom - sx, wy * self.zoom - sy)
 
     def _on_double_click(self, event):
         kind, payload = self._hit(event)
@@ -1798,18 +2040,49 @@ class GraphDoorPage(ttk.Frame):
             self.redraw_canvas()
         elif kind == "icon":
             self._remove_annotation(payload)
+        elif kind == "card":
+            tile = payload
+            menu = Menu(self, tearoff=0)
+            if tile in self.fixed:
+                menu.add_command(label="Unpin", command=lambda: self._set_pinned(tile, False))
+            else:
+                menu.add_command(label="Pin in place", command=lambda: self._set_pinned(tile, True))
+            if tile not in mandatory_tiles[self.tab_world]:
+                menu.add_separator()
+                menu.add_command(label="Remove supertile…", command=lambda: self._remove_tile(tile))
+            menu.tk_popup(event.x_root, event.y_root)
         elif kind is None:
             menu = Menu(self, tearoff=0)
             menu.add_command(label="Fit to window", command=self.fit_view)
             menu.add_command(label="Re-layout", command=self.relayout)
-            menu.add_command(label="Unfix all dragged tiles", command=self._unfix_all)
+            menu.add_command(label="Unpin all", command=self._unfix_all)
             wx, wy = self._event_world(event)
             menu.add_command(label="Add supertile here…", command=lambda: self._add_tile_from_picker(wx, wy))
             menu.tk_popup(event.x_root, event.y_root)
 
     def _unfix_all(self):
         self.fixed.clear()
-        self.relayout()
+        self._render()
+
+    def _on_ctrl_click(self, event):
+        self._press = None
+        kind, payload = self._hit(event)
+        # Anywhere on the room counts, including on one of its doors
+        if kind in ("door", "icon"):
+            kind, payload = "card", door_tile(payload)
+        elif kind == "edge" and (payload[2] is None or payload[2] in self.joined):
+            kind, payload = "card", door_tile(payload[0])
+        if kind == "card" and payload in self.pos:
+            self._set_pinned(payload, payload not in self.fixed)
+
+    def _set_pinned(self, tile, pinned):
+        """Pin or release a room, together with everything stacked on it."""
+        members = self._stack_of(tile)
+        if pinned:
+            self.fixed.update(members)
+        else:
+            self.fixed.difference_update(members)
+        self._render()
 
     def _annotate_door(self, door, event):
         selected = doors_sprite_data.show_sprites(self, self.top, event, self.tab_world)
@@ -1830,9 +2103,17 @@ class GraphDoorPage(ttk.Frame):
         self.special_doors.pop(door, None)
         self.redraw_canvas()
 
-    def _on_ctrl_right_click(self, event):
-        kind, tile = self._hit(event)
-        if kind != "card" or tile in mandatory_tiles[self.tab_world]:
+    def _remove_tile(self, tile):
+        if tile in mandatory_tiles[self.tab_world] or tile not in self.tiles:
+            return
+        # Takes the room's links, lobbies and annotations with it, so never without asking
+        if not messagebox.askyesno(
+            "Remove supertile",
+            f"Remove {tile_title(tile)} and every link, lobby and annotation on it?",
+            icon="warning",
+            default="no",
+            parent=self,
+        ):
             return
         doors = set(tile_door_names(tile))
         doors.discard("Sanctuary Mirror Route")
@@ -1843,6 +2124,7 @@ class GraphDoorPage(ttk.Frame):
         del self.tiles[tile]
         self.pos.pop(tile, None)
         self.pinned_eg_tiles.discard(tile)
+        self.fixed.discard(tile)
         if self.player and self.player[0] == tile:
             self.player = None
         self.redraw_canvas()
@@ -1855,10 +2137,7 @@ class GraphDoorPage(ttk.Frame):
         if kind != "card":
             return
         tile = payload
-        if tile in self.fixed:
-            # Middle click on a dragged tile hands it (and its stack) back to the layout
-            self.fixed.difference_update(self._stack_of(tile))
-        elif tile in self.pinned_eg_tiles:
+        if tile in self.pinned_eg_tiles:
             self.pinned_eg_tiles.discard(tile)
         else:
             self.pinned_eg_tiles.add(tile)
@@ -1904,6 +2183,7 @@ class GraphDoorPage(ttk.Frame):
         self.player = None
         self.selected_door = None
         self._layout_signature = None
+        self._damping = {}
         for key, lit in yaml_data.get("tiles", {}).items():
             tile = tuple(int(x) for x in str(key).split("__"))
             self._ensure_tile(tile, has_been_lit=bool(lit))
@@ -1914,6 +2194,15 @@ class GraphDoorPage(ttk.Frame):
                 if len(value) > 2 and value[2]:
                     self.fixed.add(tile)
         self._needs_fit = True
+        if yaml_data.get("spacing"):
+            self.spacing = max(10.0, min(200.0, float(yaml_data["spacing"])))
+            self.spacing_var.set(self.spacing)
+        saved_camera = yaml_data.get("camera")
+        if saved_camera and self.pos:
+            # Come back to the same view the map was saved with
+            self.camera = [float(saved_camera[0]), float(saved_camera[1])]
+            self.zoom = max(0.15, min(2.5, float(saved_camera[2])))
+            self._needs_fit = False
         self._sync_model()
         if self.pos and all(t in self.pos for t in self.tiles):
             # A saved arrangement is shown exactly as it was left
@@ -1939,12 +2228,13 @@ class GraphDoorPage(ttk.Frame):
             "graph_layout": {
                 f"{t[0]}__{t[1]}": [round(p[0], 1), round(p[1], 1), t in self.fixed] for t, p in self.pos.items()
             },
+            "camera": [round(self.camera[0], 1), round(self.camera[1], 1), round(self.zoom, 4)],
+            "spacing": round(self.spacing, 1),
         }
 
     def update_size(self, size):
         self.cwidth, self.cheight = size
         self.canvas.config(width=self.cwidth + 50, height=self.cheight + 50 - TOOLBAR_HEIGHT)
-        self._needs_fit = True
         self.redraw_canvas()
 
     def auto_add_tile(self, tile, was_lit=False):
@@ -1961,7 +2251,8 @@ class GraphDoorPage(ttk.Frame):
         self.canvas.delete("player")
         if changed_tile:
             self._render()
-            self._follow_player()
+            if self.follow_player.get():
+                self._follow_player()
         else:
             self._draw_player()
 
@@ -1971,17 +2262,18 @@ class GraphDoorPage(ttk.Frame):
             self.canvas.delete("player")
 
     def _follow_player(self):
-        """Scroll just enough to keep the card the player is in on screen."""
+        """Optional: centre the camera on the player's room when it is not fully on screen."""
         tile = self.player[0]
         if tile not in self.pos:
             return
-        x, y = self._w2c(*self.pos[tile])
+        x, y = self.pos[tile]
         vw, vh = self._viewport()
-        left, top = self.canvas.canvasx(0), self.canvas.canvasy(0)
-        margin = (THUMB / 2 + 20) * self.zoom
-        if left + margin <= x <= left + vw - margin and top + margin <= y <= top + vh - margin:
+        half_w = vw / 2 / self.zoom - THUMB / 2 - 20
+        half_h = vh / 2 / self.zoom - THUMB / 2 - 20
+        if abs(x - self.camera[0]) <= half_w and abs(y - self.camera[1]) <= half_h:
             return
-        self._scroll_to(x - vw / 2, y - vh / 2)
+        self.camera = [x, y]
+        self._apply_camera()
 
     def auto_add_door_link(self, door, linked_door):
         for d in [door, linked_door] if not self._decoupled() else [door]:
