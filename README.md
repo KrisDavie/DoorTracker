@@ -38,6 +38,16 @@ Clone the repo and install the requirements.
 With [uv](https://docs.astral.sh/uv/) no install step is needed, dependencies come from `pyproject.toml`:
 `uv run DoorsTracker.py`
 
+## Qt version (experimental)
+
+`DoorsTrackerQt.py` is the same tracker drawn with Qt instead of Tk. The map is a scene in world coordinates and the window is a camera onto it, so panning and zooming are done by the graphics card and stay smooth at high refresh rates. It reads and writes the same tracker files and uses the same auto-tracking.
+
+`uv run DoorsTrackerQt.py my_seed.yaml`
+
+- Same controls as below, except zooming is continuous rather than stepped
+- `--no-gl` draws without OpenGL if the map area stays blank on your machine
+- The supertile picker only offers the optimized vanilla layout
+
 ## Usage
 
 Start SNI and launch the tracker. The tracker will automatically connect to SNI and start tracking. Use `--no-autotrack` to run without SNI.

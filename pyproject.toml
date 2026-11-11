@@ -1,0 +1,18 @@
+[project]
+name = "doortracker"
+version = "0.1.0"
+description = "Auto-tracker for dungeon layouts in the ALttP door randomizer"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "grpcio",
+    "protobuf",
+    "pillow",
+    "pyside6",
+    "pyyaml",
+]
+
+[tool.uv]
+# An application run from the checkout (uv run DoorsTracker.py), not an installable package
+package = false
