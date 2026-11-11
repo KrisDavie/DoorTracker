@@ -10,6 +10,7 @@ import grpc.aio
 import sni.sni_pb2_grpc as sni
 import sni.sni_pb2 as sni_pb2
 from gui.Doors.overview import door_customizer_page
+from gui.Doors.graph_view import GraphDoorPage
 from SpoilerToYaml import parse_dr_spoiler
 from data.worlds_data import dungeon_worlds
 from data.doors_data import eg_tile_multiuse, door_coordinates, dark_tiles, doors_data
@@ -106,13 +107,13 @@ def customizerGUI(mainWindow, args=None):
                 yaml_data['Castle_Tower'] = yaml_data['Agahnims_Tower']
                 del yaml_data['Agahnims_Tower']
             for dungeon, dungeon_data in yaml_data.items():
-                self.pages[dungeon].content.load_yaml(self.pages[dungeon].content, dungeon_data)
+                self.pages[dungeon].content.load_yaml(dungeon_data)
 
     def save_yaml(self, save=True):
         yaml_data = {}
 
         for dungeon in self.pages:
-            doors_data = self.pages[dungeon].content.return_connections(self.pages[dungeon].content)
+            doors_data = self.pages[dungeon].content.return_connections()
             yaml_data[dungeon] = doors_data
 
         if not save:
@@ -232,7 +233,7 @@ def customizerGUI(mainWindow, args=None):
         self.notebook.add(  # type: ignore
             self.pages[dungeon], text=dungeon.replace("_", " ")  # type: ignore
         )
-        self.pages[dungeon].content = door_customizer_page(  # type: ignore
+        self.pages[dungeon].content = GraphDoorPage(  # type: ignore
             self,
             self.pages[dungeon],  # type: ignore
             world,
@@ -241,7 +242,7 @@ def customizerGUI(mainWindow, args=None):
         )
         self.pages[dungeon].content.pack(side=TOP, fill=BOTH, expand=True)  # type: ignore
 
-    self.notebook.pack()  # type: ignore
+    self.notebook.pack(fill=BOTH, expand=True)  # type: ignore
 
     menu = Menu(self)
     self.config(menu=menu)
@@ -332,8 +333,8 @@ def reset_tracker(self):
     def force_reset():
         for world in self.pages:
             content = self.pages[world].content
-            content.init_page(content)
-            content.redraw_canvas(content)
+            content.init_page()
+            content.redraw_canvas()
         top.destroy()
 
     ttk.Label(
@@ -349,7 +350,7 @@ def reset_tracker(self):
 def redraw_all(self):
     for world in self.pages:
         content = self.pages[world].content
-        content.redraw_canvas(content)
+        content.redraw_canvas()
 
 
 def show_all_doors(self, menu):
@@ -361,7 +362,7 @@ def show_all_doors(self, menu):
     for world in self.pages:
         content = self.pages[world].content
         content.show_all_doors = self.show_all_doors
-        content.redraw_canvas(content)
+        content.redraw_canvas()
 
 
 def set_aspect_ratio(self, ratio):
@@ -375,9 +376,7 @@ def set_aspect_ratio(self, ratio):
     for world in self.pages:
         # Update canvas dimensions, aspect ratio, and redraw
         self.pages[world].content.aspect_ratio = ratio
-        self.pages[world].content.cwidth = new_width
-        self.pages[world].content.cheight = new_height
-        self.pages[world].content.redraw_canvas(self.pages[world].content)
+        self.pages[world].content.update_size((new_width, new_height))
     self.geometry(
         f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}"
     )
@@ -392,7 +391,7 @@ def set_size(self, size):
     sc_width = mainWindow.winfo_screenwidth()
     sc_height = mainWindow.winfo_screenheight()
     for world in self.pages:
-        self.pages[world].content.update_size(self.pages[world].content, (new_width, new_height))
+        self.pages[world].content.update_size((new_width, new_height))
     self.geometry(
         f"{new_width + MAIN_X_PAD}x{new_height + MAIN_Y_PAD}+{int(sc_width/2 - new_width/2)}+{int(sc_height/2 - new_height/2)}"
     )
@@ -402,7 +401,7 @@ def set_experimental_flag(self, flag: str):
     self.experimental_flags[flag] = not self.experimental_flags[flag]
     for world in self.pages:
         self.pages[world].content.experimental_flags = self.experimental_flags
-        self.pages[world].content.redraw_canvas(self.pages[world].content)
+        self.pages[world].content.redraw_canvas()
         self.eg_tile_window.pages[world].content.experimental_flags = self.experimental_flags
         self.eg_tile_window.pages[world].content.draw_vanilla_eg_map(self.eg_tile_window.pages[world].content)
 
@@ -607,7 +606,7 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
                     reset_dungeon_names(mainWindow)
                     # Just left a dungeon, add the last door as a lobby
                     new_door = find_closest_door(current_x, current_y, eg_tile, previous_layer)
-                    dp_content.auto_add_lobby(dp_content, new_door)  # type: ignore
+                    dp_content.auto_add_lobby(new_door)  # type: ignore
                 current_tile = None
                 previous_tile = None
                 current_x = None
@@ -680,16 +679,16 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
             current_y = (current_y_subtile * 255) + int(data["link_y"][:2], 16)
 
             if eg_tile not in dp_content.tiles:
-                dp_content.auto_add_tile(dp_content, eg_tile, was_lit=not is_dark)
+                dp_content.auto_add_tile(eg_tile, was_lit=not is_dark)
             else:
                 if not dp_content.tiles[eg_tile]["has_been_lit"] and not is_dark:
                     dp_content.tiles[eg_tile]["has_been_lit"] = True
-                    dp_content.redraw_canvas(dp_content)
+                    dp_content.redraw_canvas()
 
             if eg_tile not in dark_tiles or not is_dark:
-                dp_content.auto_draw_player(dp_content, current_x, current_y, eg_tile)
+                dp_content.auto_draw_player(current_x, current_y, eg_tile)
             else:
-                dp_content.canvas.delete("player")
+                dp_content.clear_player()
 
             if (previous_tile != eg_tile and previous_tile == None) or (was_mirroring and data["mirror"] != "0f"):
                 previous_tile = eg_tile
@@ -708,7 +707,7 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
                     data["layer"],
                     closest_distance=32 if was_mirroring else 128,
                 )
-                dp_content.auto_add_lobby(dp_content, new_door)
+                dp_content.auto_add_lobby(new_door)
                 was_mirroring = False
 
             elif (previous_tile != eg_tile and previous_tile != None) or was_transitioning:
@@ -724,7 +723,7 @@ async def sni_probe(mainWindow, args: argparse.Namespace, forced_autotrack: bool
                     continue
                 if old_door == new_door:
                     continue
-                dp_content.auto_add_door_link(dp_content, old_door, new_door)
+                dp_content.auto_add_door_link(old_door, new_door)
 
             previous_x = current_x
             previous_y = current_y
@@ -797,6 +796,7 @@ if __name__ == "__main__":
     customizerGUI(mainWindow, args=args)
 
     tkmain = asyncio.ensure_future(tk_main(mainWindow))
+    sn_probe = None
     if not args.no_autotrack:
         sn_probe = start_sni_tracking(mainWindow, args)
 
@@ -809,5 +809,5 @@ if __name__ == "__main__":
         pass
 
     tkmain.cancel()
-    if not args.no_autotrack:
+    if sn_probe:
         sn_probe.cancel()  # type: ignore

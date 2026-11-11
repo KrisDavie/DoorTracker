@@ -867,7 +867,7 @@ def door_customizer_page(
 
         img = ImageTk.PhotoImage(
             eg_img.crop((x * 512, y * 512, (x + 1) * 512, (y + 1) * 512)).resize(
-                (self.tile_size, self.tile_size), Image.ANTIALIAS
+                (self.tile_size, self.tile_size), Image.LANCZOS
             )
         )
         if self.tiles[(x, y)]["is_dark"] and self.eg_selection_mode:

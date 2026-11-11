@@ -14,17 +14,13 @@ This tracker will auto-track dungeon layouts from the Doors branch of ALttPR usi
 
 ## Basic Usage
 
-Auto-tracking will track supertiles, links between doors and lobbies. Dark rooms are only visible if the player has a lamp or a torch lit, otherwise they are obscured.
+The map is drawn as a graph. Every supertile is a card (a cluster of its doors, drawn at their real positions on a thumbnail of the room) and every door link is an edge between two doors. Cards are laid out automatically so that a link through a north door puts the linked room above, an east door to the right, and so on. Cards are coloured by the dungeon the supertile originally belongs to, which is what you want in crossed door shuffle.
 
-Manually link doors with left click. Right click a line to remove a link.
+Auto-tracking will track supertiles, links between doors and lobbies. Dark rooms are only visible if the player has a lamp or a torch lit, otherwise they are obscured. The card the player is in is outlined in red.
 
-Right click a door to place an annotation or lobby on that door. Lobbies are the white squares and are used to start mapping a dungeon. Right click an annotation to remove it.
+Green doors are still unexplored, grey doors are linked. Hover anything to see its name in the toolbar. Lobbies hang off the door they lead to as a small entrance node.
 
-Add new tiles by clicking an empty grey square. Ctrl-Right click to remove a tile.
-
-You can save the current state of the tracker with File -> Save Tracker Data. This will save the current layout and the current annotations. You can load a saved layout File -> Load Tracker Data and selecting a file.
-
-The size and aspect ratio of the tracker can be modified under the view menu.
+You can save the current state of the tracker with File -> Save Tracker Data, including where you dragged the cards. Files saved by older versions load fine and are laid out automatically.
 
 ## Installation
 
@@ -37,22 +33,30 @@ Download the latest release from the releases page. Run the `DoorsTracker_vx.x.x
 Clone the repo and install the requirements.
 `python DoorsTracker.py`
 
+With [uv](https://docs.astral.sh/uv/) no install step is needed:
+`uv run --with grpcio --with protobuf --with pyyaml --with pillow python DoorsTracker.py`
+
 ## Usage
 
-Start SNI and launch the tracker. The tracker will automatically connect to SNI and start tracking.
+Start SNI and launch the tracker. The tracker will automatically connect to SNI and start tracking. Use `--no-autotrack` to run without SNI.
 
 ## Controls
 
-- Left click empty tile - Add a new tile
-- Left click door - Start link, select another door to complete
-- Right click door - Add annotation or lobby
+- Mouse wheel - Zoom, drag the background - Pan, `Fit` - Show everything
+- Drag a card - Move it. Dragged cards stay where you put them (yellow dot); middle click one to hand it back to the layout
+- `Re-layout` - Lay the whole graph out again around the cards you placed
+- Left click door, then another door - Link them (Esc cancels)
+- Right click door - Add annotation or lobby. Right click the annotation to remove it
 - Right click link - Remove link
-- Ctrl+Right click tile - Remove tile
+- Double click the background (or right click -> Add supertile here) - Add a supertile from the EG map
+- Double click an unlinked door - Add a supertile next to that door
+- Ctrl+Right click card - Remove supertile
+- Middle click card - Pin it (never collapsed by "Hide Single Route Tiles")
 
-### Advanced Controls
+### Options
 
-- Double left click door - Start link and add new tile
-- Middle click tile - Pin tile (prevents tile being hidden in "hide simple tiles" mode)
+- `Group by original dungeon` - Pull supertiles of the same vanilla dungeon together and draw a hull around them
+- Experimental -> Hide Single Route Tiles - Fully linked pass-through rooms shrink to a small pill instead of a full card
 
 ## Command Line Arguments
 
