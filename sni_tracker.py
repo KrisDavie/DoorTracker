@@ -86,16 +86,40 @@ def find_closest_door(x, y, tile, layer, closest_distance=128):
     return closest_door
 
 
+RETRY_SECONDS = 2
+
+
 async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False, device: str = None):
     """Poll the game through SNI and feed what the player does into the dungeon pages.
 
     `ui` is the window, reduced to what tracking needs from it: set_title, set_devices,
     race_rom_warning, highlight_dungeon, select_dungeon and a `pages` dict of dungeon name -> page.
+
+    SNI not running, the console unplugged, the serial port busy: none of that ends tracking. It
+    says so in the title and tries again until it works, picking up the same device when it is back.
     """
-    forced_autotrack = forced_autotrack
-    port = args.port
+    last_error = None
+    resumed = False
+    while True:
+        channel = grpc.aio.insecure_channel(f"localhost:{args.port}")
+        try:
+            await _sni_session(ui, args, channel, forced_autotrack, device or getattr(ui, "device", None), resumed)
+            return  # stopped on purpose (a race rom)
+        except (grpc.aio.AioRpcError, OSError) as error:
+            details = error.details() if isinstance(error, grpc.aio.AioRpcError) else str(error)
+            if details != last_error:
+                print(f"Auto-tracking lost its connection: {details}")
+                last_error = details
+            ui.set_title(f"Jank Door Tracker - Reconnecting... ({details.split(chr(59))[0][:70]})")
+        finally:
+            await channel.close()
+        resumed = True
+        await asyncio.sleep(RETRY_SECONDS)
+
+
+async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=False):
+    """One connection's worth of tracking. Returns when tracking should stop; raises when the connection drops."""
     debug = args.debug
-    channel = grpc.aio.insecure_channel(f"localhost:{port}")
     stub = sni.DevicesStub(channel)
     while True:
         response = await stub.ListDevices(sni_pb2.DevicesRequest(kinds=""))
@@ -136,7 +160,9 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
     previous_layer = None
     was_transitioning = False
     was_falling = False
-    was_dead = False
+    # The first room seen is normally a dungeon being entered, and its door an entrance. Picking up
+    # after a lost connection it is not: the same flag that skips this after a death skips it here.
+    was_dead = resumed
     cycle_skipped = False
     was_mirroring = False
     previous_dungeon = False
@@ -148,15 +174,6 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
 
     # Main loop for data collection
     while True:
-        if channel.get_state() in [
-            grpc.ChannelConnectivity.SHUTDOWN,
-            grpc.ChannelConnectivity.TRANSIENT_FAILURE,
-            grpc.ChannelConnectivity.CONNECTING,
-        ]:
-            ui.set_title(f"Jank Door Tracker - DISCONNECTED FROM SNI")
-            await asyncio.sleep(1)
-            continue
-        # Lazy error handling - won't actually catch disconnects
         try:
             mem_req = sni_pb2.MultiReadMemoryRequest(uri=dev_uri, requests=list(mem_request.values()))
             mem_data = await mem_stub.MultiRead(mem_req)
@@ -321,10 +338,8 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
             previous_layer = data["layer"]
 
             await asyncio.sleep(0.1)
-        except grpc.aio.AioRpcError as e:
-            ui.set_title(f"Jank Door Tracker - DISCONNECTED FROM SNI")
-            print(e)
-            break
+        except grpc.aio.AioRpcError:
+            raise  # the device or SNI went away: sni_probe connects again
         # except Exception as e:
         #     print(e)
         #     await asyncio.sleep(1)

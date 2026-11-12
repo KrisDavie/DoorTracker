@@ -1614,6 +1614,28 @@ class GraphModel:
             if movable[i]:
                 self._place_stack(r, xs[i] - centre[i][0] + self.stack_off[r][0], ys[i] - centre[i][1] + self.stack_off[r][1])
 
+    def repulsion_shapes(self):
+        """What each stack repels as, in world units: (circle or None, room boxes, reach).
+
+        Two stacks push each other when their shapes are closer than the reach. With circle repulsion
+        the shape is one circle around the whole stack; without it, the stack's own rooms, measured
+        wall to wall. Either way rooms nearly touching are also told apart wall to wall.
+        """
+        shapes = []
+        for root, members in self.stack_members.items():
+            if any(m not in self.pos for m in members):
+                continue
+            boxes = []
+            for m in members:
+                x, y = self.pos[m]
+                boxes.extend((x + left, y + top, x + right, y + bottom) for left, top, right, bottom in self._pieces(m))
+            circle = None
+            if self.circle_repulsion:
+                corners = [(bx, by) for left, top, right, bottom in boxes for bx in (left, right) for by in (top, bottom)]
+                circle = enclosing_circle(corners)
+            shapes.append((circle, boxes, self.spacing if circle else max(self.spacing, CONTACT_RANGE)))
+        return shapes
+
     def _park_unlinked(self, edges):
         """Line blocks that have no links to anything up beside the map.
 

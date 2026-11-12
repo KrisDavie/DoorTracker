@@ -295,6 +295,65 @@ class LabelItem(QGraphicsItem):
         painter.drawText(self.tag.adjusted(3, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, self.text)
 
 
+class ReachItem(QGraphicsItem):
+    """What each block repels as, drawn under the rooms.
+
+    The solid outline is the shape; the dashed one is half the reach further out, so two blocks are
+    pushing each other exactly when their dashed outlines overlap.
+    """
+
+    def __init__(self, page):
+        super().__init__()
+        self.page = page
+        self.shapes = []
+        self.bounds = QRectF()
+        self.setZValue(0.5)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+
+    def refresh(self):
+        self.prepareGeometryChange()
+        self.shapes = self.page.model.repulsion_shapes()
+        bounds = QRectF()
+        for circle, boxes, reach in self.shapes:
+            for left, top, right, bottom in boxes:
+                bounds = bounds.united(QRectF(left, top, right - left, bottom - top))
+            if circle:
+                bounds = bounds.united(QRectF(circle[0] - circle[2], circle[1] - circle[2], circle[2] * 2, circle[2] * 2))
+        reach = max((shape[2] for shape in self.shapes), default=0.0)
+        self.bounds = bounds.adjusted(-reach, -reach, reach, reach)
+        self.update()
+
+    def boundingRect(self):
+        return self.bounds
+
+    def shape(self):
+        return QPainterPath()
+
+    def paint(self, painter, option, widget=None):
+        solid = QPen(QColor(255, 255, 255, 200), 0)
+        dashed = QPen(QColor(255, 255, 255, 200), 0, Qt.DashLine)
+        fill = QColor(255, 255, 255, 28)
+        for circle, boxes, reach in self.shapes:
+            half = reach / 2
+            if circle:
+                x, y, radius = circle
+                painter.setBrush(fill)
+                painter.setPen(dashed)
+                painter.drawEllipse(QPointF(x, y), radius + half, radius + half)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(solid)
+                painter.drawEllipse(QPointF(x, y), radius, radius)
+            else:
+                # Wall to wall from every room: the rooms grown by half the reach, corners rounded
+                grown = QPainterPath()
+                grown.setFillRule(Qt.WindingFill)
+                for left, top, right, bottom in boxes:
+                    grown.addRoundedRect(QRectF(left - half, top - half, right - left + reach, bottom - top + reach), half, half)
+                painter.setBrush(fill)
+                painter.setPen(dashed)
+                painter.drawPath(grown.simplified())
+
+
 class DoorsItem(QGraphicsItem):
     """The doors of one room, and the player marker. Sits above the links so a door is never hidden."""
 
@@ -629,6 +688,7 @@ class GraphPage(QWidget):
         self._labels = {}
         self._links = []
         self._hulls = []
+        self._reach = None
         self._rubber = None
         self._needs_fit = True
         self._settling_size = False
@@ -679,6 +739,9 @@ class GraphPage(QWidget):
         self.circle_box = QCheckBox("Circle repulsion")
         self.circle_box.setToolTip("Experiment: each block repels as one circle around all its rooms")
         self.circle_box.toggled.connect(self._on_circle)
+        self.reach_box = QCheckBox("Show repulsion")
+        self.reach_box.setToolTip("Draw what each block repels as. Blocks push each other when their dashed outlines overlap")
+        self.reach_box.toggled.connect(self._on_reach)
         self.follow_box = QCheckBox("Follow player")
         self.labels_box = QCheckBox("Labels")
         self.labels_box.setChecked(True)
@@ -692,6 +755,7 @@ class GraphPage(QWidget):
         row.addWidget(QLabel("Satellite pull"))
         row.addWidget(self.pull_slider)
         row.addWidget(self.circle_box)
+        row.addWidget(self.reach_box)
         row.addWidget(self.simulate_box)
         row.addWidget(self.follow_box)
         row.addWidget(self.labels_box)
@@ -713,6 +777,12 @@ class GraphPage(QWidget):
     def _on_spacing(self, value):
         self.model.spacing = float(value)
         self._forces_changed()
+
+    def _on_reach(self, checked):
+        if self._reach is not None:
+            self._reach.setVisible(checked)
+            if checked:
+                self._reach.refresh()
 
     def _on_circle(self, checked):
         self.model.circle_repulsion = checked
@@ -746,6 +816,9 @@ class GraphPage(QWidget):
         """Throw the drawn map away and draw it again from the model. Done when the data changes, not per frame."""
         model = self.model
         self.scene.clear()
+        self._reach = ReachItem(self)
+        self._reach.setVisible(self.reach_box.isChecked())
+        self.scene.addItem(self._reach)
         self._rooms, self._doors, self._links, self._hulls = {}, {}, [], []
         self._labels = {}
         self._rubber = None
@@ -837,6 +910,8 @@ class GraphPage(QWidget):
         if links:
             for link in self._links:
                 link.update_path()
+        if self._reach is not None and self._reach.isVisible():
+            self._reach.refresh()
         for hull in self._hulls:
             points = []
             for tile in hull.members:
