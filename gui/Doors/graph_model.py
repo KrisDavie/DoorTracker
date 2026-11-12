@@ -147,6 +147,10 @@ def _build_room_links():
         tile, found = next(iter(points.items()))
         return tile, sum(p[0] for p in found) / len(found), sum(p[1] for p in found) / len(found), names[tile]
 
+    def block(place):
+        """The block a spot is in: its supertile and which part of it."""
+        return place[0], DOOR_PART.get(place[3], 0)
+
     ports, found = {}, {}
     for kind, pairs in (("warp", dungeon_warps), ("hole", falldown_pits)):
         for name, target in pairs:
@@ -155,7 +159,9 @@ def _build_room_links():
             start, end = spot(home.get(name, [])), spot([target])
             if start is None or end is None or start[0] == end[0]:
                 continue
-            found[(start[0], end[0], kind)] = (name, start, end)
+            # Told apart by part, not supertile: GT Compass Room warps to Conveyor Star Pits and GT
+            # Hidden Star warps to Invisible Bridges, the same two supertiles but four different rooms
+            found.setdefault((block(start), block(end), kind), (name, start, end))
     links = []
     for (ta, tb, kind), (name, start, end) in found.items():
         both_ways = (tb, ta, kind) in found
@@ -488,6 +494,8 @@ class GraphModel:
         self.doors_available = set()
         self.player = None  # (block, x, y): where in its supertile, 0..512
         self.visited = set()  # blocks the player has stood in this session
+        self._whole = set()  # split supertiles shown whole; see nodes()
+        self.provisional = {}  # supertile -> the part the player seemed to be in when it was added
         self.located = None  # the block the player is known to be in
         self._sighted = None  # the supertile the player was last seen in
         self._layout_signature = None
@@ -590,6 +598,8 @@ class GraphModel:
         """
         split = [tile for tile in self.tiles if part_count(tile) > 1]
         shown = {(tile[0], tile[1], 0) for tile in self.tiles if part_count(tile) == 1}
+        # Supertiles shown whole because nothing says which part is which yet: their parts stay together
+        self._whole = set()
         if split:
             used = set(self.special_doors)
             for link in self.door_links:
@@ -599,18 +609,26 @@ class GraphModel:
                 if door in door_coordinates_key and door_coordinates_key[door][0] in self.tiles:
                     shown.add(door_tile(door))
             shown.update(node for node in self.visited if node[:2] in self.tiles)
+            shown.update(node for tile, node in self.provisional.items() if tile in self.tiles)
             shown.update(node for node in self.pinned_eg_tiles if node[:2] in self.tiles)
-            fixed = [(link["a"], link["b"]) for link in ROOM_LINKS if link["kind"] != "hole" or self.experimental_flags.get("vanilla_drops")]
+            # Fixed ways from one block to another, each in the direction it can be taken
+            fixed = []
+            for link in ROOM_LINKS:
+                if link["kind"] != "hole" or self.experimental_flags.get("vanilla_drops"):
+                    fixed.append((link["a"], link["b"]))
+                    if link["both_ways"]:
+                        fixed.append((link["b"], link["a"]))
             if self.experimental_flags.get("vanilla_drops"):
                 fixed += list(MANUAL_DROPS.items())
-            fixed = [(door_tile(a), door_tile(b)) for a, b in fixed if a in door_coordinates_key and b in door_coordinates_key]
-            fixed = [(a, b) for a, b in fixed if a[:2] in self.tiles and b[:2] in self.tiles]
+            # Warp tiles and unmarked holes are named after their room, not a door: door_tile knows both
+            fixed = [(door_tile(a), door_tile(b)) for a, b in fixed]
+            fixed = [(a, b) for a, b in fixed if a and b and a[:2] in self.tiles and b[:2] in self.tiles]
             grew = True
             while grew:
                 grew = False
                 for a, b in fixed:
-                    if (a in shown) != (b in shown):
-                        shown.update((a, b))
+                    if a in shown and b not in shown:
+                        shown.add(b)
                         grew = True
             for tile in split:
                 parts = [(tile[0], tile[1], k) for k in range(part_count(tile))]
@@ -619,6 +637,7 @@ class GraphModel:
                 elif not any(node in shown for node in parts):
                     # A dark room nobody has seen is one question mark, whatever is inside it
                     shown.update(parts[:1] if self._is_hidden_dark(tile) else parts)
+                    self._whole.add(tile)
         return [(tile[0], tile[1], k) for tile in self.tiles for k in range(part_count(tile)) if (tile[0], tile[1], k) in shown]
 
     def player_node(self, tile, x, y):
@@ -643,6 +662,7 @@ class GraphModel:
         node = door_tile(door)
         self.located = node
         self.visited.add(node)
+        self.provisional.pop(node[:2], None)  # the door settles what the position only suggested
         if self.player is not None and self.player[0][:2] == node[:2]:
             self.player = (node, self.player[1], self.player[2])
 
@@ -663,6 +683,7 @@ class GraphModel:
         self._sighted = tile
         self.located = self.player_node(tile, x, y)
         self.visited.add(self.located)
+        self.provisional.pop(tile, None)
         return self.located
 
     def move_stack(self, tile, dx, dy):
@@ -670,11 +691,18 @@ class GraphModel:
             self.pos[member][0] += dx
             self.pos[member][1] += dy
 
-    def add_tile(self, tile, has_been_lit=False, at=None):
+    def add_tile(self, tile, has_been_lit=False, at=None, player=None):
+        """Put a supertile on the map.
+
+        Added by hand it is the whole supertile. Added because the player (x, y) walked into it, it is
+        only the part they are standing in, until the door they came through says otherwise.
+        """
         tile = tile[:2]
         if tile in self.tiles:
             return False
         self._ensure_tile(tile, has_been_lit=has_been_lit)
+        if player is not None and part_count(tile) > 1:
+            self.provisional[tile] = self.player_node(tile, *player)
         if at is not None:
             self.pos[(tile[0], tile[1], 0)] = [at[0], at[1]]
         self.update()
@@ -696,6 +724,10 @@ class GraphModel:
             del self.pos[node]
         self.pinned_eg_tiles = {n for n in self.pinned_eg_tiles if n[:2] != tile}
         self.fixed = {n for n in self.fixed if n[:2] != tile}
+        self.visited = {n for n in self.visited if n[:2] != tile}
+        self.provisional.pop(tile, None)
+        if self.located is not None and self.located[:2] == tile:
+            self.located = None
         if self.player and self.player[0][:2] == tile:
             self.player = None
         self.update()
@@ -780,6 +812,11 @@ class GraphModel:
         for key, lit in data.get("tiles", {}).items():
             tile = tuple(int(x) for x in str(key).split("__"))
             self._ensure_tile(tile, has_been_lit=bool(lit))
+        self.visited, self.provisional, self.located, self._sighted = set(), {}, None, None
+        for key in data.get("reached_parts") or []:
+            node = tuple(int(x) for x in str(key).split("__"))
+            if len(node) == 3 and node[:2] in self.tiles and node[2] < part_count(node):
+                self.visited.add(node)
         for key, value in (data.get("graph_layout") or {}).items():
             # "x__y" is the supertile (its first part); further parts are saved as "x__y__part"
             numbers = [int(x) for x in str(key).split("__")]
@@ -839,6 +876,13 @@ class GraphModel:
             "stacked_links": [n for n in self._stack_order() if n in self.joined],
             "lobby_doors": [{"door": x["door"], "lobby": x["lobby"]} for x in self.lobby_doors],
             "tiles": {f"{t[0]}__{t[1]}": data["has_been_lit"] for t, data in self.tiles.items()},
+            # Parts of split supertiles the player has stood in. A link shows its own part; this is
+            # for the ones reached by a fall or a warp, which leave nothing else behind.
+            "reached_parts": sorted(
+                f"{n[0]}__{n[1]}__{n[2]}"
+                for n in self.visited | set(self.provisional.values())
+                if n[:2] in self.tiles and part_count(n) > 1
+            ),
             "special_doors": dict(self.special_doors),
             "graph_layout": {
                 (f"{t[0]}__{t[1]}" if t[2] == 0 else f"{t[0]}__{t[1]}__{t[2]}"): [
@@ -1133,6 +1177,13 @@ class GraphModel:
         off = {t: (0.0, 0.0) for t in nodes}
         members = {t: [t] for t in nodes}
         boxes = {t: self._pieces(t) for t in nodes}
+        # A supertile nothing is known about is drawn as it is in the game: its parts in one stack, in
+        # place. It only comes apart once a link or the player says which part is which.
+        for tile in self._whole:
+            parts = [t for t in nodes if t[:2] == tile]
+            for part in parts[1:]:
+                root[part] = parts[0]
+                members[parts[0]] += members.pop(part)
         joined = set()
         auto = self.auto_stack
         for n in order:

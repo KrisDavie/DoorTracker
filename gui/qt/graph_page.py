@@ -1319,8 +1319,9 @@ class GraphPage(QWidget):
         data["camera"] = [round(x, 1), round(y, 1), round(zoom, 4)]
         return data
 
-    def auto_add_tile(self, tile, was_lit=False):
-        if self.model.add_tile(tile, has_been_lit=was_lit):
+    def auto_add_tile(self, tile, was_lit=False, player=None):
+        """The player walked into a supertile that is not on the map. `player` is where in it: (x, y)."""
+        if self.model.add_tile(tile, has_been_lit=was_lit, player=player):
             self.rebuild()
 
     def auto_add_door_link(self, door, linked_door):
