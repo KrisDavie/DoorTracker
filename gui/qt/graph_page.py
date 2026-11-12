@@ -504,7 +504,16 @@ class LinkItem(QGraphicsPathItem):
         c1 = QPointF(ax + da[0] * reach, ay + da[1] * reach) if da else None
         c2 = QPointF(bx + db[0] * reach, by + db[1] * reach) if db else None
         end = QPointF(bx, by)
-        if c1 is not None and c2 is not None:
+        same_block = model.stack_root.get(door_tile(a)) == model.stack_root.get(door_tile(b))
+        if same_block and da and db and not self.interior and dist > 1:
+            # Two doors of one block face away from each other, so the plain curve comes out as a
+            # straight line through the room: bow it to one side so it reads as a link
+            px, py = -(by - ay) / dist, (bx - ax) / dist
+            if py < 0 or (py == 0 and px < 0):
+                px, py = -px, -py
+            bow = dist * 0.3
+            path.cubicTo(c1 + QPointF(px * bow, py * bow), c2 + QPointF(px * bow, py * bow), end)
+        elif c1 is not None and c2 is not None:
             path.cubicTo(c1, c2, end)
         elif c1 is not None or c2 is not None:
             path.quadTo(c1 if c1 is not None else c2, end)
