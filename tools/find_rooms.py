@@ -270,20 +270,26 @@ def share_out(px, live, parts, tile):
 
 
 def main():
-    from gui.Doors.graph_model import PARTS  # which doors can be walked between; needs no picture
+    # PARTS: which doors can be walked between. DOORLESS_ROOMS: rooms with no doors. Neither needs a picture
+    from gui.Doors.graph_model import DOORLESS_ROOMS, PARTS
+
+    # What marks a room as used: its doors, or for a room without doors the spot it was given
+    marks = {tile: [(door["x"], door["y"]) for door in doors] for tile, doors in door_coordinates.items()}
+    for tile, dungeon, place in DOORLESS_ROOMS.values():
+        marks.setdefault(tile, []).append((place[0] * 512, place[1] * 512))
 
     eg_map = Image.open(ROOT / "data" / "maps" / "egmap.png").convert("RGB")
     out = {}
-    for tile in sorted(door_coordinates):
+    for tile in sorted(marks):
         x, y = tile
         picture = eg_map.crop((x * 512, y * 512, x * 512 + 512, y * 512 + 512))
         rooms, background = find_rooms(picture)
         live = set()
-        for door in door_coordinates[tile]:
+        for mark_x, mark_y in marks[tile]:
             if not rooms:
                 break
             # A door belongs to the room it is in, or failing that the nearest one
-            nearest = min(range(len(rooms)), key=lambda i: distance_to(rooms[i], door["x"], door["y"]))
+            nearest = min(range(len(rooms)), key=lambda i: distance_to(rooms[i], mark_x, mark_y))
             live.add(nearest)
         entry = {
             "live": [rooms[i] for i in sorted(live)],

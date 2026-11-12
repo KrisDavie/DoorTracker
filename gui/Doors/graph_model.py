@@ -120,6 +120,15 @@ EDGE_FADED = "#c9cdd4"
 WARP_COLOUR = "#7b4fc4"  # warp tiles: fixed, drawn dashed
 DROP_COLOUR = "#4a4f57"  # fixed pit drops: drawn like links, but not one of the tracked colours
 
+# Rooms with no doors at all: you fall in and warp out. Everything else about a supertile is worked
+# out from its doors, so these are spelled out. region: (supertile, dungeon, where in the picture 0..1)
+DOORLESS_ROOMS = {
+    "Ice Fairy": ((15, 4), "Ice_Palace", (0.75, 0.25)),
+    "Eastern Fairies": ((9, 8), "Eastern_Palace", (0.5, 0.31)),
+    "Hera Fairies": ((7, 10), "Tower_of_Hera", (0.27, 0.25)),
+}
+DOORLESS_TILES = {tile: (region, dungeon) for region, (tile, dungeon, place) in DOORLESS_ROOMS.items()}
+
 
 def _build_room_links():
     """Connections the game data only gives room to room: warp tiles, and holes without a marked pit.
@@ -136,6 +145,9 @@ def _build_room_links():
         """(tile, x, y) for a region: the average position of its real doors."""
         points, names = {}, {}
         for region in regions:
+            if region in DOORLESS_ROOMS:
+                tile, dungeon, place = DOORLESS_ROOMS[region]
+                return tile, place[0], place[1], None
             for name in regions_to_doors.get(region, []):
                 if name in door_coordinates_key:
                     tile, list_pos = door_coordinates_key[name]
@@ -191,7 +203,7 @@ def _build_parts():
     TR Main Lobby's compass room, or the bridge in Mire that passes over two corridors, are in the
     same supertile as their neighbours but are separate places as far as the map is concerned. Two
     doors are in the same part when their regions are connected by the game's own in-room
-    connections (or an interior door); drops and warps do not count.
+    connections, an interior door, or a warp tile inside the supertile; drops do not count.
     """
     home = {}
     for region, names in regions_to_doors.items():
@@ -218,6 +230,12 @@ def _build_parts():
         for ra in home.get(a, []):
             for rb in home.get(b, []):
                 connect(ra, rb)
+    # A warp tile that lands in the same supertile is a way through it: the pockets of GT's warp
+    # maze are one block. A warp to another supertile joins nothing here, because a part never
+    # reaches into a region that belongs to a different supertile.
+    for exit_name, region in dungeon_warps:
+        for start in home.get(exit_name, []):
+            connect(start, region)
 
     parts, door_part = {}, {}
     for tile, entries in door_coordinates.items():
@@ -356,6 +374,8 @@ def tile_dungeon(tile):
             return dungeon_abv_to_name[prefix]
         if prefix == "Sanctuary":
             return "Hyrule_Castle"
+    if tile[:2] in DOORLESS_TILES:
+        return DOORLESS_TILES[tile[:2]][1]
     return None
 
 
@@ -363,6 +383,8 @@ def tile_title(tile):
     regions = tile_regions(tile)
     if regions:
         return regions[0]
+    if tile[:2] in DOORLESS_TILES:
+        return DOORLESS_TILES[tile[:2]][0]
     doors = tile_door_names(tile)
     if doors:
         return " ".join(doors[0].split(" ")[:-1]) or doors[0]
