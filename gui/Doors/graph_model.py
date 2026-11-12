@@ -129,6 +129,14 @@ DOORLESS_ROOMS = {
 }
 DOORLESS_TILES = {tile: (region, dungeon) for region, (tile, dungeon, place) in DOORLESS_ROOMS.items()}
 
+# Where a warp tile and its landing are in their supertile pictures (0..1), for the ones that are far
+# from any door. warp: (tile, landing)
+WARP_SPOTS = {
+    # Under one of the moving spikes on the far side of the barrier; lands at the far right of the
+    # Firesnake room
+    "GT Spike Crystals Warp": ((0.885, 0.26), (0.89, 0.265)),
+}
+
 
 def _build_room_links():
     """Connections the game data only gives room to room: warp tiles, and holes without a marked pit.
@@ -163,23 +171,77 @@ def _build_room_links():
         """The block a spot is in: its supertile and which part of it."""
         return place[0], DOOR_PART.get(place[3], 0)
 
+    # Regions you can walk between inside a room, and where each region's warp tiles lead
+    beside, onward = {}, {}
+    for name, target in logical_connections:
+        for region in home.get(name, []):
+            beside.setdefault(region, set()).add(target)
+            beside.setdefault(target, set()).add(region)
+    for name, target in dungeon_warps:
+        for region in home.get(name, []):
+            onward.setdefault(region, []).append(target)
+
+    def place_of(region):
+        """A spot on the map for a region.
+
+        A corner of a room behind a barrier has no door of its own (the far side of GT Spike
+        Crystals, where its warp tile is): it is placed with the part of the room that has one.
+        """
+        seen, queue = {region}, [region]
+        while queue:
+            current = queue.pop(0)
+            place = spot([current])
+            if place is not None:
+                return place
+            for other in sorted(beside.get(current, ())):
+                if other not in seen:
+                    seen.add(other)
+                    queue.append(other)
+        return None
+
+    def landings(target):
+        """Where a warp or hole ends up, as spots on the map.
+
+        Some of GT's warp maze is pockets with no door, only more warp tiles. They have no place on
+        the map, so the trip is followed through them to the rooms that do.
+        """
+        seen, queue, out = {target}, [target], []
+        while queue:
+            region = queue.pop()
+            place = place_of(region)
+            if place is not None:
+                out.append(place)
+                continue
+            for further in onward.get(region, []):
+                if further not in seen:
+                    seen.add(further)
+                    queue.append(further)
+        return out
+
     ports, found = {}, {}
     for kind, pairs in (("warp", dungeon_warps), ("hole", falldown_pits)):
         for name, target in pairs:
             if name in MANUAL_DROPS or name in door_coordinates_key:
                 continue  # has a real pit and landing point, handled as a door-to-door drop
-            start, end = spot(home.get(name, [])), spot([target])
-            if start is None or end is None or start[0] == end[0]:
+            start = next((p for p in map(place_of, home.get(name, [])) if p is not None), None)
+            if start is None:
                 continue
-            # Told apart by part, not supertile: GT Compass Room warps to Conveyor Star Pits and GT
-            # Hidden Star warps to Invisible Bridges, the same two supertiles but four different rooms
-            found.setdefault((block(start), block(end), kind), (name, start, end))
+            for end in landings(target):
+                if start[0] == end[0]:
+                    continue  # within one supertile: that is what makes it one block, not a link
+                # Told apart by part, not supertile: GT Compass Room warps to Conveyor Star Pits and GT
+                # Hidden Star warps to Invisible Bridges, the same two supertiles but four different rooms
+                found.setdefault((block(start), block(end), kind), (name, start, end))
     links = []
     for (ta, tb, kind), (name, start, end) in found.items():
         both_ways = (tb, ta, kind) in found
         if both_ways and (tb, ta) < (ta, tb):
             continue  # a pair of warps that lead to each other is one two-way connection
         a, b = name, f"{name} landing"
+        # A warp is drawn from the middle of its room's doors unless it is known where the tile is
+        if name in WARP_SPOTS:
+            (sx, sy), (ex, ey) = WARP_SPOTS[name]
+            start, end = (start[0], sx, sy, start[3]), (end[0], ex, ey, end[3])
         ports[a], ports[b] = start, end
         links.append({"a": a, "b": b, "kind": kind, "both_ways": both_ways})
     return ports, links

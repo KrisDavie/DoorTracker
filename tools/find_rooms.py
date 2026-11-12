@@ -109,6 +109,12 @@ HAND_AREAS = {
     },
     # The middle column, down to its railing
     (10, 3): {"PoD Big Key Landing Down Stairs": [(216, 32, 296, 190)]},
+    # The fenced square in the corner of the petting zoo's room is a pocket of the warp maze: it goes
+    # with the maze, and the petting zoo is its room without it
+    (13, 7): {
+        "GT Firesnake Room SW": [(80, 64, 496, 240), (16, 288, 240, 496), (400, 310, 456, 358)],
+        "GT Petting Zoo SE": [(272, 288, 400, 496), (400, 358, 496, 496), (456, 288, 496, 358), (400, 288, 456, 310)],
+    },
 }
 
 
