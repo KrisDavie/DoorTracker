@@ -1374,6 +1374,13 @@ class GraphModel:
             self._relax(iterations=90, old_mobility=0.0, edges=edges, cold=True)
             # ...and then anything left physically overlapping is nudged apart, and nothing else.
             self._relax(iterations=0, old_mobility=1.0, edges=edges, cold=True)
+        elif self.experimental_flags.get("stress_layout"):
+            # Stress gets the overall shape right but knows distances, not shapes: the forces then
+            # pull each link short and move apart whatever overlaps
+            self._stress_layout(edges)
+            self._relax(iterations=180, old_mobility=1.0, edges=edges, improve=True)
+            self._relax(iterations=150, old_mobility=1.0, edges=edges, cold=True)
+            self._park_unlinked(edges)
         else:
             # The result depends a lot on where things start: try a few shaken starts and keep the best
             rng = random.Random(len(tiles) * 1000 + len(edges))
@@ -1403,6 +1410,209 @@ class GraphModel:
             linked.update(self._stack_of(door_tile(a)))
             linked.update(self._stack_of(door_tile(b)))
         self.unsettled -= linked
+
+    def _stress_layout(self, edges):
+        """Arrange the stacks by stress majorization (Gansner, Koren and North 2004).
+
+        Every pair of stacks gets an ideal distance, the length of the shortest chain of links between
+        them, and the arrangement is the one where drawn distances are closest to the ideal ones. A
+        link through a door in a wall also says which way its neighbour should lie: beyond that wall.
+        Each stack is moved in turn to the weighted average of where the others want it, which only
+        ever lowers the stress, so there is nothing to damp. Overlaps are removed afterwards.
+        """
+        roots = list(self.stack_members)
+        index = {r: i for i, r in enumerate(roots)}
+        n = len(roots)
+        gap = LINK_GAP + self.spacing * 0.5
+        # Each stack as a box around a centre; "origin" is where its stack offsets are measured from
+        centre, half, movable = [], [], []
+        for r in roots:
+            boxes = []
+            for m in self.stack_members[r]:
+                left, top, right, bottom = self._box(m)
+                ox, oy = self.stack_off[m]
+                boxes.append((ox + left, oy + top, ox + right, oy + bottom))
+            left, top = min(b[0] for b in boxes), min(b[1] for b in boxes)
+            right, bottom = max(b[2] for b in boxes), max(b[3] for b in boxes)
+            centre.append(((left + right) / 2, (top + bottom) / 2))
+            half.append(((right - left) / 2, (bottom - top) / 2))
+            movable.append(not any(m in self.fixed for m in self.stack_members[r]))
+        size = [(w + h) / 2 for w, h in half]
+
+        def origin(r):
+            return self.pos[r][0] - self.stack_off[r][0], self.pos[r][1] - self.stack_off[r][1]
+
+        # What each link asks for: the offset from one stack's centre to the other's
+        wants = {}  # (i, j), i < j -> [vectors from i to j]
+        loose = {}  # (i, j) -> a link with no direction (stairs, drops, warps)
+        ends = []
+        for a, b in edges:
+            i, j = index[self.stack_root[door_tile(a)]], index[self.stack_root[door_tile(b)]]
+            if i > j:
+                a, b, i, j = b, a, j, i
+            port = []
+            for door, k in ((a, i), (b, j)):
+                ox, oy = self.stack_off[door_tile(door)]
+                px, py = self._port_offset(door)
+                port.append((ox + px - centre[k][0], oy + py - centre[k][1]))
+            ends.append((i, j, port[0], port[1]))
+            da, db = DIRECTIONS.get(door_direction(a)), DIRECTIONS.get(door_direction(b))
+            nx = (da[0] if da else 0) - (db[0] if db else 0)
+            ny = (da[1] if da else 0) - (db[1] if db else 0)
+            length = math.hypot(nx, ny)
+            if length < 0.5:
+                loose[(i, j)] = True
+                continue
+            nx, ny = nx / length, ny / length
+            wants.setdefault((i, j), []).append((port[0][0] + nx * gap - port[1][0], port[0][1] + ny * gap - port[1][1]))
+        target = {}
+        for (i, j), vectors in wants.items():
+            tx, ty = sum(v[0] for v in vectors) / len(vectors), sum(v[1] for v in vectors) / len(vectors)
+            # Doors that disagree average out to nothing: keep the two stacks apart at least
+            least = size[i] + size[j] + gap * 0.5
+            length = math.hypot(tx, ty)
+            if length < least:
+                tx, ty = (tx / length * least, ty / length * least) if length > 1 else (least, 0.0)
+            target[(i, j)] = (tx, ty)
+            target[(j, i)] = (-tx, -ty)
+
+        # Ideal distances: shortest chain of links, never less than the two stacks side by side
+        far = float("inf")
+        dist = [[far] * n for _ in range(n)]
+        for i in range(n):
+            dist[i][i] = 0.0
+        for (i, j), (tx, ty) in target.items():
+            dist[i][j] = min(dist[i][j], math.hypot(tx, ty))
+        for i, j in loose:
+            if (i, j) not in target:
+                dist[i][j] = dist[j][i] = min(dist[i][j], size[i] + size[j] + gap)
+        for k in range(n):
+            row_k = dist[k]
+            for i in range(n):
+                through = dist[i][k]
+                if through == far:
+                    continue
+                row_i = dist[i]
+                for j in range(n):
+                    if through + row_k[j] < row_i[j]:
+                        row_i[j] = through + row_k[j]
+        group = list(range(n))
+        for i in range(n):
+            for j in range(i):
+                if dist[i][j] < far:
+                    group[i] = group[j]
+                    break
+        pairs = [[] for _ in range(n)]  # per stack: (other, weight, ideal distance, target or None)
+        for i in range(n):
+            for j in range(n):
+                if i == j or dist[i][j] == far:
+                    continue
+                want = target.get((i, j))
+                ideal = max(dist[i][j], size[i] + size[j] + gap * 0.5)
+                # A door's say counts for more than a distance: it is what makes the map read like a map
+                pairs[i].append((j, (3.0 if want else 1.0) / (ideal * ideal), ideal, want))
+
+        def crossings(xs, ys):
+            lines = [(xs[i] + pa[0], ys[i] + pa[1], xs[j] + pb[0], ys[j] + pb[1], i, j) for i, j, pa, pb in ends]
+            count = 0
+            for p, (ax, ay, bx, by, ai, aj) in enumerate(lines):
+                for cx, cy, dx, dy, ci, cj in lines[p + 1 :]:
+                    if ai in (ci, cj) or aj in (ci, cj):
+                        continue
+                    d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+                    d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax)
+                    d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx)
+                    d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx)
+                    if d1 * d2 < 0 and d3 * d4 < 0:
+                        count += 1
+            return count
+
+        def solve(xs, ys):
+            for sweep in range(200):
+                moved = 0.0
+                for i in range(n):
+                    if not movable[i] or not pairs[i]:
+                        continue
+                    x, y = xs[i], ys[i]
+                    sx = sy = sw = 0.0
+                    for j, weight, ideal, want in pairs[i]:
+                        if want:
+                            sx += weight * (xs[j] - want[0])
+                            sy += weight * (ys[j] - want[1])
+                        else:
+                            dx, dy = x - xs[j], y - ys[j]
+                            apart = math.hypot(dx, dy)
+                            if apart < 1e-6:
+                                dx, dy, apart = 1.0, 0.0, 1.0
+                            sx += weight * (xs[j] + ideal * dx / apart)
+                            sy += weight * (ys[j] + ideal * dy / apart)
+                        sw += weight
+                    xs[i], ys[i] = sx / sw, sy / sw
+                    moved = max(moved, abs(xs[i] - x), abs(ys[i] - y))
+                if moved < 0.3:
+                    break
+            stress = 0.0
+            for i in range(n):
+                for j, weight, ideal, want in pairs[i]:
+                    if want:
+                        stress += weight * ((xs[j] - xs[i] - want[0]) ** 2 + (ys[j] - ys[i] - want[1]) ** 2)
+                    else:
+                        stress += weight * (math.hypot(xs[i] - xs[j], ys[i] - ys[j]) - ideal) ** 2
+            return stress
+
+        start_x = [origin(r)[0] + centre[i][0] for i, r in enumerate(roots)]
+        start_y = [origin(r)[1] + centre[i][1] for i, r in enumerate(roots)]
+        rng = random.Random(n * 1000 + len(edges))
+        spread = (sum(size) / max(n, 1) * 2 + gap) * math.sqrt(n)
+        best = None
+        for attempt in range(8 if n <= 40 else 5 if n <= 80 else 3):
+            xs, ys = start_x[:], start_y[:]
+            if attempt:
+                for i in range(n):
+                    if movable[i]:
+                        xs[i], ys[i] = rng.uniform(-spread, spread), rng.uniform(-spread, spread)
+            stress = solve(xs, ys)
+            score = (crossings(xs, ys), stress)
+            if best is None or score < best[0]:
+                best = (score, xs, ys)
+        xs, ys = best[1], best[2]
+
+        # Separate groups of stacks have nothing holding them in place: set them out in rows
+        groups = {}
+        for i in range(n):
+            groups.setdefault(group[i], []).append(i)
+        free = [g for g in groups.values() if all(movable[i] for i in g)]
+        held = [i for g in groups.values() if g not in free for i in g]
+        free.sort(key=lambda g: -len(g))
+        boxes = []
+        for g in free:
+            boxes.append(
+                (
+                    min(xs[i] - half[i][0] for i in g),
+                    min(ys[i] - half[i][1] for i in g),
+                    max(xs[i] + half[i][0] for i in g),
+                    max(ys[i] + half[i][1] for i in g),
+                )
+            )
+        if free:
+            area = sum((b[2] - b[0] + gap) * (b[3] - b[1] + gap) for b in boxes)
+            row_width = max(math.sqrt(area) * 1.5, boxes[0][2] - boxes[0][0])
+            left = max((xs[i] + half[i][0] for i in held), default=0.0) + (gap * 2 if held else 0.0)
+            top = min((ys[i] - half[i][1] for i in held), default=0.0)
+            x, y, row_height = left, top, 0.0
+            for g, box in zip(free, boxes):
+                width, height = box[2] - box[0], box[3] - box[1]
+                if x > left and x + width > left + row_width:
+                    x, y, row_height = left, y + row_height + gap * 2, 0.0
+                for i in g:
+                    xs[i] += x - box[0]
+                    ys[i] += y - box[1]
+                x += width + gap * 2
+                row_height = max(row_height, height)
+
+        for i, r in enumerate(roots):
+            if movable[i]:
+                self._place_stack(r, xs[i] - centre[i][0] + self.stack_off[r][0], ys[i] - centre[i][1] + self.stack_off[r][1])
 
     def _park_unlinked(self, edges):
         """Line blocks that have no links to anything up beside the map.

@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
             "vanilla_drops": True,
             "hide_dead_rooms": True,
             "split_rooms": True,
+            "stress_layout": True,
         }
         self.device = None
         self.sni_task = None
@@ -165,6 +166,7 @@ class MainWindow(QMainWindow):
             ("Drops Are Not Shuffled", "vanilla_drops"),
             ("Hide Dead Rooms", "hide_dead_rooms"),
             ("Split Partitioned Rooms", "split_rooms"),
+            ("Stress Layout", "stress_layout"),
         ):
             action = QAction(label, self, checkable=True)
             action.setChecked(self.experimental_flags[flag])
@@ -181,7 +183,7 @@ class MainWindow(QMainWindow):
         if flag == "split_rooms":
             graph_model.SPLIT_ROOMS = checked
         for page in self.pages.values():
-            if flag in ("hide_dead_rooms", "split_rooms"):
+            if flag in ("hide_dead_rooms", "split_rooms", "stress_layout"):
                 # Rooms change size or number, so blocks have to be fitted together again
                 page.relayout()
             else:
