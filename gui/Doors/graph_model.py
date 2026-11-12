@@ -487,6 +487,9 @@ class GraphModel:
         self.joined = set()
         self.doors_available = set()
         self.player = None  # (block, x, y): where in its supertile, 0..512
+        self.visited = set()  # blocks the player has stood in this session
+        self.located = None  # the block the player is known to be in
+        self._sighted = None  # the supertile the player was last seen in
         self._layout_signature = None
         self._stack_rank = {}
         self._held = set()  # rooms being dragged right now
@@ -578,17 +581,89 @@ class GraphModel:
             self.fixed.difference_update(members)
 
     def nodes(self):
-        """Every block on the map: one per supertile, or one per part where a supertile is partitioned."""
-        return [(tile[0], tile[1], k) for tile in self.tiles for k in range(part_count(tile))]
+        """Every block on the map: one per supertile, or one per reached part where it is partitioned.
+
+        Knowing a supertile is knowing the part of it you walked into, not the parts you cannot get to
+        from there. A part is on the map once something leads to it: a link, an entrance, an icon, the
+        player, or a fixed drop or warp from a block that is on the map. Until anything is known about
+        a supertile all of it is shown, and "keep expanded" shows all of it too.
+        """
+        split = [tile for tile in self.tiles if part_count(tile) > 1]
+        shown = {(tile[0], tile[1], 0) for tile in self.tiles if part_count(tile) == 1}
+        if split:
+            used = set(self.special_doors)
+            for link in self.door_links:
+                used.update((link["door"], link["linked_door"]))
+            used.update(entry["door"] for entry in self.lobby_doors)
+            for door in used:
+                if door in door_coordinates_key and door_coordinates_key[door][0] in self.tiles:
+                    shown.add(door_tile(door))
+            shown.update(node for node in self.visited if node[:2] in self.tiles)
+            shown.update(node for node in self.pinned_eg_tiles if node[:2] in self.tiles)
+            fixed = [(link["a"], link["b"]) for link in ROOM_LINKS if link["kind"] != "hole" or self.experimental_flags.get("vanilla_drops")]
+            if self.experimental_flags.get("vanilla_drops"):
+                fixed += list(MANUAL_DROPS.items())
+            fixed = [(door_tile(a), door_tile(b)) for a, b in fixed if a in door_coordinates_key and b in door_coordinates_key]
+            fixed = [(a, b) for a, b in fixed if a[:2] in self.tiles and b[:2] in self.tiles]
+            grew = True
+            while grew:
+                grew = False
+                for a, b in fixed:
+                    if (a in shown) != (b in shown):
+                        shown.update((a, b))
+                        grew = True
+            for tile in split:
+                parts = [(tile[0], tile[1], k) for k in range(part_count(tile))]
+                if any(node in self.pinned_eg_tiles for node in parts):
+                    shown.update(parts)
+                elif not any(node in shown for node in parts):
+                    # A dark room nobody has seen is one question mark, whatever is inside it
+                    shown.update(parts[:1] if self._is_hidden_dark(tile) else parts)
+        return [(tile[0], tile[1], k) for tile in self.tiles for k in range(part_count(tile)) if (tile[0], tile[1], k) in shown]
 
     def player_node(self, tile, x, y):
         """Which part of a supertile the player is standing in."""
-        candidates = [(tile[0], tile[1], k) for k in range(part_count(tile))]
-        px, py = (x / 512 - 0.5) * THUMB, (y / 512 - 0.5) * THUMB
-        for node in candidates:
-            if any(left <= px <= right and top <= py <= bottom for left, top, right, bottom in self._pieces(node)):
-                return node
-        return candidates[0]
+        if part_count(tile) == 1:
+            return (tile[0], tile[1], 0)
+        # Shares can sit inside one another (a nook inside its lobby): the smallest one around the
+        # player is the one they are in. This is a guess; the door they came in by is not, see arrive().
+        best = None
+        for k, boxes in enumerate(part_areas(tile)):
+            for left, top, right, bottom in boxes:
+                if left <= x <= right and top <= y <= bottom:
+                    area = (right - left) * (bottom - top)
+                    if best is None or area < best[0]:
+                        best = (area, k)
+        return (tile[0], tile[1], best[1] if best else 0)
+
+    def arrive(self, door):
+        """The player came in through this door, so which part of the supertile they are in is known."""
+        if door not in door_coordinates_key:
+            return
+        node = door_tile(door)
+        self.located = node
+        self.visited.add(node)
+        if self.player is not None and self.player[0][:2] == node[:2]:
+            self.player = (node, self.player[1], self.player[2])
+
+    def locate(self, tile, x, y):
+        """The block the player is in, or None while that is not settled yet.
+
+        Parts of a supertile cannot be walked between, so whatever part the player came into they are
+        still in. Where they are standing is only used when no door said so (a fall, or the tracker
+        starting mid-dungeon), and not on the first sighting in a supertile: the door they came in by
+        is reported just after it.
+        """
+        if self.located is not None and self.located[:2] == tile:
+            return self.located
+        self.located = None
+        if part_count(tile) > 1 and self._sighted != tile:
+            self._sighted = tile
+            return None
+        self._sighted = tile
+        self.located = self.player_node(tile, x, y)
+        self.visited.add(self.located)
+        return self.located
 
     def move_stack(self, tile, dx, dy):
         for member in self._stack_of(tile):

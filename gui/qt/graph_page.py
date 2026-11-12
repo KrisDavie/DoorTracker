@@ -1249,12 +1249,23 @@ class GraphPage(QWidget):
             self.rebuild()
 
     def auto_add_door_link(self, door, linked_door):
-        if self.model.auto_add_door_link(door, linked_door):
-            self.rebuild()
+        added = self.model.auto_add_door_link(door, linked_door)
+        self._arrived(linked_door, added)
 
     def auto_add_lobby(self, door):
-        if self.model.auto_add_lobby(door):
+        added = self.model.auto_add_lobby(door)
+        self._arrived(door, added)
+
+    def _arrived(self, door, changed):
+        """The player came in by this door: that, not where they stand, says which block they are in."""
+        if door is not None:
+            self.model.arrive(door)
+        if changed:
             self.rebuild()
+        elif self.model.located is not None and self.model.located not in self._rooms:
+            self.redraw_canvas()
+        else:
+            self.scene.update()
 
     def auto_draw_player(self, x, y, current_tile):
         model = self.model
@@ -1262,8 +1273,12 @@ class GraphPage(QWidget):
             return
         previous = model.player[0] if model.player else None
         # A partitioned supertile is several blocks: the marker goes on the one the player is in
-        current_tile = model.player_node(current_tile, x, y)
+        current_tile = model.locate(current_tile, x, y)
+        if current_tile is None:
+            return  # just walked in: the door that says which part comes next
         model.player = (current_tile, x, y)
+        if current_tile not in self._rooms:
+            self.redraw_canvas()  # a part of the supertile that was not on the map until now
         for tile in {previous, current_tile}:
             if tile in self._rooms:
                 self._rooms[tile].update()
