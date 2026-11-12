@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QSurfaceFormat,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QGraphicsItem,
     QGraphicsLineItem,
@@ -151,6 +152,9 @@ class RoomItem(QGraphicsItem):
             QRectF(left, top, right - left, bottom - top)
             for left, top, right, bottom in sorted(model._pieces(tile), key=lambda p: (p[1], p[0]))
         ]
+        # Pieces may touch or overlap; the border goes round them all together, never through the picture
+        self.outline = self._around(self.pieces, 0)
+        self.player_outline = self._around(self.pieces, 3)
         self.w, self.h = self.box[2] - self.box[0], self.box[3] - self.box[1]
         self.blank_dead = bool(model.experimental_flags.get("hide_dead_rooms"))
         self.colour = QColor(DUNGEON_COLOURS.get(tile_dungeon(tile), UNKNOWN_DUNGEON_COLOUR))
@@ -161,6 +165,14 @@ class RoomItem(QGraphicsItem):
         self.keep_expanded = tile in model.pinned_eg_tiles
         # The name goes inside the room when another room is stacked on top of it
         self.setZValue(1)
+
+    @staticmethod
+    def _around(pieces, grow):
+        path = QPainterPath()
+        path.setFillRule(Qt.WindingFill)
+        for rect in pieces:
+            path.addRect(rect.adjusted(-grow, -grow, grow, grow))
+        return path.simplified()
 
     def boundingRect(self):
         return QRectF(self.box[0] - 5, self.box[1] - 5, self.w + 10, self.h + 10)
@@ -186,7 +198,7 @@ class RoomItem(QGraphicsItem):
             painter.drawText(first, Qt.AlignCenter, "?")
         else:
             pixmap = self.page.assets.tile(
-                self.tile, THUMB * lod * painter.device().devicePixelRatioF(), blank_dead=self.blank_dead
+                self.tile[:2], THUMB * lod * painter.device().devicePixelRatioF(), blank_dead=self.blank_dead
             )
             # Each piece shows the part of the picture that falls inside it
             per_unit = pixmap.width() / THUMB
@@ -200,14 +212,13 @@ class RoomItem(QGraphicsItem):
                 painter.drawPixmap(rect, pixmap, source)
 
         painter.setBrush(Qt.NoBrush)
-        for rect in self.pieces:
-            if self.keep_expanded:
-                painter.setPen(QPen(QColor("#18c418"), 5))
-                painter.drawRect(rect.adjusted(1.5, 1.5, -1.5, -1.5))
-            painter.setPen(QPen(self.colour, 2))
-            painter.drawRect(rect)
+        if self.keep_expanded:
+            painter.setPen(QPen(QColor("#18c418"), 6))
+            painter.drawPath(self.outline)
+        painter.setPen(QPen(self.colour, 2))
+        painter.drawPath(self.outline)
 
-        if lod * 11 >= 5:
+        if lod * 11 >= 5 and self.page.labels_box.isChecked():
             font = QFont()
             font.setPixelSize(11)
             font.setBold(True)
@@ -225,8 +236,7 @@ class RoomItem(QGraphicsItem):
         if self.page.model.player is not None and self.page.model.player[0] == self.tile:
             painter.setPen(QPen(QColor(PLAYER), 3))
             painter.setBrush(Qt.NoBrush)
-            for rect in self.pieces:
-                painter.drawRect(rect.adjusted(-3, -3, 3, 3))
+            painter.drawPath(self.player_outline)
 
     @staticmethod
     def _paint_pin(painter, rect):
@@ -267,6 +277,7 @@ class LabelItem(QGraphicsItem):
         first = room.pieces[0]
         self.tag = QRectF(first.left(), first.top(), metrics.horizontalAdvance(self.text) + 7, metrics.height() + 2)
         self.setZValue(1.5)
+        self.setOpacity(0.5)
         self.setAcceptedMouseButtons(Qt.NoButton)
 
     def boundingRect(self):
@@ -669,6 +680,9 @@ class GraphPage(QWidget):
         self.circle_box.setToolTip("Experiment: each block repels as one circle around all its rooms")
         self.circle_box.toggled.connect(self._on_circle)
         self.follow_box = QCheckBox("Follow player")
+        self.labels_box = QCheckBox("Labels")
+        self.labels_box.setChecked(True)
+        self.labels_box.toggled.connect(self._on_labels)
         self.status = QLabel("")
         self.status.setMinimumWidth(50)
         for widget in (fit, relayout, self.group_box, self.stack_box):
@@ -680,7 +694,13 @@ class GraphPage(QWidget):
         row.addWidget(self.circle_box)
         row.addWidget(self.simulate_box)
         row.addWidget(self.follow_box)
+        row.addWidget(self.labels_box)
         row.addWidget(self.status, 1)
+
+    def _on_labels(self, checked):
+        for label in self._labels.values():
+            label.setVisible(checked)
+        self.scene.update()
 
     def _on_group(self, checked):
         self.model.group_by_dungeon = checked
@@ -734,7 +754,7 @@ class GraphPage(QWidget):
 
         if model.group_by_dungeon:
             by_dungeon = {}
-            for tile in model.tiles:
+            for tile in model.nodes():
                 by_dungeon.setdefault(tile_dungeon(tile), []).append(tile)
             for dungeon, members in by_dungeon.items():
                 colour = DUNGEON_COLOURS.get(dungeon, UNKNOWN_DUNGEON_COLOUR)
@@ -747,7 +767,7 @@ class GraphPage(QWidget):
                 self._hulls.append(hull)
 
         lobbies = {x["door"]: x["lobby"] for x in model.lobby_doors}
-        for tile in model.tiles:
+        for tile in model.nodes():
             room = RoomItem(self, tile)
             doors = DoorsItem(self, tile)
             self.scene.addItem(room)
@@ -756,6 +776,7 @@ class GraphPage(QWidget):
             self._doors[tile] = doors
             if not room.compact:
                 label = LabelItem(room)
+                label.setVisible(self.labels_box.isChecked())
                 self.scene.addItem(label)
                 self._labels[tile] = label
 
@@ -851,7 +872,12 @@ class GraphPage(QWidget):
             self.fit_view()
 
     def relayout(self):
-        no_map_before = self.model.relayout()
+        # Searching for an arrangement takes a second or two on a big map
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            no_map_before = self.model.relayout()
+        finally:
+            QApplication.restoreOverrideCursor()
         self.rebuild()
         if no_map_before:
             self.fit_view()
@@ -1131,7 +1157,7 @@ class GraphPage(QWidget):
                 menu.addAction("Unpin", lambda: self.set_pinned(tile, False))
             else:
                 menu.addAction("Pin in place", lambda: self.set_pinned(tile, True))
-            if tile not in mandatory_tiles[self.tab_world]:
+            if tile[:2] not in mandatory_tiles[self.tab_world]:
                 menu.addSeparator()
                 menu.addAction("Remove supertile…", lambda: self.remove_tile(tile))
             menu.exec(event.globalPosition().toPoint())
@@ -1161,7 +1187,7 @@ class GraphPage(QWidget):
         answer = QMessageBox.question(
             self,
             "Remove supertile",
-            f"Remove {tile_title(tile)} and every link, lobby and annotation on it?",
+            f"Remove {tile_title(tile[:2])} and every link, lobby and annotation on it?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -1235,6 +1261,8 @@ class GraphPage(QWidget):
         if current_tile not in model.tiles:
             return
         previous = model.player[0] if model.player else None
+        # A partitioned supertile is several blocks: the marker goes on the one the player is in
+        current_tile = model.player_node(current_tile, x, y)
         model.player = (current_tile, x, y)
         for tile in {previous, current_tile}:
             if tile in self._rooms:
