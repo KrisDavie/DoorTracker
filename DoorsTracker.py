@@ -59,15 +59,24 @@ class IconPicker(QDialog):
 
 
 class EgPicker(QDialog):
-    """Pick a supertile to add, from each dungeon's vanilla layout."""
+    """Pick a supertile to add. Each dungeon's tab is its vanilla layout, with its other supertiles underneath."""
 
     def __init__(self, parent, assets, unavailable):
         super().__init__(parent)
         self.setWindowTitle("Add supertile")
         self.choice = None
+        self.buttons = {}  # by supertile
         tabs = QTabWidget()
         layout = QVBoxLayout(self)
         layout.addWidget(tabs)
+
+        # Supertiles the vanilla layouts leave out, by dungeon
+        laid_out = {tile for layout_data in vanilla_layout_optimized.values() for tile in layout_data["tiles"]}
+        left_out = {}
+        for tile in sorted(rooms.SUPERTILES):
+            if tile not in laid_out:
+                left_out.setdefault(rooms.SUPERTILES[tile].dungeon, []).append(tile)
+
         for name, layout_data in vanilla_layout_optimized.items():
             tiles = layout_data["tiles"]
             if not tiles:
@@ -75,17 +84,29 @@ class EgPicker(QDialog):
             page = QWidget()
             grid = QGridLayout(page)
             grid.setSpacing(3)
-            min_x = min(t["map_tile"][0] for t in tiles.values())
-            min_y = min(t["map_tile"][1] for t in tiles.values())
-            for tile, placement in tiles.items():
+
+            def add(tile, row, column):
                 button = QToolButton()
                 button.setIcon(QIcon(assets.thumbnail(tile, 96)))
                 button.setIconSize(QSize(96, 96))
                 button.setToolTip(rooms.WHOLE.title(rooms.Node(*tile)))
                 # Disabled if already on the map or used up
                 button.setEnabled(tile not in unavailable)
-                button.clicked.connect(lambda checked=False, tile=tile: self._pick(tile))
-                grid.addWidget(button, placement["map_tile"][1] - min_y, placement["map_tile"][0] - min_x)
+                button.clicked.connect(lambda checked=False: self._pick(tile))
+                grid.addWidget(button, row, column)
+                self.buttons[tile] = button
+
+            columns = [t["map_tile"][0] for t in tiles.values()]
+            rows = [t["map_tile"][1] for t in tiles.values()]
+            for tile, placement in tiles.items():
+                add(tile, placement["map_tile"][1] - min(rows), placement["map_tile"][0] - min(columns))
+            # A gap, then the rest in rows as wide as the layout
+            width = max(columns) - min(columns) + 1
+            below = max(rows) - min(rows) + 1
+            grid.setRowMinimumHeight(below, 12)
+            for index, tile in enumerate(left_out.get(name, [])):
+                add(tile, below + 1 + index // width, index % width)
+
             tabs.addTab(page, "Other Lobby Tiles" if name == "Lobbyable_Tiles" else name.replace("_", " "))
             if name == parent.current_dungeon():
                 tabs.setCurrentWidget(page)
