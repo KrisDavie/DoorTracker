@@ -268,8 +268,8 @@ def main():
 
     # Points that mark a room live: door positions, plus the spot of each doorless room
     marks = {tile: [(door["x"], door["y"]) for door in doors] for tile, doors in door_coordinates.items()}
-    for tile, dungeon, place in DOORLESS_ROOMS.values():
-        marks.setdefault(tile, []).append((place[0] * 512, place[1] * 512))
+    for room in DOORLESS_ROOMS.values():
+        marks.setdefault(room.tile, []).append((room.x * 512, room.y * 512))
 
     eg_map = Image.open(ROOT / "data" / "maps" / "egmap.png").convert("RGB")
     out = {}

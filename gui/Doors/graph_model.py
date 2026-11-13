@@ -1,4 +1,6 @@
-"""Map model for one dungeon tab: tracked rooms and links, stacks, positions. No UI code.
+"""Map model for one dungeon tab: tracked rooms and links, blocks, positions. No UI code.
+
+Rooms linked through facing doorways are joined wall to wall into a block, which moves as one piece.
 
 Static room data is in rooms.py and the solvers are in layout.py.
 Save format is compatible with the original grid tracker.
@@ -6,6 +8,7 @@ Save format is compatible with the original grid tracker.
 
 import random
 from collections import defaultdict, deque
+from dataclasses import dataclass, replace
 
 from data.doors_data import (
     complex_tiles,
@@ -40,19 +43,77 @@ from gui.Doors.rooms import (
 THUMB = 128  # supertile thumbnail edge
 COMPACT_W = 104  # pass-through tiles collapse to a pill
 COMPACT_H = 26
-STACK_GAP = 4  # gap between stacked rooms
-SNAP = THUMB / 8  # grid for stacked rooms along the shared wall
+JOIN_GAP = 4  # gap between joined rooms
+SNAP = THUMB / 8  # grid for joined rooms along the shared wall
+
+
+@dataclass(eq=False)
+class Link:
+    """A tracked connection between two doors. Compared by identity, not by its doors."""
+
+    door: str
+    linked_door: str
+    join: bool = None  # True or False once joined or split by hand
+
+
+@dataclass(frozen=True)
+class LobbyDoor:
+    """A door that is a way into the dungeon."""
+
+    door: str
+    lobby: str  # which entrance; also the icon drawn
+
+
+@dataclass
+class TileState:
+    is_dark: bool
+    has_been_lit: bool
+
+
+@dataclass(frozen=True)
+class Edge:
+    """A line on the map between two doors or ports."""
+
+    a: str
+    b: str
+    kind: str  # link, interior, drop, warp or hole
+    link: Link = None  # the tracked link, if it is one
+    both_ways: bool = False  # warps and holes only
+
+
+@dataclass(frozen=True)
+class Player:
+    node: Node
+    x: float  # position in the supertile, 0..512
+    y: float
+
+
+@dataclass(frozen=True)
+class DoorDot:
+    door: str
+    x: float  # relative to the node's centre, world units
+    y: float
+    state: str  # open, linked or interior
+
+
+@dataclass(frozen=True)
+class RepulsionShape:
+    """What one block repels with, in world units."""
+
+    circle: tuple  # (x, y, radius); None when repelling wall to wall
+    boxes: list  # rooms as (left, top, right, bottom)
+    reach: float
 
 
 class GraphModel:
-    """One dungeon tab: tracked data, stacks and positions."""
+    """One dungeon tab: tracked data, blocks and positions."""
 
     def __init__(self, tab_world, experimental_flags):
         self.tab_world = tab_world
         self.dungeon_name = [k for k, v in dungeon_worlds.items() if v == tab_world][0]
         self.experimental_flags = experimental_flags
         self.show_all_doors = False
-        self.auto_stack = True
+        self.auto_join = True
         self.group_by_dungeon = False
         self.spacing = float(REPEL_RANGE)  # repulsion reach
         self.leaf_pull = 2.5  # pull boost for blocks linked to a single other block
@@ -64,9 +125,9 @@ class GraphModel:
         return rooms.SPLIT if self.experimental_flags.get("split_rooms", True) else rooms.WHOLE
 
     def reset(self):
-        self.tiles = {}
-        self.door_links = []
-        self.lobby_doors = []
+        self.tiles = {}  # supertile -> TileState
+        self.door_links = []  # Link
+        self.lobby_doors = []  # LobbyDoor
         self.special_doors = {}
         self.pinned_eg_tiles = set()  # "keep expanded"
         self.sanc_dungeon = False
@@ -75,19 +136,19 @@ class GraphModel:
         self.fixed = set()  # pinned nodes
         self.unsettled = set()  # new nodes, movable by the incremental layout
         self.compact = set()
-        self.stack_root = {}
-        self.stack_off = {}
-        self.stack_members = {}
-        self.joined = set()
+        self.block_root = {}
+        self.block_off = {}
+        self.block_members = {}
+        self.joined = set()  # links whose two rooms are joined at the doorway
         self.doors_available = set()
-        self.player = None  # (node, x, y), x and y in 0..512
+        self.player = None  # Player
         self.visited = set()  # nodes the player has been in; saved as reached_parts
         self._whole = set()  # split supertiles shown whole; see nodes()
         self.provisional = {}  # supertile -> node guessed from position when it was added
         self.located = None  # node the player is in, once known
         self._sighted = None  # supertile of the last position report
         self._layout_signature = None
-        self._stack_rank = {}
+        self._join_rank = {}  # link -> join priority, lowest first
         self.held = set()  # nodes being dragged
         self._damping = {}
         self._last_step = 0.0
@@ -101,7 +162,7 @@ class GraphModel:
     # ------------------------------------------------------------------ changes
 
     def update(self):
-        """Rebuild stacks and lay out new nodes. Call after any data change."""
+        """Rebuild blocks and lay out new nodes. Call after any data change."""
         self._sync_model()
         self._layout()
         self._refresh_door_sets()
@@ -109,7 +170,7 @@ class GraphModel:
     def relayout(self):
         """Full layout; pinned nodes stay. Returns True if nothing was placed before."""
         self._sync_model()
-        self._optimise_stack_order()
+        self._optimise_join_order()
         before = self.bounds() if self.pos else None
         self._layout(full=True)
         if before is not None:
@@ -121,53 +182,51 @@ class GraphModel:
         """Run the solver in place for some iterations."""
         if not self.pos:
             return
-        edges = [(a, b) for a, b, kind, n in self._layout_edges()]
-        self._relax(iterations=iterations, old_mobility=1.0, edges=edges, cold=True)
+        self._relax(iterations=iterations, old_mobility=1.0, edges=self._layout_edges(), cold=True)
 
     def _refresh_door_sets(self):
         self._seam_doors = set()
-        for n in self.joined:
-            self._seam_doors.add(self.door_links[n]["door"])
-            self._seam_doors.add(self.door_links[n]["linked_door"])
+        for link in self.joined:
+            self._seam_doors.add(link.door)
+            self._seam_doors.add(link.linked_door)
         self._linked_doors = set()
         for link in self.door_links:
-            self._linked_doors.add(link["door"])
-            self._linked_doors.add(link["linked_door"])
-        for a, b, kind, n in self.edges():
-            if kind == "drop":
+            self._linked_doors.add(link.door)
+            self._linked_doors.add(link.linked_door)
+        for edge in self.edges():
+            if edge.kind == "drop":
                 # Vanilla drop with its landing on the map counts as linked
-                self._linked_doors.add(a)
-                self._linked_doors.add(b)
+                self._linked_doors.add(edge.a)
+                self._linked_doors.add(edge.b)
 
     def add_link(self, door, linked_door):
-        self.door_links.append({"door": door, "linked_door": linked_door})
+        self.door_links.append(Link(door, linked_door))
         self.update()
 
-    def remove_link(self, n):
-        del self.door_links[n]
+    def remove_link(self, link):
+        self.door_links.remove(link)
         self.update()
 
-    def toggle_stack(self, a, b, n):
-        """Stack or unstack the rooms on a link. Returns an error message or None."""
-        link = self.door_links[n]
-        if n in self.joined:
-            link["stack"] = False
+    def toggle_join(self, link):
+        """Join or split the rooms on a link. Returns an error message or None."""
+        if link in self.joined:
+            link.join = False
             self.update()
             return None
-        if self.join_offset(a, b) is None:
-            return "These two doors cannot be stacked: only north/south and east/west doorways fit together"
-        link["stack"] = True
+        if self.join_offset(link.door, link.linked_door) is None:
+            return "These two doors cannot be joined: only north/south and east/west doorways fit together"
+        link.join = True
         self._sync_model()
-        if n not in self.joined:
-            link.pop("stack")
+        if link not in self.joined:
+            link.join = None
             self._sync_model()
-            return "Cannot stack here: the rooms would land on top of rooms already in the stack"
+            return "Cannot join here: the rooms would land on top of rooms already in the block"
         self.update()
         return None
 
     def set_pinned(self, tile, pinned):
-        """Pin or unpin a node's whole stack."""
-        members = self.stack_of(tile)
+        """Pin or unpin a node's whole block."""
+        members = self.block_of(tile)
         if pinned:
             self.fixed.update(members)
         else:
@@ -186,8 +245,8 @@ class GraphModel:
         if split:
             used = set(self.special_doors)
             for link in self.door_links:
-                used.update((link["door"], link["linked_door"]))
-            used.update(entry["door"] for entry in self.lobby_doors)
+                used.update((link.door, link.linked_door))
+            used.update(entry.door for entry in self.lobby_doors)
             for door in used:
                 if door in DOORS and DOORS[door].tile in self.tiles:
                     shown.add(self.rooms.node(door))
@@ -197,10 +256,10 @@ class GraphModel:
             # Fixed drops and warps, as directed (from, to)
             fixed = []
             for link in ROOM_LINKS:
-                if link["kind"] != "hole" or self.experimental_flags.get("vanilla_drops"):
-                    fixed.append((link["a"], link["b"]))
-                    if link["both_ways"]:
-                        fixed.append((link["b"], link["a"]))
+                if link.kind != "hole" or self.experimental_flags.get("vanilla_drops"):
+                    fixed.append((link.a, link.b))
+                    if link.both_ways:
+                        fixed.append((link.b, link.a))
             if self.experimental_flags.get("vanilla_drops"):
                 fixed += list(MANUAL_DROPS.items())
             fixed = [(self.rooms.node(a), self.rooms.node(b)) for a, b in fixed]
@@ -244,8 +303,8 @@ class GraphModel:
         self.located = node
         self.visited.add(node)
         self.provisional.pop(node.tile, None)
-        if self.player is not None and self.player[0].tile == node.tile:
-            self.player = (node, self.player[1], self.player[2])
+        if self.player is not None and self.player.node.tile == node.tile:
+            self.player = replace(self.player, node=node)
 
     def locate(self, tile, x, y):
         """Node the player is in, or None if not yet known.
@@ -266,8 +325,8 @@ class GraphModel:
         self.provisional.pop(tile, None)
         return self.located
 
-    def move_stack(self, tile, dx, dy):
-        for member in self.stack_of(tile):
+    def move_block(self, tile, dx, dy):
+        for member in self.block_of(tile):
             self.pos[member][0] += dx
             self.pos[member][1] += dy
 
@@ -289,8 +348,8 @@ class GraphModel:
             return False
         doors = set(supertile(tile).doors)
         doors.discard("Sanctuary Mirror Route")
-        self.door_links = [x for x in self.door_links if x["door"] not in doors and x["linked_door"] not in doors]
-        self.lobby_doors = [x for x in self.lobby_doors if x["door"] not in doors]
+        self.door_links = [x for x in self.door_links if x.door not in doors and x.linked_door not in doors]
+        self.lobby_doors = [x for x in self.lobby_doors if x.door not in doors]
         for door in doors:
             self.special_doors.pop(door, None)
         del self.tiles[tile]
@@ -302,7 +361,7 @@ class GraphModel:
         self.provisional.pop(tile, None)
         if self.located is not None and self.located.tile == tile:
             self.located = None
-        if self.player and self.player[0].tile == tile:
+        if self.player and self.player.node.tile == tile:
             self.player = None
         self.update()
         return True
@@ -320,7 +379,7 @@ class GraphModel:
     def remove_annotation(self, door):
         if door == "Sanctuary Mirror Route":
             return
-        self.lobby_doors = [x for x in self.lobby_doors if x["door"] != door]
+        self.lobby_doors = [x for x in self.lobby_doors if x.door != door]
         self.special_doors.pop(door, None)
         self.update()
 
@@ -339,7 +398,7 @@ class GraphModel:
         return True
 
     def auto_add_lobby(self, door):
-        current_lobbies = [x["lobby"] for x in self.lobby_doors]
+        current_lobbies = [x.lobby for x in self.lobby_doors]
         if (
             door is None
             or door in self.lobby_door_names()
@@ -364,17 +423,18 @@ class GraphModel:
 
     def load(self, data):
         """Load one tab's section of a tracker file. Returns True if it had saved positions."""
+        # Older files say "stack" and "stacked_links" for "join" and "joined_links"
         self.door_links = []
         for x in data.get("door_links", []):
-            link = {"door": x["door"], "linked_door": x["linked_door"]}
-            if x.get("stack") is not None:
-                link["stack"] = bool(x["stack"])
-            self.door_links.append(link)
-        self._stack_rank = {}
-        for rank, n in enumerate(data.get("stacked_links") or []):
+            join = x.get("join", x.get("stack"))
+            self.door_links.append(Link(x["door"], x["linked_door"], None if join is None else bool(join)))
+        joins_saved = "joined_links" in data or "stacked_links" in data
+        # joined_links holds positions in door_links
+        self._join_rank = {}
+        for rank, n in enumerate(data.get("joined_links", data.get("stacked_links")) or []):
             if 0 <= n < len(self.door_links):
-                self._stack_rank[(self.door_links[n]["door"], self.door_links[n]["linked_door"])] = rank
-        self.lobby_doors = [{"door": x["door"], "lobby": x["lobby"]} for x in data.get("lobby_doors", [])]
+                self._join_rank[self.door_links[n]] = rank
+        self.lobby_doors = [LobbyDoor(x["door"], x["lobby"]) for x in data.get("lobby_doors", [])]
         self.special_doors = dict(data.get("special_doors", {}))
         self.tiles = {}
         self.pos = {}
@@ -404,11 +464,11 @@ class GraphModel:
             self.spacing = max(10.0, min(200.0, float(data["spacing"])))
         had_positions = bool(self.pos)
         self._sync_model()
-        if self.pos and "stacked_links" not in data:
-            # Older file without stacked_links: infer stacks from saved positions
+        if self.pos and not joins_saved:
+            # File from before joins were saved: infer them from saved positions
             rank = 0
             for link in self.door_links:
-                a, b = link["door"], link["linked_door"]
+                a, b = link.door, link.linked_door
                 rel = self.join_offset(a, b)
                 ta, tb = self.rooms.node(a), self.rooms.node(b)
                 if rel is None or ta not in self.pos or tb not in self.pos:
@@ -417,35 +477,35 @@ class GraphModel:
                     abs(self.pos[tb][0] - self.pos[ta][0] - rel[0]) < 2
                     and abs(self.pos[tb][1] - self.pos[ta][1] - rel[1]) < 2
                 ):
-                    self._stack_rank[(a, b)] = rank
+                    self._join_rank[link] = rank
                     rank += 1
-            self._build_stacks()
+            self._build_blocks()
         if self.pos and all(t in self.pos for t in self.nodes()):
-            # Keep saved positions, but re-seat stacks in case join offsets changed since the save
-            for root, members in self.stack_members.items():
+            # Keep saved positions, but re-seat blocks in case join offsets changed since the save
+            for root, members in self.block_members.items():
                 anchor = next((m for m in members if m in self.fixed), root)
-                self._place_stack(anchor, *self.pos[anchor])
+                self._place_block(anchor, *self.pos[anchor])
             self._layout_signature = self._signature()
         else:
-            self._optimise_stack_order()
+            self._optimise_join_order()
         self._layout(full=not self.pos)
         self._refresh_door_sets()
         return had_positions
 
     def save(self):
         door_links = []
-        for x in self.door_links:
-            link = {"door": x["door"], "linked_door": x["linked_door"]}
-            if x.get("stack") is not None:
-                # Set only by manual stack/split
-                link["stack"] = x["stack"]
-            door_links.append(link)
+        for link in self.door_links:
+            entry = {"door": link.door, "linked_door": link.linked_door}
+            if link.join is not None:
+                entry["join"] = link.join
+            door_links.append(entry)
+        position = {link: n for n, link in enumerate(self.door_links)}
         return {
             "door_links": door_links,
-            # Joined link indices in claim order, so load rebuilds the same stacks
-            "stacked_links": [n for n in self._stack_order() if n in self.joined],
-            "lobby_doors": [{"door": x["door"], "lobby": x["lobby"]} for x in self.lobby_doors],
-            "tiles": {f"{t[0]}__{t[1]}": data["has_been_lit"] for t, data in self.tiles.items()},
+            # Joined links as positions in door_links, in claim order, so load rebuilds the same blocks
+            "joined_links": [position[link] for link in self._join_order() if link in self.joined],
+            "lobby_doors": [{"door": x.door, "lobby": x.lobby} for x in self.lobby_doors],
+            "tiles": {f"{t[0]}__{t[1]}": state.has_been_lit for t, state in self.tiles.items()},
             # Parts reached without a link (falls, warps) would otherwise be lost on reload
             "reached_parts": sorted(
                 f"{n.x}__{n.y}__{n.part}"
@@ -465,54 +525,49 @@ class GraphModel:
             "satellite_pull": self.leaf_pull,
         }
 
-    # ------------------------------------------------- data, stacks, layout, forces
+    # ------------------------------------------------- data, blocks, layout, forces
 
     def _ensure_tile(self, tile, has_been_lit=False):
         if tile in self.tiles:
             return
-        self.tiles[tile] = {
-            "is_dark": tile in dark_tiles,
-            "has_been_lit": has_been_lit,
-            # Read by the EG tile picker
-            "map_tile": tile,
-        }
+        self.tiles[tile] = TileState(tile in dark_tiles, has_been_lit)
 
     def decoupled(self):
         return self.experimental_flags["decoupled_doors"]
 
     def is_hidden_dark(self, tile):
-        data = self.tiles.get(tile)
-        return bool(data and data["is_dark"] and not data["has_been_lit"])
+        state = self.tiles.get(tile)
+        return bool(state and state.is_dark and not state.has_been_lit)
 
     def link_map(self):
         """door -> linked door, both directions unless doors are decoupled."""
         links = {}
         for link in self.door_links:
-            links[link["door"]] = link["linked_door"]
+            links[link.door] = link.linked_door
             if not self.decoupled():
-                links.setdefault(link["linked_door"], link["door"])
+                links.setdefault(link.linked_door, link.door)
         return links
 
     def has_target(self, door):
         for link in self.door_links:
-            if link["door"] == door:
+            if link.door == door:
                 return True
-            if not self.decoupled() and link["linked_door"] == door:
+            if not self.decoupled() and link.linked_door == door:
                 return True
         return False
 
     def lobby_door_names(self):
-        return [x["door"] for x in self.lobby_doors]
+        return [x.door for x in self.lobby_doors]
 
     def add_lobby_door(self, door, lobby):
         if door not in self.lobby_door_names():
-            self.lobby_doors.append({"door": door, "lobby": lobby})
+            self.lobby_doors.append(LobbyDoor(door, lobby))
         self.special_doors[door] = lobby
 
     def _sync_model(self):
         """Add any supertile referenced by a link or lobby; refresh derived state."""
-        used = [door for link in self.door_links for door in (link["door"], link["linked_door"])]
-        used += [lobby["door"] for lobby in self.lobby_doors]
+        used = [door for link in self.door_links for door in (link.door, link.linked_door)]
+        used += [lobby.door for lobby in self.lobby_doors]
         for door in used:
             if door in DOORS:
                 self._ensure_tile(DOORS[door].tile)
@@ -536,7 +591,7 @@ class GraphModel:
         self._piece_cache = {}
         self.compact = self._compact_tiles()
         self._piece_cache = {}
-        self._build_stacks()
+        self._build_blocks()
 
     def _reachable_doors(self):
         """Doors reachable from the lobbies via regions, fixed connections and links."""
@@ -545,9 +600,9 @@ class GraphModel:
             adjacency[a].add(b)
             adjacency[b].add(a)
         for link in self.door_links:
-            adjacency[link["door"]].add(link["linked_door"])
+            adjacency[link.door].add(link.linked_door)
             if not self.decoupled():
-                adjacency[link["linked_door"]].add(link["door"])
+                adjacency[link.linked_door].add(link.door)
 
         seen = set()
         queue = deque()
@@ -573,7 +628,7 @@ class GraphModel:
                     push(other)
 
         for lobby in self.lobby_doors:
-            push(lobby["door"])
+            push(lobby.door)
         drain()
 
         # Supertiles not reached from a lobby show all their doors
@@ -677,16 +732,16 @@ class GraphModel:
             fx = fy = 0.5
         return (fx - 0.5) * THUMB, (fy - 0.5) * THUMB
 
-    def _stackable(self, node):
+    def _joinable(self, node):
         return node.tile in self.tiles and node not in self.compact and not self.is_hidden_dark(node.tile)
 
     def join_offset(self, a, b):
-        """Offset of b's node from a's when the two doorways are stacked; None unless they face each other."""
+        """Offset of b's node from a's when the two are joined at these doorways; None unless they face each other."""
         da, db = DIRECTIONS.get(door_direction(a)), DIRECTIONS.get(door_direction(b))
         if da is None or db is None or (da[0] + db[0], da[1] + db[1]) != (0, 0):
             return None
         ta, tb = self.rooms.node(a), self.rooms.node(b)
-        if ta == tb or not self._stackable(ta) or not self._stackable(tb):
+        if ta == tb or not self._joinable(ta) or not self._joinable(tb):
             return None
         if a not in DOORS or b not in DOORS:
             return None
@@ -694,7 +749,7 @@ class GraphModel:
         fbx, fby = door_fraction(b)
         # Walls of the pieces the doors are on, not the supertile edges
         pa, pb = self._piece_at(a), self._piece_at(b)
-        gap = STACK_GAP if self.experimental_flags.get("hide_dead_rooms") else 0.0
+        gap = JOIN_GAP if self.experimental_flags.get("hide_dead_rooms") else 0.0
         if da[0] == 0:
             across = round((fax - fbx) * THUMB / SNAP) * SNAP
             return across, (pa[1] - pb[3] - gap) if da[1] < 0 else (pa[3] - pb[1] + gap)
@@ -709,52 +764,46 @@ class GraphModel:
             key=lambda p: max(p[0] - ox, 0, ox - p[2]) + max(p[1] - oy, 0, oy - p[3]),
         )
 
-    def _stack_order(self, rank=None):
-        """Link indices in stacking priority: manual first, then rank, then age."""
-        rank = self._stack_rank if rank is None else rank
+    def _join_order(self, rank=None):
+        """Links in the order they get to join: manual first, then rank, then age."""
+        rank = self._join_rank if rank is None else rank
         big = len(rank) + len(self.door_links)
+        age = {link: n for n, link in enumerate(self.door_links)}
+        return sorted(self.door_links, key=lambda link: (link.join is not True, rank.get(link, big + age[link]), age[link]))
 
-        def key(n):
-            link = self.door_links[n]
-            return (link.get("stack") is not True, rank.get((link["door"], link["linked_door"]), big + n), n)
-
-        return sorted(range(len(self.door_links)), key=key)
-
-    def _compute_stacks(self, order):
+    def _compute_blocks(self, order):
         """Join facing doorways in the given order, skipping joins that would overlap.
 
-        Returns (root by node, offset by node, members by root, joined link indices).
+        Returns (root by node, offset by node, members by root, joined links).
         """
         nodes = self.nodes()
         root = {t: t for t in nodes}
         off = {t: (0.0, 0.0) for t in nodes}
         members = {t: [t] for t in nodes}
         boxes = {t: self.pieces(t) for t in nodes}
-        # Parts of a supertile shown whole stay in one stack at zero offset
+        # Parts of a supertile shown whole stay in one block at zero offset
         for tile in self._whole:
             parts = [t for t in nodes if t.tile == tile]
             for part in parts[1:]:
                 root[part] = parts[0]
                 members[parts[0]] += members.pop(part)
         joined = set()
-        auto = self.auto_stack
-        for n in order:
-            link = self.door_links[n]
-            wanted = link.get("stack")
-            if wanted is False or (wanted is None and not auto):
+        auto = self.auto_join
+        for link in order:
+            if link.join is False or (link.join is None and not auto):
                 continue
-            a, b = link["door"], link["linked_door"]
+            a, b = link.door, link.linked_door
             rel = self.join_offset(a, b)
             if rel is None:
                 continue
             ta, tb = self.rooms.node(a), self.rooms.node(b)
             ra, rb = root[ta], root[tb]
-            # Shift from b's stack frame to a's
+            # Shift from b's block frame to a's
             sx = off[ta][0] + rel[0] - off[tb][0]
             sy = off[ta][1] + rel[1] - off[tb][1]
             if ra == rb:
                 if abs(sx) < 1 and abs(sy) < 1:
-                    joined.add(n)
+                    joined.add(link)
                 continue
             clash = False
             for m in members[rb]:
@@ -773,45 +822,49 @@ class GraphModel:
             if clash:
                 continue
             if len(members[rb]) > len(members[ra]):
-                # Merge the smaller stack into the bigger
+                # Merge the smaller block into the bigger
                 ra, rb, sx, sy = rb, ra, -sx, -sy
             for m in members[rb]:
                 off[m] = (off[m][0] + sx, off[m][1] + sy)
                 root[m] = ra
             members[ra] += members.pop(rb)
-            joined.add(n)
+            joined.add(link)
         return root, off, members, joined
 
-    def _build_stacks(self):
-        self.stack_root, self.stack_off, self.stack_members, self.joined = self._compute_stacks(self._stack_order())
+    def _build_blocks(self):
+        self.block_root, self.block_off, self.block_members, self.joined = self._compute_blocks(self._join_order())
 
-    def _optimise_stack_order(self):
-        """Random search for the stacking order that joins the most links. Full re-layout only."""
-        keys = [(x["door"], x["linked_door"]) for x in self.door_links]
-        candidates = [n for n, x in enumerate(self.door_links) if self.join_offset(*keys[n]) is not None]
+    def _optimise_join_order(self):
+        """Random search for the order that joins the most links. Full re-layout only."""
+        candidates = [x for x in self.door_links if self.join_offset(x.door, x.linked_door) is not None]
         if len(candidates) < 3:
             return
+
+        def joins(rank):
+            root, off, members, joined = self._compute_blocks(self._join_order(rank))
+            return len(joined)
+
         rng = random.Random(len(self.door_links))
-        best_rank = {keys[n]: i for i, n in enumerate(self._stack_order())}
-        best_score = len(self._compute_stacks(self._stack_order(best_rank))[3])
+        best_rank = {link: i for i, link in enumerate(self._join_order())}
+        best_score = joins(best_rank)
         for _ in range(60):
             shuffled = candidates[:]
             rng.shuffle(shuffled)
-            rank = {keys[n]: i for i, n in enumerate(shuffled)}
-            score = len(self._compute_stacks(self._stack_order(rank))[3])
+            rank = {link: i for i, link in enumerate(shuffled)}
+            score = joins(rank)
             if score > best_score:
                 best_score, best_rank = score, rank
-        self._stack_rank = best_rank
-        self._build_stacks()
+        self._join_rank = best_rank
+        self._build_blocks()
 
-    def stack_of(self, tile):
-        return self.stack_members.get(self.stack_root.get(tile, tile), [tile])
+    def block_of(self, tile):
+        return self.block_members.get(self.block_root.get(tile, tile), [tile])
 
-    def _place_stack(self, anchor, x, y):
-        """Move a stack so that `anchor` is at (x, y)."""
-        ax, ay = self.stack_off[anchor]
-        for m in self.stack_of(anchor):
-            mx, my = self.stack_off[m]
+    def _place_block(self, anchor, x, y):
+        """Move a block so that `anchor` is at (x, y)."""
+        ax, ay = self.block_off[anchor]
+        for m in self.block_of(anchor):
+            mx, my = self.block_off[m]
             self.pos[m] = [x + mx - ax, y + my - ay]
 
     def port(self, door):
@@ -821,18 +874,17 @@ class GraphModel:
         return x + ox, y + oy
 
     def edges(self, known=None):
-        """All drawable edges as (door, linked_door, kind, link_index)."""
+        """Everything drawn between doors, as Edges."""
         known = self.pos if known is None else known
         edges = []
         seen = set()
-        for n, link in enumerate(self.door_links):
-            a, b = link["door"], link["linked_door"]
+        for link in self.door_links:
+            a, b = link.door, link.linked_door
             if self.rooms.node(a) not in known or self.rooms.node(b) not in known:
                 continue
             if a not in DOORS or b not in DOORS:
                 continue
-            kind = "interior" if a in INTERIOR_DOORS else "link"
-            edges.append((a, b, kind, n))
+            edges.append(Edge(a, b, "interior" if a in INTERIOR_DOORS else "link", link))
             seen.add(frozenset((a, b)))
         # Interior doors not already tracked as links
         for a, b in interior_doors:
@@ -844,7 +896,7 @@ class GraphModel:
                 continue
             if not self._door_visible(a) or not self._door_visible(b):
                 continue
-            edges.append((a, b, "interior", None))
+            edges.append(Edge(a, b, "interior"))
         # Drops can be shuffled: only assumed when the vanilla_drops setting is on
         vanilla_drops = MANUAL_DROPS if self.experimental_flags.get("vanilla_drops") else {}
         for a, b in vanilla_drops.items():
@@ -854,15 +906,15 @@ class GraphModel:
                 continue
             if not self._door_visible(a) or not self._door_visible(b):
                 continue
-            edges.append((a, b, "drop", None))
+            edges.append(Edge(a, b, "drop"))
         # Warps are never shuffled; unmarked holes follow vanilla_drops
         for link in ROOM_LINKS:
-            if link["kind"] == "hole" and not self.experimental_flags.get("vanilla_drops"):
+            if link.kind == "hole" and not self.experimental_flags.get("vanilla_drops"):
                 continue
-            ta, tb = self.rooms.node(link["a"]), self.rooms.node(link["b"])
+            ta, tb = self.rooms.node(link.a), self.rooms.node(link.b)
             if ta not in known or tb not in known or self.is_hidden_dark(ta.tile) or self.is_hidden_dark(tb.tile):
                 continue
-            edges.append((link["a"], link["b"], link["kind"] + ("_both" if link["both_ways"] else ""), None))
+            edges.append(Edge(link.a, link.b, link.kind, both_ways=link.both_ways))
         return edges
 
     def _door_visible(self, door):
@@ -874,10 +926,10 @@ class GraphModel:
         """Layout inputs; the layout reruns only when this changes."""
         return (
             tuple(sorted(self.nodes())),
-            tuple(sorted(self.joined)),
+            frozenset(self.joined),
             tuple(sorted(self.compact)),
             len(self.door_links),
-            tuple(sorted(tuple(sorted(m)) for m in self.stack_members.values())),
+            tuple(sorted(tuple(sorted(m)) for m in self.block_members.values())),
         )
 
     def _layout(self, full=False):
@@ -904,18 +956,18 @@ class GraphModel:
                 if tile not in self.fixed:
                     self.pos.pop(tile, None)
 
-        # Seat each stack on a member that already has a position
-        for root, members in self.stack_members.items():
+        # Seat each block on a member that already has a position
+        for root, members in self.block_members.items():
             placed = [m for m in members if m in self.pos]
             if not placed:
                 continue
             anchor = next((m for m in placed if m in self.fixed), root if root in self.pos else placed[0])
             self.unsettled -= set(members)
-            self._place_stack(anchor, *self.pos[anchor])
+            self._place_block(anchor, *self.pos[anchor])
 
-        edges = [(a, b) for a, b, kind, n in self._layout_edges()]
-        pending = {root for root in self.stack_members if root not in self.pos}
-        new_tiles = [m for root in pending for m in self.stack_members[root]]
+        edges = self._layout_edges()
+        pending = {root for root in self.block_members if root not in self.pos}
+        new_tiles = [m for root in pending for m in self.block_members[root]]
 
         def place_from(anchor_door, new_door):
             anchor = self.rooms.node(anchor_door)
@@ -927,37 +979,37 @@ class GraphModel:
             if direction is None:
                 opposite = DIRECTIONS.get(door_direction(new_door))
                 direction = (-opposite[0], -opposite[1]) if opposite else (1, 0.35)
-            self._place_stack(new, ax + aox + direction[0] * gap - nox, ay + aoy + direction[1] * gap - noy)
+            self._place_block(new, ax + aox + direction[0] * gap - nox, ay + aoy + direction[1] * gap - noy)
 
         def place_loose(root):
             placed = list(self.pos.values())
             if not placed:
-                self._place_stack(root, 0.0, 0.0)
-            elif self.player and self.player[0] in self.pos and self.player[0] not in self.stack_of(root):
-                px, py = self.pos[self.player[0]]
-                self._place_stack(root, px + THUMB + LINK_GAP * 2, py + 20.0)
+                self._place_block(root, 0.0, 0.0)
+            elif self.player and self.player.node in self.pos and self.player.node not in self.block_of(root):
+                px, py = self.pos[self.player.node]
+                self._place_block(root, px + THUMB + LINK_GAP * 2, py + 20.0)
             else:
                 max_x = max(p[0] for p in placed)
                 min_y = min(p[1] for p in placed)
-                self._place_stack(
+                self._place_block(
                     root, max_x + THUMB + LINK_GAP * 3, min_y + (len(placed) % 5) * (THUMB + LINK_GAP)
                 )
 
-        # Place lobby stacks first
-        lobby_roots = [self.stack_root.get(self.rooms.node(x["door"])) for x in self.lobby_doors]
-        order = [r for r in lobby_roots if r in pending] + sorted(pending, key=lambda r: -len(self.stack_members[r]))
+        # Place lobby blocks first
+        lobby_roots = [self.block_root.get(self.rooms.node(x.door)) for x in self.lobby_doors]
+        order = [r for r in lobby_roots if r in pending] + sorted(pending, key=lambda r: -len(self.block_members[r]))
         while pending:
             progressed = True
             while progressed:
                 progressed = False
-                for a, b in edges:
-                    ra, rb = self.stack_root[self.rooms.node(a)], self.stack_root[self.rooms.node(b)]
+                for edge in edges:
+                    ra, rb = self.block_root[self.rooms.node(edge.a)], self.block_root[self.rooms.node(edge.b)]
                     if ra in pending and rb not in pending:
-                        place_from(b, a)
+                        place_from(edge.b, edge.a)
                         pending.discard(ra)
                         progressed = True
                     elif rb in pending and ra not in pending:
-                        place_from(a, b)
+                        place_from(edge.a, edge.b)
                         pending.discard(rb)
                         progressed = True
             if pending:
@@ -967,7 +1019,7 @@ class GraphModel:
 
         self.unsettled |= set(new_tiles)
         if not full:
-            # Incremental: move only the new stacks
+            # Incremental: move only the new blocks
             self._relax(iterations=90, old_mobility=0.0, edges=edges, cold=True)
             # then separate overlaps
             self._relax(iterations=0, old_mobility=1.0, edges=edges, cold=True)
@@ -980,15 +1032,15 @@ class GraphModel:
         self._laid_spacing = self.spacing
 
         linked = set()
-        for a, b in edges:
-            linked.update(self.stack_of(self.rooms.node(a)))
-            linked.update(self.stack_of(self.rooms.node(b)))
+        for edge in edges:
+            linked.update(self.block_of(self.rooms.node(edge.a)))
+            linked.update(self.block_of(self.rooms.node(edge.b)))
         self.unsettled -= linked
 
     def repulsion_shapes(self):
-        """Per stack: (circle or None, room boxes, reach) in world units, for the debug overlay."""
+        """A RepulsionShape per block, for the debug overlay."""
         shapes = []
-        for root, members in self.stack_members.items():
+        for root, members in self.block_members.items():
             if any(m not in self.pos for m in members):
                 continue
             boxes = []
@@ -999,49 +1051,49 @@ class GraphModel:
             if self.circle_repulsion:
                 corners = [(bx, by) for left, top, right, bottom in boxes for bx in (left, right) for by in (top, bottom)]
                 circle = enclosing_circle(corners)
-            shapes.append((circle, boxes, self.spacing if circle else max(self.spacing, CONTACT_RANGE)))
+            shapes.append(RepulsionShape(circle, boxes, self.spacing if circle else max(self.spacing, CONTACT_RANGE)))
         return shapes
 
     def _park_unlinked(self, edges):
-        """Line up unlinked stacks beside the map."""
+        """Line up unlinked blocks beside the map."""
         linked = set()
-        for a, b in edges:
-            linked.add(self.stack_root[self.rooms.node(a)])
-            linked.add(self.stack_root[self.rooms.node(b)])
+        for edge in edges:
+            linked.add(self.block_root[self.rooms.node(edge.a)])
+            linked.add(self.block_root[self.rooms.node(edge.b)])
         loose = [
             r
-            for r, members in self.stack_members.items()
+            for r, members in self.block_members.items()
             if r not in linked and not any(m in self.fixed for m in members)
         ]
-        rest = [t for r in self.stack_members if r not in loose for t in self.stack_members[r]]
+        rest = [t for r in self.block_members if r not in loose for t in self.block_members[r]]
         if not loose or not rest:
             return
         right = max(self.pos[t][0] + self.box(t)[2] for t in rest)
         y = min(self.pos[t][1] + self.box(t)[1] for t in rest)
         gap = max(self.spacing, LINK_GAP)
         for r in sorted(loose):
-            members = self.stack_members[r]
-            left = min(self.stack_off[m][0] + self.box(m)[0] for m in members)
-            top = min(self.stack_off[m][1] + self.box(m)[1] for m in members)
-            bottom = max(self.stack_off[m][1] + self.box(m)[3] for m in members)
-            self._place_stack(r, right + gap * 2 - left, y - top)
+            members = self.block_members[r]
+            left = min(self.block_off[m][0] + self.box(m)[0] for m in members)
+            top = min(self.block_off[m][1] + self.box(m)[1] for m in members)
+            bottom = max(self.block_off[m][1] + self.box(m)[3] for m in members)
+            self._place_block(r, right + gap * 2 - left, y - top)
             y += bottom - top + gap
 
     def _layout_edges(self):
-        """Edges between different stacks."""
+        """Edges between different blocks."""
         return [
             e
             for e in self.edges(known=set(self.nodes()))
-            if e[3] not in self.joined and self.stack_root[self.rooms.node(e[0])] != self.stack_root[self.rooms.node(e[1])]
+            if e.link not in self.joined and self.block_root[self.rooms.node(e.a)] != self.block_root[self.rooms.node(e.b)]
         ]
 
     def _bodies(self, old_mobility):
-        """Stacks as layout.Body, in stack_members order. Unsettled stacks are free; the rest get old_mobility."""
+        """Blocks as layout.Body, in block_members order. Unsettled blocks are free; the rest get old_mobility."""
         bodies = []
-        for root, members in self.stack_members.items():
+        for root, members in self.block_members.items():
             rects = []
             for m in members:
-                ox, oy = self.stack_off[m]
+                ox, oy = self.block_off[m]
                 for left, top, right, bottom in self.pieces(m):
                     rects.append((ox + (left + right) / 2, oy + (top + bottom) / 2, (right - left) / 2, (bottom - top) / 2))
             if any(m in self.fixed or m in self.held for m in members):
@@ -1051,39 +1103,39 @@ class GraphModel:
             else:
                 mobility = old_mobility
             bodies.append(
-                layout.Body(rects, mobility, len(members), self._damping.setdefault(root, [1.0, 0.0, 0.0]), supertile(root.tile).dungeon)
+                layout.Body(rects, mobility, len(members), self._damping.setdefault(root, layout.Damping()), supertile(root.tile).dungeon)
             )
         return bodies
 
-    def _links(self, edges):
-        """Edges in the form the solvers take; see layout.relax."""
-        index = {root: i for i, root in enumerate(self.stack_members)}
-        links = []
-        for a, b in edges:
-            ta, tb = self.rooms.node(a), self.rooms.node(b)
-            ax, ay = self.port_offset(a)
-            bx, by = self.port_offset(b)
-            links.append(
-                (
-                    index[self.stack_root[ta]],
-                    ax + self.stack_off[ta][0],
-                    ay + self.stack_off[ta][1],
-                    index[self.stack_root[tb]],
-                    bx + self.stack_off[tb][0],
-                    by + self.stack_off[tb][1],
-                    DIRECTIONS.get(door_direction(a)),
-                    DIRECTIONS.get(door_direction(b)),
+    def _springs(self, edges):
+        """Edges as layout.Spring, with bodies numbered in block_members order."""
+        index = {root: i for i, root in enumerate(self.block_members)}
+        springs = []
+        for edge in edges:
+            ta, tb = self.rooms.node(edge.a), self.rooms.node(edge.b)
+            ax, ay = self.port_offset(edge.a)
+            bx, by = self.port_offset(edge.b)
+            springs.append(
+                layout.Spring(
+                    a=index[self.block_root[ta]],
+                    ax=ax + self.block_off[ta][0],
+                    ay=ay + self.block_off[ta][1],
+                    b=index[self.block_root[tb]],
+                    bx=bx + self.block_off[tb][0],
+                    by=by + self.block_off[tb][1],
+                    facing_a=DIRECTIONS.get(door_direction(edge.a)),
+                    facing_b=DIRECTIONS.get(door_direction(edge.b)),
                 )
             )
-        return links
+        return springs
 
     def _stress_layout(self, edges):
-        """Place every unpinned stack with the stress solver."""
-        roots = list(self.stack_members)
+        """Place every unpinned block with the stress solver."""
+        roots = list(self.block_members)
         boxes, movable = [], []
         for root in roots:
-            members = self.stack_members[root]
-            parts = [(self.stack_off[m], self.box(m)) for m in members]
+            members = self.block_members[root]
+            parts = [(self.block_off[m], self.box(m)) for m in members]
             boxes.append(
                 (
                     min(off[0] + box[0] for off, box in parts),
@@ -1096,23 +1148,23 @@ class GraphModel:
         xs, ys = layout.stress(
             boxes,
             movable,
-            [self.pos[r][0] - self.stack_off[r][0] for r in roots],
-            [self.pos[r][1] - self.stack_off[r][1] for r in roots],
-            self._links(edges),
+            [self.pos[r][0] - self.block_off[r][0] for r in roots],
+            [self.pos[r][1] - self.block_off[r][1] for r in roots],
+            self._springs(edges),
             spacing=self.spacing,
         )
         for root, x, y, free in zip(roots, xs, ys, movable):
             if free:
-                self._place_stack(root, x + self.stack_off[root][0], y + self.stack_off[root][1])
+                self._place_block(root, x + self.block_off[root][0], y + self.block_off[root][1])
 
     def _relax(self, iterations, old_mobility, edges, improve=False, cold=False):
         """Run the force solver on the current positions. Returns total link length."""
-        roots = list(self.stack_members)
+        roots = list(self.block_members)
         xs, ys, cost, self._last_step = layout.relax(
             self._bodies(old_mobility),
             [self.pos[r][0] for r in roots],
             [self.pos[r][1] for r in roots],
-            self._links(edges),
+            self._springs(edges),
             iterations=iterations,
             spacing=self.spacing,
             leaf_pull=self.leaf_pull,
@@ -1122,7 +1174,7 @@ class GraphModel:
             grouped=self.group_by_dungeon,
         )
         for root, x, y in zip(roots, xs, ys):
-            self._place_stack(root, x, y)
+            self._place_block(root, x, y)
         return cost
 
     def _keep_centre(self, before):
@@ -1144,7 +1196,7 @@ class GraphModel:
         return x0, y0, x1, y1
 
     def door_dots(self, tile):
-        """Doors of a node as (door, x, y, state); x, y relative to its centre, state open/linked/interior."""
+        """The door dots drawn on a node."""
         lobby_doors = set(self.lobby_door_names())
         dots = []
         for door in self.rooms.doors(tile):
@@ -1157,13 +1209,13 @@ class GraphModel:
                 continue
             linked = door in self._linked_doors or door in lobby_doors
             ox, oy = self.port_offset(door)
-            dots.append((door, ox, oy, "interior" if interior else "linked" if linked else "open"))
+            dots.append(DoorDot(door, ox, oy, "interior" if interior else "linked" if linked else "open"))
         return dots
 
     def _is_linked(self, door):
         if door in self.lobby_door_names():
             return True
         for link in self.door_links:
-            if link["door"] == door or link["linked_door"] == door:
+            if link.door == door or link.linked_door == door:
                 return True
         return False

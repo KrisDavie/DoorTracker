@@ -1,5 +1,7 @@
 """Colours and sizes used to draw the map."""
 
+from dataclasses import dataclass
+
 from PIL import ImageColor
 
 DOOR_RADIUS = 5.5  # an unexplored door; linked and interior doors are drawn smaller
@@ -31,11 +33,19 @@ EDGE_FADED = "#c9cdd4"
 WARP_COLOUR = "#7b4fc4"
 DROP_COLOUR = "#4a4f57"
 
-# Door dot fill, radius factor and outline width by state
+
+@dataclass(frozen=True)
+class DoorStyle:
+    fill: str
+    scale: float  # of DOOR_RADIUS
+    outline: float  # width
+
+
+# How a door dot is drawn, by its state
 DOOR_STYLES = {
-    "open": (DOOR_OPEN, 1.0, 1.5),
-    "linked": (DOOR_LINKED, 0.7, 1),
-    "interior": (DOOR_INTERIOR, 0.7, 1),
+    "open": DoorStyle(DOOR_OPEN, 1.0, 1.5),
+    "linked": DoorStyle(DOOR_LINKED, 0.7, 1),
+    "interior": DoorStyle(DOOR_INTERIOR, 0.7, 1),
 }
 
 

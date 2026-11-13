@@ -20,7 +20,7 @@ from data.room_bounds import room_bounds
 
 
 class Node(NamedTuple):
-    """A block on the map: a supertile, or one part of a split one."""
+    """A room card on the map: a supertile, or one part of a split one."""
 
     x: int
     y: int
@@ -33,12 +33,32 @@ class Node(NamedTuple):
 
 @dataclass(frozen=True)
 class Door:
+    """A door, or one end of a warp or hole (see ROOM_PORTS)."""
+
     tile: tuple  # supertile (x, y)
     x: float  # position in the supertile picture, 0..1
     y: float
-    facing: str  # No, So, We, Ea, Up or Dn
-    regions: tuple
+    facing: str = None  # No, So, We, Ea, Up or Dn; None for a warp or hole end
+    regions: tuple = ()
     part: int = 0  # index into its supertile's parts
+
+
+@dataclass(frozen=True)
+class DoorlessRoom:
+    tile: tuple  # supertile (x, y)
+    dungeon: str
+    x: float  # position in the supertile picture, 0..1
+    y: float
+
+
+@dataclass(frozen=True)
+class RoomLink:
+    """A warp or unmarked hole between two supertiles."""
+
+    a: str  # its ends, as names in ROOM_PORTS
+    b: str
+    kind: str  # warp or hole
+    both_ways: bool
 
 
 def _read_doors():
@@ -93,11 +113,11 @@ for _door_set in [logical_connections, interior_doors, falldown_pits, dungeon_wa
     DEFAULT_DOORS.update(_door_set)
 DEFAULT_DOORS.update(MANUAL_DROPS)
 
-# Rooms with no doors. region: (supertile, dungeon, position in picture 0..1)
+# Rooms with no doors, by region
 DOORLESS_ROOMS = {
-    "Ice Fairy": ((15, 4), "Ice_Palace", (0.75, 0.25)),
-    "Eastern Fairies": ((9, 8), "Eastern_Palace", (0.5, 0.31)),
-    "Hera Fairies": ((7, 10), "Tower_of_Hera", (0.27, 0.25)),
+    "Ice Fairy": DoorlessRoom((15, 4), "Ice_Palace", 0.75, 0.25),
+    "Eastern Fairies": DoorlessRoom((9, 8), "Eastern_Palace", 0.5, 0.31),
+    "Hera Fairies": DoorlessRoom((7, 10), "Tower_of_Hera", 0.27, 0.25),
 }
 
 # Known warp tile positions. warp: (tile, landing), each 0..1 in its supertile picture
@@ -108,32 +128,35 @@ WARP_SPOTS = {
 
 
 def _build_room_links():
-    """Warps and unmarked holes as (ports, links). Ends are regions, not doors, so each gets a synthetic port."""
+    """Warps and unmarked holes as (ports, links).
+
+    Their ends are regions, not doors, so each end gets a port: a Door record with no facing.
+    """
     home = {}
     for region, doors in regions_to_doors.items():
         for name in doors:
             home.setdefault(name, []).append(region)
 
     def spot(regions):
-        """(tile, x, y, door) at the mean position of the regions' doors, or None."""
-        points, names = {}, {}
+        """A port at the mean position of the regions' doors, in the part of the first one; None unless they share one supertile."""
+        points, part = {}, {}
         for region in regions:
             if region in DOORLESS_ROOMS:
-                tile, dungeon, place = DOORLESS_ROOMS[region]
-                return tile, place[0], place[1], None
+                room = DOORLESS_ROOMS[region]
+                return Door(room.tile, room.x, room.y)
             for name in regions_to_doors.get(region, []):
                 if name in DOORS:
                     door = DOORS[name]
                     points.setdefault(door.tile, []).append((door.x, door.y))
-                    names.setdefault(door.tile, name)
+                    part.setdefault(door.tile, door.part)
         if len(points) != 1:
             return None
         tile, found = next(iter(points.items()))
-        return tile, sum(p[0] for p in found) / len(found), sum(p[1] for p in found) / len(found), names[tile]
+        return Door(tile, sum(p[0] for p in found) / len(found), sum(p[1] for p in found) / len(found), part=part[tile])
 
-    def block(place):
-        """(supertile, part) of a spot."""
-        return place[0], DOORS[place[3]].part if place[3] else 0
+    def part_of(place):
+        """(supertile, part) of a port."""
+        return place.tile, place.part
 
     # beside: regions joined in-room. onward: region -> warp targets
     beside, onward = {}, {}
@@ -183,10 +206,10 @@ def _build_room_links():
             if start is None:
                 continue
             for end in landings(target):
-                if start[0] == end[0]:
+                if start.tile == end.tile:
                     continue  # same supertile: see _build_parts
                 # Keyed by part: two warps can join the same pair of supertiles
-                found.setdefault((block(start), block(end), kind), (name, start, end))
+                found.setdefault((part_of(start), part_of(end), kind), (name, start, end))
     links = []
     for (ta, tb, kind), (name, start, end) in found.items():
         both_ways = (tb, ta, kind) in found
@@ -195,10 +218,10 @@ def _build_room_links():
         a, b = name, f"{name} landing"
         if name in WARP_SPOTS:
             (sx, sy), (ex, ey) = WARP_SPOTS[name]
-            start, end = (start[0], sx, sy, start[3]), (end[0], ex, ey, end[3])
+            start, end = replace(start, x=sx, y=sy), replace(end, x=ex, y=ey)
         ports[a], ports[b] = start, end
-        links.append({"a": a, "b": b, "kind": kind, "both_ways": both_ways})
-    return ports, links
+        links.append(RoomLink(a, b, kind, both_ways))
+    return MappingProxyType(ports), tuple(links)
 
 
 # Never split: Ice Cross (push blocks), Sewers Rat Path (drop landing), Ice Freezors (bomb jump)
@@ -291,7 +314,7 @@ class Supertile:
 
 def _build_supertiles():
     parts_by_tile = _build_parts()
-    doorless = {tile: (region, dungeon) for region, (tile, dungeon, place) in DOORLESS_ROOMS.items()}
+    doorless = {room.tile: (region, room.dungeon) for region, room in DOORLESS_ROOMS.items()}
     records = {}
     for tile in set(parts_by_tile) | set(doorless):
         parts = parts_by_tile.get(tile, [[]])
@@ -343,6 +366,8 @@ DOORS = MappingProxyType(
         for name in names
     }
 )
+# Ends of warps and holes by name; kept apart from DOORS, which holds only real doors
+ROOM_PORTS, ROOM_LINKS = _build_room_links()
 
 
 def supertile(tile):
@@ -350,17 +375,20 @@ def supertile(tile):
     return SUPERTILES.get(tile, _UNKNOWN)
 
 
-def door_direction(door):
-    return DOORS[door].facing if door in DOORS else None
+def find_door(name):
+    """Record of a door or port; None if unknown."""
+    return DOORS.get(name) or ROOM_PORTS.get(name)
 
 
-def door_fraction(door):
-    """Position of a door or warp port inside its supertile as 0..1 fractions."""
-    if door in ROOM_PORTS:
-        return ROOM_PORTS[door][1], ROOM_PORTS[door][2]
-    if door in DOORS:
-        return DOORS[door].x, DOORS[door].y
-    return 0.5, 0.5
+def door_direction(name):
+    door = find_door(name)
+    return door.facing if door else None
+
+
+def door_fraction(name):
+    """Position of a door or port inside its supertile as 0..1 fractions."""
+    door = find_door(name)
+    return (door.x, door.y) if door else (0.5, 0.5)
 
 
 class Rooms:
@@ -372,14 +400,10 @@ class Rooms:
     def part_count(self, tile):
         return len(supertile(tile).parts) if self.split else 1
 
-    def node(self, door):
-        """Node of a door or warp port; None if unknown."""
-        if door in ROOM_PORTS:
-            tile, anchor = ROOM_PORTS[door][0], ROOM_PORTS[door][3]
-            return Node(*tile, DOORS[anchor].part if anchor and self.split else 0)
-        if door in DOORS:
-            return Node(*DOORS[door].tile, DOORS[door].part if self.split else 0)
-        return None
+    def node(self, name):
+        """Node of a door or port; None if unknown."""
+        door = find_door(name)
+        return Node(*door.tile, door.part if self.split else 0) if door else None
 
     def doors(self, node):
         st = supertile(node.tile)
@@ -408,7 +432,6 @@ class Rooms:
 
 
 SPLIT, WHOLE = Rooms(True), Rooms(False)
-ROOM_PORTS, ROOM_LINKS = _build_room_links()
 
 
 def _dungeon_backgrounds():

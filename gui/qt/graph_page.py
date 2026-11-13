@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 from data.doors_data import mandatory_tiles
 from data.doors_sprite_data import ITEM_SHEET_PATH
 from data.room_bounds import room_bounds
-from gui.Doors.graph_model import THUMB, GraphModel
+from gui.Doors.graph_model import THUMB, GraphModel, Player
 from gui.Doors.layout import LINK_GAP, convex_hull
 from gui.Doors.rooms import (
     DIRECTIONS,
@@ -221,7 +221,7 @@ class RoomItem(QGraphicsItem):
         if self.pinned:
             self._paint_pin(painter, first)
 
-        if self.page.model.player is not None and self.page.model.player[0] == self.tile:
+        if self.page.model.player is not None and self.page.model.player.node == self.tile:
             painter.setPen(QPen(QColor(PLAYER), 3))
             painter.setBrush(Qt.NoBrush)
             painter.drawPath(self.player_outline)
@@ -294,12 +294,13 @@ class ReachItem(QGraphicsItem):
         self.prepareGeometryChange()
         self.shapes = self.page.model.repulsion_shapes()
         bounds = QRectF()
-        for circle, boxes, reach in self.shapes:
-            for left, top, right, bottom in boxes:
+        for shape in self.shapes:
+            for left, top, right, bottom in shape.boxes:
                 bounds = bounds.united(QRectF(left, top, right - left, bottom - top))
-            if circle:
-                bounds = bounds.united(QRectF(circle[0] - circle[2], circle[1] - circle[2], circle[2] * 2, circle[2] * 2))
-        reach = max((shape[2] for shape in self.shapes), default=0.0)
+            if shape.circle:
+                x, y, radius = shape.circle
+                bounds = bounds.united(QRectF(x - radius, y - radius, radius * 2, radius * 2))
+        reach = max((shape.reach for shape in self.shapes), default=0.0)
         self.bounds = bounds.adjusted(-reach, -reach, reach, reach)
         self.update()
 
@@ -313,10 +314,10 @@ class ReachItem(QGraphicsItem):
         solid = QPen(QColor(255, 255, 255, 200), 0)
         dashed = QPen(QColor(255, 255, 255, 200), 0, Qt.DashLine)
         fill = QColor(255, 255, 255, 28)
-        for circle, boxes, reach in self.shapes:
-            half = reach / 2
-            if circle:
-                x, y, radius = circle
+        for shape in self.shapes:
+            reach, half = shape.reach, shape.reach / 2
+            if shape.circle:
+                x, y, radius = shape.circle
                 painter.setBrush(fill)
                 painter.setPen(dashed)
                 painter.drawEllipse(QPointF(x, y), radius + half, radius + half)
@@ -327,7 +328,7 @@ class ReachItem(QGraphicsItem):
                 # Rooms grown by half the reach
                 grown = QPainterPath()
                 grown.setFillRule(Qt.WindingFill)
-                for left, top, right, bottom in boxes:
+                for left, top, right, bottom in shape.boxes:
                     grown.addRoundedRect(QRectF(left - half, top - half, right - left + reach, bottom - top + reach), half, half)
                 painter.setBrush(fill)
                 painter.setPen(dashed)
@@ -358,27 +359,27 @@ class DoorsItem(QGraphicsItem):
 
     def paint(self, painter, option, widget=None):
         page = self.page
-        for door, ox, oy, state in self.dots:
-            fill, scale, outline = DOOR_STYLES[state]
-            radius = DOOR_RADIUS * scale
-            if door == page.selected_door:
+        for dot in self.dots:
+            style = DOOR_STYLES[dot.state]
+            fill, radius, outline = style.fill, DOOR_RADIUS * style.scale, style.outline
+            if dot.door == page.selected_door:
                 fill, radius, outline = DOOR_SELECTED, DOOR_RADIUS + 1, 2
-            if door == page.hot_door:
+            if dot.door == page.hot_door:
                 fill, radius, outline = PLAYER, DOOR_RADIUS + 1, 2
             painter.setPen(QPen(QColor("#111"), outline))
             painter.setBrush(QColor(fill))
-            painter.drawEllipse(QPointF(ox, oy), radius, radius)
+            painter.drawEllipse(QPointF(dot.x, dot.y), radius, radius)
         player = page.model.player
-        if player is not None and player[0] == self.tile and self.tile not in page.model.compact:
-            x = (player[1] / 512 - 0.5) * THUMB
-            y = (player[2] / 512 - 0.5) * THUMB
+        if player is not None and player.node == self.tile and self.tile not in page.model.compact:
+            x = (player.x / 512 - 0.5) * THUMB
+            y = (player.y / 512 - 0.5) * THUMB
             painter.setPen(QPen(QColor(PLAYER), 3, Qt.SolidLine, Qt.RoundCap))
             painter.drawLine(QPointF(x - 7, y - 7), QPointF(x + 7, y + 7))
             painter.drawLine(QPointF(x + 7, y - 7), QPointF(x - 7, y + 7))
 
 
 class SeamItem(QGraphicsRectItem):
-    """Bar across the doorway of two stacked rooms."""
+    """Bar across the doorway of two joined rooms."""
 
     def __init__(self, parent, x, y, vertical, payload):
         long_side, short_side = 11.0, 5.0
@@ -442,14 +443,13 @@ class IconItem(QGraphicsItem):
 class LinkItem(QGraphicsPathItem):
     """A link, interior connection, drop or warp between two doors."""
 
-    def __init__(self, page, a, b, n, kind, colour):
+    def __init__(self, page, edge, colour):
         super().__init__()
         self.page = page
         self.kind = "edge"
-        self.payload = (a, b, n)
-        self.interior = kind == "interior"
-        self.link_kind = kind
-        self.dashed = kind.startswith("warp")
+        self.payload = edge
+        self.interior = edge.kind == "interior"
+        self.dashed = edge.kind == "warp"
         self.colour = QColor("#222") if self.interior else QColor(colour)
         self.arrow = None
         self.setZValue(2)
@@ -473,7 +473,8 @@ class LinkItem(QGraphicsPathItem):
 
     def update_path(self):
         model = self.page.model
-        a, b, n = self.payload
+        edge = self.payload
+        a, b = edge.a, edge.b
         ax, ay = model.port(a)
         bx, by = model.port(b)
         dist = math.hypot(bx - ax, by - ay)
@@ -487,7 +488,7 @@ class LinkItem(QGraphicsPathItem):
         c1 = QPointF(ax + da[0] * reach, ay + da[1] * reach) if da else None
         c2 = QPointF(bx + db[0] * reach, by + db[1] * reach) if db else None
         end = QPointF(bx, by)
-        same_block = model.stack_root.get(node_a) == model.stack_root.get(node_b)
+        same_block = model.block_root.get(node_a) == model.block_root.get(node_b)
         if same_block and da and db and not self.interior and dist > 1:
             # Same block: the plain curve would be a straight line, so bow it sideways
             px, py = -(by - ay) / dist, (bx - ax) / dist
@@ -503,10 +504,8 @@ class LinkItem(QGraphicsPathItem):
             path.lineTo(end)
         self.setPath(path)
 
-        if self.link_kind in ("warp", "hole", "drop"):
-            one_way = True
-        elif self.link_kind.endswith("_both"):
-            one_way = False
+        if edge.kind in ("warp", "hole", "drop"):
+            one_way = not edge.both_ways
         else:
             one_way = not self.interior and (
                 model.decoupled() or (door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a)
@@ -709,9 +708,9 @@ class GraphPage(QWidget):
         relayout.clicked.connect(self.relayout)
         self.group_box = QCheckBox("Group by original dungeon")
         self.group_box.toggled.connect(self._on_group)
-        self.stack_box = QCheckBox("Stack fitting rooms")
-        self.stack_box.setChecked(True)
-        self.stack_box.toggled.connect(self._on_stack)
+        self.join_box = QCheckBox("Join fitting rooms")
+        self.join_box.setChecked(True)
+        self.join_box.toggled.connect(self._on_join)
         self.spacing_slider = QSlider(Qt.Horizontal)
         self.spacing_slider.setRange(10, 200)
         self.spacing_slider.setValue(int(self.model.spacing))
@@ -736,7 +735,7 @@ class GraphPage(QWidget):
         self.labels_box.toggled.connect(self._on_labels)
         self.status = QLabel("")
         self.status.setMinimumWidth(50)
-        for widget in (fit, relayout, self.group_box, self.stack_box):
+        for widget in (fit, relayout, self.group_box, self.join_box):
             row.addWidget(widget)
         row.addWidget(QLabel("Spacing"))
         row.addWidget(self.spacing_slider)
@@ -758,8 +757,8 @@ class GraphPage(QWidget):
         self.model.group_by_dungeon = checked
         self.relayout()
 
-    def _on_stack(self, checked):
-        self.model.auto_stack = checked
+    def _on_join(self, checked):
+        self.model.auto_join = checked
         self.relayout()
 
     def _on_spacing(self, value):
@@ -827,7 +826,7 @@ class GraphPage(QWidget):
                 self.scene.addItem(hull)
                 self._hulls.append(hull)
 
-        lobbies = {x["door"]: x["lobby"] for x in model.lobby_doors}
+        lobbies = {x.door: x.lobby for x in model.lobby_doors}
         for tile in model.nodes():
             room = RoomItem(self, tile)
             doors = DoorsItem(self, tile)
@@ -858,26 +857,24 @@ class GraphPage(QWidget):
             else:
                 IconItem(self._doors[tile], self, door, x, y, icon)
 
-        for n in sorted(model.joined):
-            a, b = model.door_links[n]["door"], model.door_links[n]["linked_door"]
-            tile = self.model.rooms.node(a)
-            ax, ay = model.port(a)
-            bx, by = model.port(b)
-            cx, cy = model.pos[tile]
-            vertical = DIRECTIONS[door_direction(a)][0] == 0
-            SeamItem(self._doors[tile], (ax + bx) / 2 - cx, (ay + by) / 2 - cy, vertical, (a, b, n))
-
-        colours = link_colours(len(model.door_links))
-        for a, b, kind, n in model.edges():
-            if n in model.joined:
+        colours = dict(zip(model.door_links, link_colours(len(model.door_links))))
+        for edge in model.edges():
+            if edge.link in model.joined:
+                # Joined: a seam across the doorway instead of a line
+                tile = self.model.rooms.node(edge.a)
+                ax, ay = model.port(edge.a)
+                bx, by = model.port(edge.b)
+                cx, cy = model.pos[tile]
+                vertical = DIRECTIONS[door_direction(edge.a)][0] == 0
+                SeamItem(self._doors[tile], (ax + bx) / 2 - cx, (ay + by) / 2 - cy, vertical, edge)
                 continue
-            if kind.startswith("warp"):
+            if edge.kind == "warp":
                 colour = WARP_COLOUR
-            elif kind in ("drop", "hole", "hole_both"):
+            elif edge.kind in ("drop", "hole"):
                 colour = DROP_COLOUR
             else:
-                colour = colours[n] if n is not None else "#222"
-            link = LinkItem(self, a, b, n, kind, colour)
+                colour = colours.get(edge.link, "#222")
+            link = LinkItem(self, edge, colour)
             self.scene.addItem(link)
             self._links.append(link)
 
@@ -954,18 +951,18 @@ class GraphPage(QWidget):
         """Door under the mouse, found by geometry (dots are not separate items)."""
         model = self.model
         reach = max(1.0, 6 / self.view.zoom())
-        best = None
+        nearest, found = math.inf, None
         for tile, doors in self._doors.items():
             if tile not in model.pos:
                 continue
             x, y = model.pos[tile]
             if abs(scene_pos.x() - x) > doors.w / 2 + 10 or abs(scene_pos.y() - y) > doors.h / 2 + 10:
                 continue
-            for door, ox, oy, state in doors.dots:
-                distance = math.hypot(scene_pos.x() - x - ox, scene_pos.y() - y - oy)
-                if distance <= max(DOOR_RADIUS * DOOR_STYLES[state][1], reach) + 1 and (best is None or distance < best[0]):
-                    best = (distance, door)
-        return best[1] if best else None
+            for dot in doors.dots:
+                distance = math.hypot(scene_pos.x() - x - dot.x, scene_pos.y() - y - dot.y)
+                if distance <= max(DOOR_RADIUS * DOOR_STYLES[dot.state].scale, reach) + 1 and distance < nearest:
+                    nearest, found = distance, dot.door
+        return found
 
     def room_at(self, scene_pos):
         for tile, (x, y) in self.model.pos.items():
@@ -1011,10 +1008,7 @@ class GraphPage(QWidget):
             return
 
         press = {"kind": kind, "payload": payload, "pos": event.position(), "moved": False, "tile": None}
-        inside = kind == "edge" and (
-            payload[2] in self.model.joined or self.model.rooms.node(payload[0]) == self.model.rooms.node(payload[1])
-        )
-        if kind in ("card", "icon", "door") or inside:
+        if kind in ("card", "icon", "door") or (kind == "edge" and self._within_block(payload)):
             press["tile"] = self._room_of(kind, payload, scene_pos)
         elif kind == "edge" and self.room_at(scene_pos) is not None:
             # Dragging on a link over a room drags the room
@@ -1027,12 +1021,12 @@ class GraphPage(QWidget):
         if kind in ("door", "icon"):
             return self.model.rooms.node(payload)
         if kind == "edge":
-            return self.room_at(scene_pos) or (
-                self.model.rooms.node(payload[0])
-                if self.model.rooms.node(payload[0]) == self.model.rooms.node(payload[1]) or payload[2] in self.model.joined
-                else None
-            )
+            return self.room_at(scene_pos) or (self.model.rooms.node(payload.a) if self._within_block(payload) else None)
         return None
+
+    def _within_block(self, edge):
+        """True for an edge that does not leave its block: a joined link, or both ends on one node."""
+        return edge.link in self.model.joined or self.model.rooms.node(edge.a) == self.model.rooms.node(edge.b)
 
     def on_move(self, event):
         press = self._press
@@ -1052,8 +1046,8 @@ class GraphPage(QWidget):
             self.view.pan(delta.x(), delta.y())
             return
         zoom = self.view.zoom()
-        self.model.held = set(self.model.stack_of(press["tile"]))
-        self.model.move_stack(press["tile"], delta.x() / zoom, delta.y() / zoom)
+        self.model.held = set(self.model.block_of(press["tile"]))
+        self.model.move_block(press["tile"], delta.x() / zoom, delta.y() / zoom)
         self.update_positions()
 
     def on_release(self, event):
@@ -1064,7 +1058,7 @@ class GraphPage(QWidget):
         if press["moved"]:
             # Dropping does not pin
             if press["tile"] is not None:
-                self.model.unsettled.difference_update(self.model.stack_of(press["tile"]))
+                self.model.unsettled.difference_update(self.model.block_of(press["tile"]))
             return
         if press["kind"] == "door":
             self._door_clicked(press["payload"])
@@ -1143,21 +1137,23 @@ class GraphPage(QWidget):
                 text += f"   [{model.special_doors[payload]}]"
             focus = self.model.rooms.node(payload)
         elif kind == "edge":
-            text = f"{payload[0]}  ↔  {payload[1]}"
-            if payload[2] in model.joined:
-                text += "   (stacked — middle click to split)"
-            elif payload[2] is not None and model.join_offset(payload[0], payload[1]) is not None:
-                text += "   (middle click to stack)"
-            elif payload[2] is None and self.model.rooms.node(payload[0]) != self.model.rooms.node(payload[1]):
-                if payload[1].endswith(" landing"):
-                    text = f"{payload[0]}  →  {self.model.rooms.title(self.model.rooms.node(payload[1]))}"
-                text += "   (warp)" if "Warp" in payload[0] else "   (vanilla drop, assumed)"
+            edge = payload
+            text = f"{edge.a}  ↔  {edge.b}"
+            if edge.link in model.joined:
+                text += "   (joined — middle click to split)"
+            elif edge.link is not None and model.join_offset(edge.a, edge.b) is not None:
+                text += "   (middle click to join)"
+            elif edge.link is None and self.model.rooms.node(edge.a) != self.model.rooms.node(edge.b):
+                if edge.kind in ("warp", "hole"):
+                    # The far end is a port, not a door: name the room it lands in
+                    text = f"{edge.a}  →  {self.model.rooms.title(self.model.rooms.node(edge.b))}"
+                text += "   (warp)" if edge.kind == "warp" else "   (vanilla drop, assumed)"
             focus = self._focus
         elif kind == "card":
             if model.is_hidden_dark(payload.tile):
                 text = "Dark room"
             else:
-                text = f"{', '.join(self.model.rooms.regions(payload)[:4]) or self.model.rooms.title(payload)}   (EG {payload[0]},{payload[1]})"
+                text = f"{', '.join(self.model.rooms.regions(payload)[:4]) or self.model.rooms.title(payload)}   (EG {payload.x},{payload.y})"
             focus = payload
         elif kind == "icon":
             text = f"{payload}: {model.special_doors.get(payload, '')}"
@@ -1174,8 +1170,8 @@ class GraphPage(QWidget):
             for link in self._links:
                 if link.interior:
                     continue
-                a, b, n = link.payload
-                touches = focus is None or self.model.rooms.node(a) == focus or self.model.rooms.node(b) == focus
+                edge = link.payload
+                touches = focus is None or self.model.rooms.node(edge.a) == focus or self.model.rooms.node(edge.b) == focus
                 link.set_state(faded=not touches, strong=touches and focus is not None)
 
     # ------------------------------------------------------------ other buttons
@@ -1183,10 +1179,9 @@ class GraphPage(QWidget):
     def _middle(self, kind, payload):
         model = self.model
         if kind == "edge":
-            a, b, n = payload
-            if n is None:
+            if payload.link is None:
                 return
-            message = model.toggle_stack(a, b, n)
+            message = model.toggle_join(payload.link)
             if message:
                 self.status.setText(message)
             else:
@@ -1208,8 +1203,8 @@ class GraphPage(QWidget):
                 model.annotate(payload, icon, sprites.all_dungeon_lobbies)
                 self.rebuild()
         elif kind == "edge":
-            if payload[2] is not None:
-                model.remove_link(payload[2])
+            if payload.link is not None:
+                model.remove_link(payload.link)
                 self.rebuild()
         elif kind == "icon":
             model.remove_annotation(payload)
@@ -1235,7 +1230,7 @@ class GraphPage(QWidget):
 
     def set_pinned(self, tile, pinned):
         self.model.set_pinned(tile, pinned)
-        for member in self.model.stack_of(tile):
+        for member in self.model.block_of(tile):
             if member in self._rooms:
                 self._rooms[member].pinned = pinned
                 self._rooms[member].update()
@@ -1338,11 +1333,11 @@ class GraphPage(QWidget):
         model = self.model
         if current_tile not in model.tiles:
             return
-        previous = model.player[0] if model.player else None
+        previous = model.player.node if model.player else None
         current_tile = model.locate(current_tile, x, y)
         if current_tile is None:
             return  # part not known yet; see GraphModel.locate
-        model.player = (current_tile, x, y)
+        model.player = Player(current_tile, x, y)
         if current_tile not in self._rooms:
             self.redraw_canvas()  # newly shown part
         for tile in {previous, current_tile}:
@@ -1363,7 +1358,7 @@ class GraphPage(QWidget):
     def clear_player(self):
         model = self.model
         if model.player is not None:
-            tile = model.player[0]
+            tile = model.player.node
             model.player = None
             if tile in self._rooms:
                 self._rooms[tile].update()

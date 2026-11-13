@@ -288,8 +288,8 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, seen):
             if eg_tile not in dp_content.tiles:
                 dp_content.auto_add_tile(eg_tile, was_lit=not is_dark, player=(current_x, current_y))
             else:
-                if not dp_content.tiles[eg_tile]["has_been_lit"] and not is_dark:
-                    dp_content.tiles[eg_tile]["has_been_lit"] = True
+                if not dp_content.tiles[eg_tile].has_been_lit and not is_dark:
+                    dp_content.tiles[eg_tile].has_been_lit = True
                     dp_content.redraw_canvas()
 
             if eg_tile not in dark_tiles or not is_dark:

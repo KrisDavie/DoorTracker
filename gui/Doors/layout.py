@@ -1,4 +1,4 @@
-"""Layout solvers over stacks as rigid bodies. No knowledge of doors or the model."""
+"""Layout solvers over blocks as rigid bodies. No knowledge of doors or the model."""
 
 import math
 import random
@@ -16,14 +16,37 @@ LINK_PULL_MAX = 10  # stretch at which link pull stops growing linearly
 
 
 @dataclass
+class Damping:
+    """Step damping of one body while settling. The caller keeps it between calls."""
+
+    scale: float = 1.0  # fraction of each step taken
+    dx: float = 0.0  # last step
+    dy: float = 0.0
+
+
+@dataclass
 class Body:
-    """One stack as the solvers see it. Positions are of its origin."""
+    """One block as the solvers see it. Positions are of its origin."""
 
     rects: list  # rooms as (centre x, centre y, half width, half height), relative to the origin
     mobility: float  # 0 fixed .. 1 free
     weight: int  # room count
-    damping: list  # [step scale, last dx, last dy]; the caller keeps it between calls
+    damping: Damping
     group: object = None  # bodies sharing a group attract when grouping is on
+
+
+@dataclass(frozen=True)
+class Spring:
+    """A link between two bodies, pulling its two ports together."""
+
+    a: int  # body index
+    ax: float  # port, relative to the body's origin
+    ay: float
+    b: int
+    bx: float
+    by: float
+    facing_a: tuple = None  # unit vector the door faces; None for stairs, drops and warps
+    facing_b: tuple = None
 
 
 def enclosing_circle(points):
@@ -71,14 +94,13 @@ def link_offset(facing_a, facing_b, gap=LINK_GAP):
     return None
 
 
-def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=False, cold=False, circles=False, grouped=False):
+def relax(bodies, xs, ys, springs, *, iterations, spacing, leaf_pull, improve=False, cold=False, circles=False, grouped=False):
     """Force solver.
 
-    links: (body a, port ax, ay, body b, port bx, by, facing a, facing b); ports relative to each
-    origin, facings as unit vectors or None.
     Returns (xs, ys, total link length, mean movement per iteration).
     """
-    springs = [(a, ax, ay, b, bx, by, link_offset(da, db)) for a, ax, ay, b, bx, by, da, db in links]
+    # Where each spring wants port b relative to port a; None if neither door has a direction
+    wants = [link_offset(spring.facing_a, spring.facing_b) for spring in springs]
     gap = LINK_GAP
     n = len(bodies)
     start_x, start_y = xs[:], ys[:]
@@ -103,10 +125,10 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
     mid_y = [(e[2] + e[3]) / 2 for e in extents]
     radius = [math.hypot(e[1] - e[0], e[3] - e[2]) / 2 for e in extents]
 
-    incident = [[] for _ in range(n)]
-    for spring in springs:
-        incident[spring[0]].append(spring)
-        incident[spring[3]].append(spring)
+    incident = [[] for _ in range(n)]  # per body: indices of its springs
+    for k, spring in enumerate(springs):
+        incident[spring.a].append(k)
+        incident[spring.b].append(k)
 
     groups = []
     if grouped:
@@ -128,7 +150,7 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
         circles = []
 
     def repulsion():
-        """Push apart stacks closer than the reach."""
+        """Push apart blocks closer than the reach."""
         # Circle mode still uses wall-to-wall contact at close range
         near = CONTACT_RANGE if circles else far
         for a in range(n):
@@ -198,7 +220,7 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
                 ys[b] += uy / norm * push * share_b
 
     def overlap(a, b):
-        """Shortest axis-aligned move of stack b that clears stack a; (0, 0) if clear."""
+        """Shortest axis-aligned move of block b that clears block a; (0, 0) if clear."""
         ea, eb = extents[a], extents[b]
         sx, sy = xs[b] - xs[a], ys[b] - ys[a]
         if (
@@ -267,9 +289,10 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
 
     def cost(i):
         total = 0.0
-        for ia, aox, aoy, ib, box, boy, want in incident[i]:
-            dx = xs[ib] + box - xs[ia] - aox
-            dy = ys[ib] + boy - ys[ia] - aoy
+        for k in incident[i]:
+            s, want = springs[k], wants[k]
+            dx = xs[s.b] + s.bx - xs[s.a] - s.ax
+            dy = ys[s.b] + s.by - ys[s.a] - s.ay
             if want is not None:
                 dx -= want[0]
                 dy -= want[1]
@@ -277,14 +300,14 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
         return total
 
     degree = [len(x) for x in incident]
-    # Satellite pull: links of a stack connected to only one other stack pull leaf_pull**3 harder
+    # Satellite pull: links of a block connected to only one other block pull leaf_pull**3 harder
     neighbours = [set() for _ in range(n)]
     for spring in springs:
-        neighbours[spring[0]].add(spring[3])
-        neighbours[spring[3]].add(spring[0])
+        neighbours[spring.a].add(spring.b)
+        neighbours[spring.b].add(spring.a)
     pull_limit = [
-        LINK_PULL_MAX * (leaf_pull**3 if len(neighbours[sp[0]]) == 1 or len(neighbours[sp[3]]) == 1 else 1.0)
-        for sp in springs
+        LINK_PULL_MAX * (leaf_pull**3 if len(neighbours[spring.a]) == 1 or len(neighbours[spring.b]) == 1 else 1.0)
+        for spring in springs
     ]
     weight = [body.weight for body in bodies]
     total_weight = sum(weight)
@@ -297,9 +320,10 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
             prev_x, prev_y = xs[:], ys[:]
         tx = [0.0] * n
         ty = [0.0] * n
-        for k, (ia, aox, aoy, ib, box, boy, want) in enumerate(springs):
-            pax, pay = xs[ia] + aox, ys[ia] + aoy
-            pbx, pby = xs[ib] + box, ys[ib] + boy
+        for k, spring in enumerate(springs):
+            ia, ib, want = spring.a, spring.b, wants[k]
+            pax, pay = xs[ia] + spring.ax, ys[ia] + spring.ay
+            pbx, pby = xs[ib] + spring.bx, ys[ib] + spring.by
             if want is None:
                 # No direction: target one card apart
                 dx, dy = pbx - pax, pby - pay
@@ -346,7 +370,7 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
             dy *= mobility[i]
             moves.append((dx, dy))
             fastest = max(fastest, math.hypot(dx, dy))
-        # Cold: scale all moves by one factor; per-stack caps break momentum balance and cause drift
+        # Cold: scale all moves by one factor; per-block caps break momentum balance and cause drift
         together = min(1.0, temperature / fastest) if cold and fastest else 1.0
         for i, (dx, dy) in enumerate(moves):
             step = math.hypot(dx, dy)
@@ -359,26 +383,26 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
         repulsion()
         separate(1.0 if cold else 0.3 + 0.5 * (1 - cooling))
         if cold:
-            # Half steps stop two stacks swapping places. Adaptive damping: halve a stack's
+            # Half steps stop two blocks swapping places. Adaptive damping: halve a block's
             # step scale when it reverses direction, grow it while it keeps going.
             for i in range(n):
                 dx = (xs[i] - prev_x[i]) / 2
                 dy = (ys[i] - prev_y[i]) / 2
                 state = damping[i]
-                if dx * state[1] + dy * state[2] < 0:
-                    state[0] = max(0.02, state[0] * 0.5)
+                if dx * state.dx + dy * state.dy < 0:
+                    state.scale = max(0.02, state.scale * 0.5)
                 else:
-                    state[0] = min(1.0, state[0] * 1.15)
-                state[1], state[2] = dx, dy
-                xs[i] = prev_x[i] + dx * state[0]
-                ys[i] = prev_y[i] + dy * state[0]
+                    state.scale = min(1.0, state.scale * 1.15)
+                state.dx, state.dy = dx, dy
+                xs[i] = prev_x[i] + dx * state.scale
+                ys[i] = prev_y[i] + dy * state.scale
 
     for _ in range(80):
         if not separate(1.0):
             break
 
     if improve:
-        # Relocation: try each stack at the spot each of its links wants; keep it if total length drops
+        # Relocation: try each block at the spot each of its links wants; keep it if total length drops
         def settle(i):
             for _ in range(40):
                 clear = True
@@ -408,12 +432,13 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
                 home = (xs[i], ys[i])
                 spots = []
                 sum_x = sum_y = 0.0
-                for ia, aox, aoy, ib, box, boy, want in incident[i]:
+                for k in incident[i]:
+                    s, want = springs[k], wants[k]
                     vx, vy = want if want is not None else (0.0, gap * 2)
-                    if ib == i and ia != i:
-                        spot = (xs[ia] + aox + vx - box, ys[ia] + aoy + vy - boy)
-                    elif ia == i and ib != i:
-                        spot = (xs[ib] + box - vx - aox, ys[ib] + boy - vy - aoy)
+                    if s.b == i and s.a != i:
+                        spot = (xs[s.a] + s.ax + vx - s.bx, ys[s.a] + s.ay + vy - s.by)
+                    elif s.a == i and s.b != i:
+                        spot = (xs[s.b] + s.bx - vx - s.ax, ys[s.b] + s.by - vy - s.ay)
                     else:
                         continue
                     spots.append(spot)
@@ -445,13 +470,13 @@ def relax(bodies, xs, ys, links, *, iterations, spacing, leaf_pull, improve=Fals
 
 
 
-def stress(boxes, movable, xs, ys, links, *, spacing):
-    """Place stacks by stress majorization (Gansner, Koren and North 2004).
+def stress(boxes, movable, xs, ys, springs, *, spacing):
+    """Place blocks by stress majorization (Gansner, Koren and North 2004).
 
-    Ideal distance between two stacks is the shortest path through links. Directly linked stacks
+    Ideal distance between two blocks is the shortest path through links. Directly linked blocks
     also get a target offset from their door directions. Does not resolve overlaps.
 
-    boxes: bounding box of each stack as (left, top, right, bottom) relative to its origin.
+    boxes: bounding box of each block as (left, top, right, bottom) relative to its origin.
     Returns (xs, ys) of the origins.
     """
     n = len(boxes)
@@ -463,10 +488,11 @@ def stress(boxes, movable, xs, ys, links, *, spacing):
     wants = {}  # (i, j), i < j -> target centre offsets, one per link
     loose = {}  # (i, j) linked without a direction (stairs, drops, warps)
     ends = []
-    for i, ax, ay, j, bx, by, da, db in links:
-        if i > j:
-            i, ax, ay, j, bx, by, da, db = j, bx, by, i, ax, ay, db, da
-        port = [(ax - centre[i][0], ay - centre[i][1]), (bx - centre[j][0], by - centre[j][1])]
+    for s in springs:
+        if s.a > s.b:
+            s = Spring(s.b, s.bx, s.by, s.a, s.ax, s.ay, s.facing_b, s.facing_a)
+        i, j, da, db = s.a, s.b, s.facing_a, s.facing_b
+        port = [(s.ax - centre[i][0], s.ay - centre[i][1]), (s.bx - centre[j][0], s.by - centre[j][1])]
         ends.append((i, j, port[0], port[1]))
         nx = (da[0] if da else 0) - (db[0] if db else 0)
         ny = (da[1] if da else 0) - (db[1] if db else 0)
@@ -513,7 +539,7 @@ def stress(boxes, movable, xs, ys, links, *, spacing):
             if dist[i][j] < far:
                 group[i] = group[j]
                 break
-    pairs = [[] for _ in range(n)]  # per stack: (other, weight, ideal distance, target offset or None)
+    pairs = [[] for _ in range(n)]  # per block: (other, weight, ideal distance, target offset or None)
     for i in range(n):
         for j in range(n):
             if i == j or dist[i][j] == far:
@@ -573,7 +599,7 @@ def stress(boxes, movable, xs, ys, links, *, spacing):
 
     start_x = [xs[i] + centre[i][0] for i in range(n)]
     start_y = [ys[i] + centre[i][1] for i in range(n)]
-    rng = random.Random(n * 1000 + len(links))
+    rng = random.Random(n * 1000 + len(springs))
     spread = (sum(size) / max(n, 1) * 2 + gap) * math.sqrt(n)
     best = None
     for attempt in range(8 if n <= 40 else 5 if n <= 80 else 3):
