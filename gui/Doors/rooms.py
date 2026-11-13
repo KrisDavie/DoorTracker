@@ -1,6 +1,7 @@
 """Static room data derived from the door tables: supertiles, their parts, doors, warps and holes."""
 
 from dataclasses import dataclass, replace
+from enum import Enum
 from types import MappingProxyType
 from typing import NamedTuple
 
@@ -51,13 +52,23 @@ class DoorlessRoom:
     y: float
 
 
+class EdgeKind(Enum):
+    """How two doors are connected."""
+
+    LINK = "link"  # tracked: found by the player or the tracker
+    INTERIOR = "interior"  # two doors inside one supertile; never shuffled
+    DROP = "drop"  # a fall from one door to another, as in vanilla
+    WARP = "warp"  # a warp tile; never shuffled
+    HOLE = "hole"  # a fall with no door at either end, as in vanilla
+
+
 @dataclass(frozen=True)
 class RoomLink:
     """A warp or unmarked hole between two supertiles."""
 
     a: str  # its ends, as names in ROOM_PORTS
     b: str
-    kind: str  # warp or hole
+    kind: EdgeKind  # WARP or HOLE
     both_ways: bool
 
 
@@ -198,7 +209,7 @@ def _build_room_links():
         return out
 
     ports, found = {}, {}
-    for kind, pairs in (("warp", dungeon_warps), ("hole", falldown_pits)):
+    for kind, pairs in ((EdgeKind.WARP, dungeon_warps), (EdgeKind.HOLE, falldown_pits)):
         for name, target in pairs:
             if name in MANUAL_DROPS or name in DOORS:
                 continue  # door-to-door drop, handled elsewhere

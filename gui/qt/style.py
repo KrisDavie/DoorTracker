@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from PIL import ImageColor
 
+from gui.Doors.graph_model import DoorState
+
 DOOR_RADIUS = 5.5  # an unexplored door; linked and interior doors are drawn smaller
 
 DUNGEON_COLOURS = {
@@ -43,9 +45,9 @@ class DoorStyle:
 
 # How a door dot is drawn, by its state
 DOOR_STYLES = {
-    "open": DoorStyle(DOOR_OPEN, 1.0, 1.5),
-    "linked": DoorStyle(DOOR_LINKED, 0.7, 1),
-    "interior": DoorStyle(DOOR_INTERIOR, 0.7, 1),
+    DoorState.OPEN: DoorStyle(DOOR_OPEN, 1.0, 1.5),
+    DoorState.LINKED: DoorStyle(DOOR_LINKED, 0.7, 1),
+    DoorState.INTERIOR: DoorStyle(DOOR_INTERIOR, 0.7, 1),
 }
 
 
