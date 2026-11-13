@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 import data.doors_sprite_data as sprites
-from data.doors_data import eg_tile_multiuse
+from data.doors_data import dungeon_lobbies, eg_tile_multiuse
 from data.vanilla_data import vanilla_layout_optimized
 from data.worlds_data import dungeon_worlds
 from gui.Doors import rooms
@@ -198,6 +198,18 @@ class MainWindow(QMainWindow):
                 data = parse_dr_spoiler(fh)
         if "Agahnims_Tower" in data:
             data["Castle_Tower"] = data.pop("Agahnims_Tower")
+        # A spoiler lists lobbies apart from the dungeons: file each under the dungeon that owns it
+        for lobby, door in (data.pop("lobbies", None) or {}).items():
+            if not isinstance(door, str):
+                continue  # the parser's entry also has its empty default fields
+            if door not in rooms.DOORS:
+                door = door.rsplit(" (", 1)[0]
+            dungeon = next((d for d, world in dungeon_worlds.items() if lobby in dungeon_lobbies.get(world, ())), None)
+            if dungeon is None or door not in rooms.DOORS:
+                print(f"Spoiler lobby not recognised: {lobby}: {door}")
+                continue
+            data[dungeon].setdefault("lobby_doors", []).append({"door": door, "lobby": lobby})
+            data[dungeon].setdefault("special_doors", {})[door] = lobby
         for dungeon, dungeon_data in data.items():
             if dungeon in self.pages:
                 self.pages[dungeon].load_yaml(dungeon_data)

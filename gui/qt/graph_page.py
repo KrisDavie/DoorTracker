@@ -1154,7 +1154,10 @@ class GraphPage(QWidget):
                 text += "   (warp)" if "Warp" in payload[0] else "   (vanilla drop, assumed)"
             focus = self._focus
         elif kind == "card":
-            text = f"{', '.join(self.model.rooms.regions(payload)[:4]) or self.model.rooms.title(payload)}   (EG {payload[0]},{payload[1]})"
+            if model.is_hidden_dark(payload.tile):
+                text = "Dark room"
+            else:
+                text = f"{', '.join(self.model.rooms.regions(payload)[:4]) or self.model.rooms.title(payload)}   (EG {payload[0]},{payload[1]})"
             focus = payload
         elif kind == "icon":
             text = f"{payload}: {model.special_doors.get(payload, '')}"
@@ -1253,6 +1256,8 @@ class GraphPage(QWidget):
             QMessageBox.No,
         )
         if answer == QMessageBox.Yes and self.model.remove_tile(tile):
+            if self.selected_door in DOORS and DOORS[self.selected_door].tile == tile:
+                self.cancel_selection()
             self.rebuild()
 
     def add_tile_from_picker(self, x, y):
