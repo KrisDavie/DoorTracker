@@ -16,3 +16,12 @@ dependencies = [
 [tool.uv]
 # Not packaged: top-level gui/, data/ and sni/ would install under those names
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

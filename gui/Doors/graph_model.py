@@ -192,7 +192,8 @@ class GraphModel:
         self._optimise_join_order()
         before = self.bounds() if self.pos else None
         self._layout(full=True)
-        if before is not None:
+        if before is not None and not self.fixed:
+            # Pinned nodes already hold the map in place; recentring would move them
             self._keep_centre(before)
         self._refresh_door_sets()
         return before is None
