@@ -664,7 +664,7 @@ class GraphView(QGraphicsView):
             super().keyPressEvent(event)
 
     def leaveEvent(self, event):
-        self.page.set_hover(None, None)
+        self.page.set_hover(Hit())
         super().leaveEvent(event)
 
 

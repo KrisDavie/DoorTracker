@@ -1,6 +1,6 @@
 """Mouse handling in the map view, driven with real mouse events."""
 
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from gui.qt.graph_page import Hit
@@ -45,6 +45,15 @@ def point_on(page, wanted):
         if page.hit_at(At(point)) == wanted:
             return point
     raise AssertionError(f"nowhere to click on {wanted}")
+
+
+def test_the_mouse_leaving_the_map_clears_the_hover(window, app):
+    page = page_with_map(window, app)
+    node = next(iter(page._rooms))
+    page.set_hover(Hit(node=node))
+    assert page.status.text() != ""
+    app.sendEvent(page.view, QEvent(QEvent.Leave))
+    assert page.status.text() == ""
 
 
 def test_linking_two_doors_by_clicking_then_removing_the_link(window, app):
