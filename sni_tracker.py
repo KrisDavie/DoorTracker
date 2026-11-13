@@ -7,6 +7,7 @@ race_rom_warning, highlight_dungeon, select_dungeon, pages), so nothing here dep
 import argparse
 import asyncio
 import math
+import traceback
 
 import grpc.aio
 
@@ -68,13 +69,16 @@ def des_data(mem_request_names, mem_data):
 
 def find_closest_door(x, y, tile, layer, closest_distance=128):
     #  X and Y are none when dropping in a hole
+    # door_coordinates is a defaultdict; [] would insert the key
+    everything = door_coordinates.get(tile)
+    if not everything:
+        return None
     try:
-        doors = door_coordinates[tile]  # dict of door coordinates
         # Filter by layer
-        doors = [door for door in doors if doors_data[door["name"]][2] == layer]  # type: ignore
+        doors = [door for door in everything if doors_data[door["name"]][2] == layer]  # type: ignore
         if len(doors) == 0:
             print(f"No doors found for {tile} layer {layer}")
-            doors = door_coordinates[tile]
+            doors = everything
     except KeyError:
         return None
     closest_door = None
@@ -111,6 +115,13 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
                 print(f"Auto-tracking lost its connection: {details}")
                 last_error = details
             ui.set_title(f"Jank Door Tracker - Reconnecting... ({details.split(chr(59))[0][:70]})")
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # Not a connection error: log it and restart the session
+            print("Auto-tracking hit an error and is starting again:")
+            traceback.print_exc()
+            ui.set_title(f"Jank Door Tracker - Tracking error, restarting ({type(error).__name__}: {error})")
         finally:
             await channel.close()
         resumed = True

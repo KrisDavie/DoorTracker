@@ -408,11 +408,11 @@ def door_fraction(door):
 def tile_door_names(tile):
     """Doors of a supertile (x, y), or of one part of it (x, y, part)."""
     base = tile[:2]
-    if base not in door_coordinates:
-        return []
-    names = [d["name"] for d in door_coordinates[base]]
-    if len(tile) == 3 and SPLIT_ROOMS and len(PARTS[base]) > 1:
-        mine = set(PARTS[base][tile[2]]) if tile[2] < len(PARTS[base]) else set()
+    # door_coordinates is a defaultdict; [] would insert the key
+    names = [d["name"] for d in door_coordinates.get(base) or []]
+    parts = PARTS.get(base, [])
+    if len(tile) == 3 and SPLIT_ROOMS and len(parts) > 1:
+        mine = set(parts[tile[2]]) if tile[2] < len(parts) else set()
         return [name for name in names if name in mine]
     return names
 
