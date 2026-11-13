@@ -1,5 +1,6 @@
 from data.worlds_data import World
 from collections import defaultdict
+from types import MappingProxyType
 from typing import Union, List, Tuple, Dict, DefaultDict
 
 
@@ -9542,3 +9543,6 @@ simple_tiles = {
     (0, 13),
     (0, 14),
 }
+
+# Read-only from here: a defaultdict would insert a key on every missed lookup
+door_coordinates = MappingProxyType(dict(door_coordinates))

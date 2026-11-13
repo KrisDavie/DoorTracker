@@ -64,7 +64,6 @@ def des_data(mem_request_names, mem_data):
 
 def find_closest_door(x, y, tile, layer, closest_distance=128):
     #  X and Y are none when dropping in a hole
-    # door_coordinates is a defaultdict; [] would insert the key
     everything = door_coordinates.get(tile)
     if not everything:
         return None

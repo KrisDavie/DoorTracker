@@ -1,508 +1,48 @@
-"""Map model: rooms, links, stacks and layout. No UI code.
+"""Map model for one dungeon tab: tracked rooms and links, stacks, positions. No UI code.
 
+Static room data is in rooms.py and the solvers are in layout.py.
 Save format is compatible with the original grid tracker.
 """
 
-import math
 import random
 from collections import defaultdict, deque
-from pathlib import Path
-
-from PIL import ImageColor
 
 from data.doors_data import (
     complex_tiles,
     dark_tiles,
-    door_coordinates,
     door_coordinates_key,
-    doors_data,
     doors_to_regions,
-    dungeon_abv_to_name,
     dungeon_lobbies,
-    dungeon_warps,
-    falldown_pits,
     interior_doors,
-    logical_connections,
     mandatory_tiles,
     regions_to_doors,
     simple_tiles,
-    vanilla_logical_connections,
 )
-from data.room_bounds import room_bounds
 from data.worlds_data import dungeon_worlds
-
-ITEM_SHEET_PATH = Path(__file__).parent.parent.parent / "data" / "Doors_Sheet.png"
+from gui.Doors import layout, rooms
+from gui.Doors.layout import CONTACT_RANGE, LINK_GAP, REPEL_RANGE, enclosing_circle
+from gui.Doors.rooms import (
+    DEFAULT_DOORS,
+    DIRECTIONS,
+    ENTRANCE_ONLY_DOORS,
+    INTERIOR_DOORS,
+    MANUAL_DROPS,
+    MANUAL_REGIONS_ADDED,
+    ROOM_LINKS,
+    VALID_AUTO_LINKS,
+    door_direction,
+    door_fraction,
+    part_areas,
+    supertile,
+    tile_dungeon,
+)
 
 # Geometry, in world units (canvas pixels at zoom 1.0)
 THUMB = 128  # supertile thumbnail edge
 COMPACT_W = 104  # pass-through tiles collapse to a pill
 COMPACT_H = 26
-DOOR_RADIUS = 5.5  # an unexplored door; linked and interior doors are drawn smaller
-LINK_GAP = 46  # preferred door-to-door distance of a link
-MIN_GAP = 14  # minimum block spacing during layout search
-CONTACT_RANGE = 44  # stiff repulsion inside this distance
-CONTACT_STRENGTH = 0.5
-HARD_GAP = 4  # minimum spacing while settling
-REPEL_RANGE = 60  # default repulsion reach (Spacing slider)
-REPEL_STRENGTH = 0.12  # fraction of the shortfall corrected per step
-LINK_PULL_MAX = 10  # stretch at which link pull stops growing linearly
 STACK_GAP = 4  # gap between stacked rooms
 SNAP = THUMB / 8  # grid for stacked rooms along the shared wall
-
-DIRECTIONS = {"No": (0, -1), "So": (0, 1), "We": (-1, 0), "Ea": (1, 0)}
-VALID_AUTO_LINKS = [{"So", "No"}, {"Ea", "We"}, {"Up", "Dn"}, {"Up"}, {"Dn"}]
-
-INTERIOR_DOORS = set()
-for _pair in interior_doors:
-    INTERIOR_DOORS.update(_pair)
-
-# Doors that only exist as a way into the dungeon, drawn as entrances rather than ports
-ENTRANCE_ONLY_DOORS = ("Sanctuary Mirror Route", "Sewer Drop")
-
-MANUAL_REGIONS_ADDED = {
-    "Eastern Hint Tile WN": "Eastern Hint Tile Blocked Path",
-    "Ice Dead End WS": "Ice Big Key",
-}
-
-MANUAL_DROPS = {
-    "Ice Bomb Drop Hole": "Ice Stalfos Hint Drop Entrance",
-    "Ice Crystal Block Hole": "Ice Switch Room Drop Entrance",
-    "Ice Falling Square Hole": "Ice Tall Hint Drop Entrance",
-    "Ice Freezors Hole": "Ice Big Chest View Drop Entrance",
-    "Ice Antechamber Hole": "Ice Boss Drop Entrance",
-    "PoD Pit Room Bomb Hole": "PoD Basement Ledge Drop Entrance",
-    "PoD Pit Room Freefall": "PoD Stalfos Basement Drop Entrance",
-    "Swamp Attic Left Pit": "Swamp West Ledge Drop Entrance",
-    "Swamp Attic Right Pit": "Swamp Barrier Ledge Drop Entrance",
-    "Skull Final Drop Hole": "Skull Boss Drop Entrance",
-    "Mire Torches Bottom Holes": "Mire Warping Pool Drop Entrance",
-    "Mire Torches Top Holes": "Mire Conveyor Barrier Drop Entrance",
-    "Mire Attic Hint Hole": "Mire BK Chest Ledge Drop Entrance",
-    "GT Bob's Room Hole": "GT Ice Armos Drop Entrance",
-    "GT Falling Torches Hole": "GT Staredown Drop Entrance",
-    "GT Moldorm Hole": "GT Moldorm Pit Drop Entrance",
-}
-
-DEFAULT_DOORS = {}
-for _door_set in [logical_connections, interior_doors, falldown_pits, dungeon_warps, vanilla_logical_connections]:
-    DEFAULT_DOORS.update(_door_set)
-DEFAULT_DOORS.update(MANUAL_DROPS)
-
-DUNGEON_COLOURS = {
-    "Hyrule_Castle": "#566573",
-    "Eastern_Palace": "#2e8b57",
-    "Desert_Palace": "#b9892b",
-    "Tower_of_Hera": "#b4532a",
-    "Castle_Tower": "#8e5bb5",
-    "Palace_of_Darkness": "#5b3f96",
-    "Swamp_Palace": "#2878b5",
-    "Skull_Woods": "#6b8e23",
-    "Thieves_Town": "#8b5a2b",
-    "Ice_Palace": "#3aa6c9",
-    "Misery_Mire": "#8f8f2a",
-    "Turtle_Rock": "#c0392b",
-    "Ganons_Tower": "#2c2c34",
-}
-UNKNOWN_DUNGEON_COLOUR = "#666666"
-
-BACKGROUND = "#eef0f3"
-DOOR_OPEN = "#1fd655"
-DOOR_LINKED = "#9aa0a6"
-DOOR_INTERIOR = "#1b2a8a"
-DOOR_SELECTED = "#ff9800"
-PLAYER = "#e60000"
-EDGE_FADED = "#c9cdd4"
-WARP_COLOUR = "#7b4fc4"
-DROP_COLOUR = "#4a4f57"
-
-# Rooms with no doors. region: (supertile, dungeon, position in picture 0..1)
-DOORLESS_ROOMS = {
-    "Ice Fairy": ((15, 4), "Ice_Palace", (0.75, 0.25)),
-    "Eastern Fairies": ((9, 8), "Eastern_Palace", (0.5, 0.31)),
-    "Hera Fairies": ((7, 10), "Tower_of_Hera", (0.27, 0.25)),
-}
-DOORLESS_TILES = {tile: (region, dungeon) for region, (tile, dungeon, place) in DOORLESS_ROOMS.items()}
-
-# Known warp tile positions. warp: (tile, landing), each 0..1 in its supertile picture
-WARP_SPOTS = {
-    # Under the moving spikes; lands at the right of the Firesnake room
-    "GT Spike Crystals Warp": ((0.885, 0.26), (0.89, 0.265)),
-}
-
-
-def _build_room_links():
-    """Warps and unmarked holes as (ports, links). Ends are regions, not doors, so each gets a synthetic port."""
-    home = {}
-    for region, doors in regions_to_doors.items():
-        for name in doors:
-            home.setdefault(name, []).append(region)
-
-    def spot(regions):
-        """(tile, x, y, door) at the mean position of the regions' doors, or None."""
-        points, names = {}, {}
-        for region in regions:
-            if region in DOORLESS_ROOMS:
-                tile, dungeon, place = DOORLESS_ROOMS[region]
-                return tile, place[0], place[1], None
-            for name in regions_to_doors.get(region, []):
-                if name in door_coordinates_key:
-                    tile, list_pos = door_coordinates_key[name]
-                    coords = door_coordinates[tile][list_pos]
-                    points.setdefault(tile, []).append((coords["x"] / 512, coords["y"] / 512))
-                    names.setdefault(tile, name)
-        if len(points) != 1:
-            return None
-        tile, found = next(iter(points.items()))
-        return tile, sum(p[0] for p in found) / len(found), sum(p[1] for p in found) / len(found), names[tile]
-
-    def block(place):
-        """(supertile, part) of a spot."""
-        return place[0], DOOR_PART.get(place[3], 0)
-
-    # beside: regions joined in-room. onward: region -> warp targets
-    beside, onward = {}, {}
-    for name, target in logical_connections:
-        for region in home.get(name, []):
-            beside.setdefault(region, set()).add(target)
-            beside.setdefault(target, set()).add(region)
-    for name, target in dungeon_warps:
-        for region in home.get(name, []):
-            onward.setdefault(region, []).append(target)
-
-    def place_of(region):
-        """Spot for a region; a doorless region takes the spot of one it connects to in-room."""
-        seen, queue = {region}, [region]
-        while queue:
-            current = queue.pop(0)
-            place = spot([current])
-            if place is not None:
-                return place
-            for other in sorted(beside.get(current, ())):
-                if other not in seen:
-                    seen.add(other)
-                    queue.append(other)
-        return None
-
-    def landings(target):
-        """Spots a warp or hole leads to, following warps through regions that have no spot."""
-        seen, queue, out = {target}, [target], []
-        while queue:
-            region = queue.pop()
-            place = place_of(region)
-            if place is not None:
-                out.append(place)
-                continue
-            for further in onward.get(region, []):
-                if further not in seen:
-                    seen.add(further)
-                    queue.append(further)
-        return out
-
-    ports, found = {}, {}
-    for kind, pairs in (("warp", dungeon_warps), ("hole", falldown_pits)):
-        for name, target in pairs:
-            if name in MANUAL_DROPS or name in door_coordinates_key:
-                continue  # door-to-door drop, handled elsewhere
-            start = next((p for p in map(place_of, home.get(name, [])) if p is not None), None)
-            if start is None:
-                continue
-            for end in landings(target):
-                if start[0] == end[0]:
-                    continue  # same supertile: see _build_parts
-                # Keyed by part: two warps can join the same pair of supertiles
-                found.setdefault((block(start), block(end), kind), (name, start, end))
-    links = []
-    for (ta, tb, kind), (name, start, end) in found.items():
-        both_ways = (tb, ta, kind) in found
-        if both_ways and (tb, ta) < (ta, tb):
-            continue  # the reverse warp covers this pair
-        a, b = name, f"{name} landing"
-        if name in WARP_SPOTS:
-            (sx, sy), (ex, ey) = WARP_SPOTS[name]
-            start, end = (start[0], sx, sy, start[3]), (end[0], ex, ey, end[3])
-        ports[a], ports[b] = start, end
-        links.append({"a": a, "b": b, "kind": kind, "both_ways": both_ways})
-    return ports, links
-
-
-ROOM_PORTS, ROOM_LINKS = {}, []
-
-
-SPLIT_ROOMS = True  # follows the "Split Partitioned Rooms" setting
-
-
-# Never split: Ice Cross (push blocks), Sewers Rat Path (drop landing), Ice Freezors (bomb jump)
-ONE_PLACE = {(14, 1), (1, 1), (14, 7)}
-
-
-def _build_parts():
-    """Split each supertile into parts you cannot walk between.
-
-    Doors share a part when their regions are joined by a logical connection, an interior door or
-    an in-supertile warp. Drops do not join. Returns (parts by supertile, part index by door).
-    """
-    home = {}
-    for region, names in regions_to_doors.items():
-        for name in names:
-            home.setdefault(name, []).append(region)
-
-    def region_tile(region):
-        tiles = {door_coordinates_key[d][0] for d in regions_to_doors.get(region, []) if d in door_coordinates_key}
-        if not tiles:
-            return None  # doorless region: belongs to whatever it connects
-        return next(iter(tiles)) if len(tiles) == 1 else "several"
-
-    neighbours = {}
-
-    def connect(a, b):
-        neighbours.setdefault(a, set()).add(b)
-        neighbours.setdefault(b, set()).add(a)
-
-    for exit_name, region in list(logical_connections) + list(vanilla_logical_connections):
-        if region in regions_to_doors:
-            for start in home.get(exit_name, []):
-                connect(start, region)
-    for a, b in interior_doors:
-        for ra in home.get(a, []):
-            for rb in home.get(b, []):
-                connect(ra, rb)
-    # Warps count too; flood() stops at other supertiles, so only in-supertile warps join anything
-    for exit_name, region in dungeon_warps:
-        for start in home.get(exit_name, []):
-            connect(start, region)
-
-    parts, door_part = {}, {}
-    for tile, entries in door_coordinates.items():
-        group_of = {}
-
-        def flood(start):
-            stack = [start]
-            while stack:
-                region = stack.pop()
-                if region in group_of:
-                    continue
-                group_of[region] = start
-                for other in neighbours.get(region, ()):
-                    if other not in group_of and region_tile(other) in (tile, None):
-                        stack.append(other)
-
-        groups = {}
-        for entry in entries:
-            name = entry["name"]
-            regions = home.get(name, [])
-            if not regions:
-                groups.setdefault(("alone", name), []).append(name)
-                continue
-            for region in regions:
-                if region not in group_of:
-                    flood(region)
-            groups.setdefault(group_of[regions[0]], []).append(name)
-        parts[tile] = list(groups.values())
-        if tile in ONE_PLACE:
-            parts[tile] = [[name for names in parts[tile] for name in names]]
-        for k, names in enumerate(parts[tile]):
-            for name in names:
-                door_part[name] = k
-    return parts, door_part
-
-
-PARTS, DOOR_PART = _build_parts()
-
-
-def part_areas(tile):
-    """Picture boxes for each part of a split supertile, from room_bounds (tools/find_rooms.py)."""
-    entry = room_bounds.get(tile, {})
-    parts = PARTS.get(tile, [[]])
-    areas = entry.get("areas")
-    if areas and len(areas) == len(parts):
-        return areas
-    live = entry.get("live") or [(0, 0, 512, 512)]
-    shares = []
-    for names in parts:
-        mine = set()
-        for name in names:
-            spot = door_coordinates[tile][door_coordinates_key[name][1]]
-            mine.add(
-                min(
-                    range(len(live)),
-                    key=lambda i: max(live[i][0] - spot["x"], 0, spot["x"] - live[i][2])
-                    + max(live[i][1] - spot["y"], 0, spot["y"] - live[i][3]),
-                )
-            )
-        shares.append([live[i] for i in sorted(mine)])
-    return shares
-
-
-def part_count(tile):
-    """How many separate blocks a supertile is drawn as."""
-    return len(PARTS.get(tile[:2], [0])) if SPLIT_ROOMS else 1
-
-
-def door_tile(door):
-    """(x, y, part) for a door or warp port; None if unknown."""
-    if door in ROOM_PORTS:
-        x, y = ROOM_PORTS[door][0]
-        return (x, y, DOOR_PART.get(ROOM_PORTS[door][3], 0) if SPLIT_ROOMS else 0)
-    if door in door_coordinates_key:
-        x, y = door_coordinates_key[door][0]
-        return (x, y, DOOR_PART.get(door, 0) if SPLIT_ROOMS else 0)
-    if door in doors_data:
-        room = int(doors_data[door][0])
-        return (room % 16, room // 16, 0)
-    return None
-
-
-def door_direction(door):
-    try:
-        return doors_data[door][1]
-    except (KeyError, IndexError):
-        return None
-
-
-def door_fraction(door):
-    """Position of a door inside its supertile as 0..1 fractions."""
-    if door in ROOM_PORTS:
-        return ROOM_PORTS[door][1], ROOM_PORTS[door][2]
-    if door in door_coordinates_key:
-        tile, list_pos = door_coordinates_key[door]
-        coords = door_coordinates[tile][list_pos]
-        return coords["x"] / 512, coords["y"] / 512
-    return 0.5, 0.5
-
-
-def tile_door_names(tile):
-    """Doors of a supertile (x, y), or of one part of it (x, y, part)."""
-    base = tile[:2]
-    # door_coordinates is a defaultdict; [] would insert the key
-    names = [d["name"] for d in door_coordinates.get(base) or []]
-    parts = PARTS.get(base, [])
-    if len(tile) == 3 and SPLIT_ROOMS and len(parts) > 1:
-        mine = set(parts[tile[2]]) if tile[2] < len(parts) else set()
-        return [name for name in names if name in mine]
-    return names
-
-
-def tile_regions(tile):
-    regions = []
-    for door in tile_door_names(tile):
-        found = doors_to_regions.get(door)
-        if found is None:
-            continue
-        for region in found if isinstance(found, list) else [found]:
-            if region not in regions:
-                regions.append(region)
-    return regions
-
-
-def tile_dungeon(tile):
-    for door in tile_door_names(tile[:2]):
-        prefix = door.split(" ")[0]
-        if prefix in dungeon_abv_to_name:
-            return dungeon_abv_to_name[prefix]
-        if prefix == "Sanctuary":
-            return "Hyrule_Castle"
-    if tile[:2] in DOORLESS_TILES:
-        return DOORLESS_TILES[tile[:2]][1]
-    return None
-
-
-def tile_title(tile):
-    regions = tile_regions(tile)
-    if regions:
-        return regions[0]
-    if tile[:2] in DOORLESS_TILES:
-        return DOORLESS_TILES[tile[:2]][0]
-    doors = tile_door_names(tile)
-    if doors:
-        return " ".join(doors[0].split(" ")[:-1]) or doors[0]
-    return f"Tile {tile[0]},{tile[1]}"
-
-
-ROOM_PORTS, ROOM_LINKS = _build_room_links()
-
-
-def _dungeon_backgrounds():
-    """Background colour per dungeon: the most common one among its supertile pictures."""
-    counts = {}
-    for tile, entry in room_bounds.items():
-        colour = "#%02x%02x%02x" % tuple(entry["background"])
-        tally = counts.setdefault(tile_dungeon(tile), {})
-        tally[colour] = tally.get(colour, 0) + 1
-    return {dungeon: max(tally, key=tally.get) for dungeon, tally in counts.items() if dungeon}
-
-
-DUNGEON_BACKGROUNDS = _dungeon_backgrounds()
-
-
-def enclosing_circle(points):
-    """Smallest circle containing every point, as (x, y, radius)."""
-
-    def from_two(a, b):
-        return (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, math.dist(a, b) / 2
-
-    def from_three(a, b, c):
-        d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
-        if abs(d) < 1e-9:
-            return None
-        ux = ((a[0] ** 2 + a[1] ** 2) * (b[1] - c[1]) + (b[0] ** 2 + b[1] ** 2) * (c[1] - a[1]) + (c[0] ** 2 + c[1] ** 2) * (a[1] - b[1])) / d
-        uy = ((a[0] ** 2 + a[1] ** 2) * (c[0] - b[0]) + (b[0] ** 2 + b[1] ** 2) * (a[0] - c[0]) + (c[0] ** 2 + c[1] ** 2) * (b[0] - a[0])) / d
-        return ux, uy, math.dist((ux, uy), a)
-
-    def holds(circle, point):
-        return circle is not None and math.dist(circle[:2], point) <= circle[2] + 1e-6
-
-    # Incremental construction; fine for the few points per block
-    points = list(dict.fromkeys(points))
-    circle = None
-    for i, p in enumerate(points):
-        if holds(circle, p):
-            continue
-        circle = (p[0], p[1], 0.0)
-        for j, q in enumerate(points[:i]):
-            if holds(circle, q):
-                continue
-            circle = from_two(p, q)
-            for r in points[:j]:
-                if not holds(circle, r):
-                    circle = from_three(p, q, r) or circle
-    return circle
-
-
-def lighten(colour, amount):
-    r, g, b = ImageColor.getrgb(colour)
-    r, g, b = (int(c + (255 - c) * amount) for c in (r, g, b))
-    return f"#{r:02x}{g:02x}{b:02x}"
-
-
-def link_colours(n):
-    """n distinct hues, dark enough to read on the light background."""
-    colours = []
-    for i in range(n):
-        # Golden angle hue steps
-        hue = (i * 137.508) % 360
-        r, g, b = ImageColor.getrgb(f"hsl({hue:.0f}, 78%, {38 + (i % 3) * 6}%)")
-        colours.append(f"#{r:02x}{g:02x}{b:02x}")
-    return colours
-
-
-def convex_hull(points):
-    points = sorted(set(points))
-    if len(points) <= 2:
-        return points
-
-    def cross(o, a, b):
-        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-
-    lower, upper = [], []
-    for p in points:
-        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
-            lower.pop()
-        lower.append(p)
-    for p in reversed(points):
-        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
-            upper.pop()
-        upper.append(p)
-    return lower[:-1] + upper[:-1]
 
 
 class GraphModel:
@@ -519,6 +59,10 @@ class GraphModel:
         self.leaf_pull = 2.5  # pull boost for blocks linked to a single other block
         self.circle_repulsion = False  # repel as one enclosing circle per block
         self.reset()
+
+    @property
+    def rooms(self):
+        return rooms.SPLIT if self.experimental_flags.get("split_rooms", True) else rooms.WHOLE
 
     def reset(self):
         self.tiles = {}
@@ -545,7 +89,7 @@ class GraphModel:
         self._sighted = None  # supertile of the last position report
         self._layout_signature = None
         self._stack_rank = {}
-        self._held = set()  # nodes being dragged
+        self.held = set()  # nodes being dragged
         self._damping = {}
         self._last_step = 0.0
         self._seam_doors = set()
@@ -567,7 +111,7 @@ class GraphModel:
         """Full layout; pinned nodes stay. Returns True if nothing was placed before."""
         self._sync_model()
         self._optimise_stack_order()
-        before = self._bounds() if self.pos else None
+        before = self.bounds() if self.pos else None
         self._layout(full=True)
         if before is not None:
             self._keep_centre(before)
@@ -590,7 +134,7 @@ class GraphModel:
         for link in self.door_links:
             self._linked_doors.add(link["door"])
             self._linked_doors.add(link["linked_door"])
-        for a, b, kind, n in self._edges():
+        for a, b, kind, n in self.edges():
             if kind == "drop":
                 # Vanilla drop with its landing on the map counts as linked
                 self._linked_doors.add(a)
@@ -611,7 +155,7 @@ class GraphModel:
             link["stack"] = False
             self.update()
             return None
-        if self._join_offset(a, b) is None:
+        if self.join_offset(a, b) is None:
             return "These two doors cannot be stacked: only north/south and east/west doorways fit together"
         link["stack"] = True
         self._sync_model()
@@ -624,7 +168,7 @@ class GraphModel:
 
     def set_pinned(self, tile, pinned):
         """Pin or unpin a node's whole stack."""
-        members = self._stack_of(tile)
+        members = self.stack_of(tile)
         if pinned:
             self.fixed.update(members)
         else:
@@ -637,8 +181,8 @@ class GraphModel:
         been in it, or a fixed drop/warp leads to it from another node. If no part qualifies, or the
         supertile is kept expanded, all parts are included.
         """
-        split = [tile for tile in self.tiles if part_count(tile) > 1]
-        shown = {(tile[0], tile[1], 0) for tile in self.tiles if part_count(tile) == 1}
+        split = [tile for tile in self.tiles if self.rooms.part_count(tile) > 1]
+        shown = {(tile[0], tile[1], 0) for tile in self.tiles if self.rooms.part_count(tile) == 1}
         self._whole = set()
         if split:
             used = set(self.special_doors)
@@ -647,7 +191,7 @@ class GraphModel:
             used.update(entry["door"] for entry in self.lobby_doors)
             for door in used:
                 if door in door_coordinates_key and door_coordinates_key[door][0] in self.tiles:
-                    shown.add(door_tile(door))
+                    shown.add(self.rooms.node(door))
             shown.update(node for node in self.visited if node[:2] in self.tiles)
             shown.update(node for tile, node in self.provisional.items() if tile in self.tiles)
             shown.update(node for node in self.pinned_eg_tiles if node[:2] in self.tiles)
@@ -660,7 +204,7 @@ class GraphModel:
                         fixed.append((link["b"], link["a"]))
             if self.experimental_flags.get("vanilla_drops"):
                 fixed += list(MANUAL_DROPS.items())
-            fixed =[(door_tile(a), door_tile(b)) for a, b in fixed]
+            fixed =[(self.rooms.node(a), self.rooms.node(b)) for a, b in fixed]
             fixed = [(a, b) for a, b in fixed if a and b and a[:2] in self.tiles and b[:2] in self.tiles]
             grew = True
             while grew:
@@ -670,18 +214,18 @@ class GraphModel:
                         shown.add(b)
                         grew = True
             for tile in split:
-                parts = [(tile[0], tile[1], k) for k in range(part_count(tile))]
+                parts = [(tile[0], tile[1], k) for k in range(self.rooms.part_count(tile))]
                 if any(node in self.pinned_eg_tiles for node in parts):
                     shown.update(parts)
                 elif not any(node in shown for node in parts):
                     # Unlit dark room: one placeholder node
-                    shown.update(parts[:1] if self._is_hidden_dark(tile) else parts)
+                    shown.update(parts[:1] if self.is_hidden_dark(tile) else parts)
                     self._whole.add(tile)
-        return [(tile[0], tile[1], k) for tile in self.tiles for k in range(part_count(tile)) if (tile[0], tile[1], k) in shown]
+        return [(tile[0], tile[1], k) for tile in self.tiles for k in range(self.rooms.part_count(tile)) if (tile[0], tile[1], k) in shown]
 
     def player_node(self, tile, x, y):
         """Node for a position in a supertile. A guess: areas of different parts can overlap."""
-        if part_count(tile) == 1:
+        if self.rooms.part_count(tile) == 1:
             return (tile[0], tile[1], 0)
         # Smallest containing area wins (a nook inside its lobby)
         best = None
@@ -697,7 +241,7 @@ class GraphModel:
         """Record that the player entered by this door; overrides any position guess."""
         if door not in door_coordinates_key:
             return
-        node = door_tile(door)
+        node = self.rooms.node(door)
         self.located = node
         self.visited.add(node)
         self.provisional.pop(node[:2], None)
@@ -714,7 +258,7 @@ class GraphModel:
         if self.located is not None and self.located[:2] == tile:
             return self.located
         self.located = None
-        if part_count(tile) > 1 and self._sighted != tile:
+        if self.rooms.part_count(tile) > 1 and self._sighted != tile:
             self._sighted = tile
             return None
         self._sighted = tile
@@ -724,7 +268,7 @@ class GraphModel:
         return self.located
 
     def move_stack(self, tile, dx, dy):
-        for member in self._stack_of(tile):
+        for member in self.stack_of(tile):
             self.pos[member][0] += dx
             self.pos[member][1] += dy
 
@@ -734,7 +278,7 @@ class GraphModel:
         if tile in self.tiles:
             return False
         self._ensure_tile(tile, has_been_lit=has_been_lit)
-        if player is not None and part_count(tile) > 1:
+        if player is not None and self.rooms.part_count(tile) > 1:
             self.provisional[tile] = self.player_node(tile, *player)
         if at is not None:
             self.pos[(tile[0], tile[1], 0)] = [at[0], at[1]]
@@ -746,7 +290,7 @@ class GraphModel:
         tile = tile[:2]
         if tile in mandatory_tiles[self.tab_world] or tile not in self.tiles:
             return False
-        doors = set(tile_door_names(tile))
+        doors = set(self.rooms.doors(tile))
         doors.discard("Sanctuary Mirror Route")
         self.door_links = [x for x in self.door_links if x["door"] not in doors and x["linked_door"] not in doors]
         self.lobby_doors = [x for x in self.lobby_doors if x["door"] not in doors]
@@ -786,8 +330,8 @@ class GraphModel:
     # ------------------------------------------------------- auto tracking entry
 
     def auto_add_door_link(self, door, linked_door):
-        for d in [door, linked_door] if not self._decoupled() else [door]:
-            if d is None or self.has_target(d) or d in INTERIOR_DOORS or d in self._lobby_door_names():
+        for d in [door, linked_door] if not self.decoupled() else [door]:
+            if d is None or self.has_target(d) or d in INTERIOR_DOORS or d in self.lobby_door_names():
                 return False
         if door is None or linked_door is None:
             return False
@@ -801,7 +345,7 @@ class GraphModel:
         current_lobbies = [x["lobby"] for x in self.lobby_doors]
         if (
             door is None
-            or door in self._lobby_door_names()
+            or door in self.lobby_door_names()
             or "Boss" in door
             or door in ["Tower Agahnim 1 SW", "GT Agahnim 2 SW"]
             or door in INTERIOR_DOORS
@@ -848,13 +392,13 @@ class GraphModel:
         self.visited, self.provisional, self.located, self._sighted = set(), {}, None, None
         for key in data.get("reached_parts") or []:
             node = tuple(int(x) for x in str(key).split("__"))
-            if len(node) == 3 and node[:2] in self.tiles and node[2] < part_count(node):
+            if len(node) == 3 and node[:2] in self.tiles and node[2] < self.rooms.part_count(node):
                 self.visited.add(node)
         for key, value in (data.get("graph_layout") or {}).items():
             # Keys: "x__y" for part 0, "x__y__part" otherwise
             numbers = [int(x) for x in str(key).split("__")]
             node = (numbers[0], numbers[1], numbers[2] if len(numbers) > 2 else 0)
-            if node[:2] in self.tiles and node[2] < part_count(node):
+            if node[:2] in self.tiles and node[2] < self.rooms.part_count(node):
                 self.pos[node] = [float(value[0]), float(value[1])]
                 if len(value) > 2 and value[2]:
                     self.fixed.add(node)
@@ -869,8 +413,8 @@ class GraphModel:
             rank = 0
             for link in self.door_links:
                 a, b = link["door"], link["linked_door"]
-                rel = self._join_offset(a, b)
-                ta, tb = door_tile(a), door_tile(b)
+                rel = self.join_offset(a, b)
+                ta, tb = self.rooms.node(a), self.rooms.node(b)
                 if rel is None or ta not in self.pos or tb not in self.pos:
                     continue
                 if (
@@ -910,7 +454,7 @@ class GraphModel:
             "reached_parts": sorted(
                 f"{n[0]}__{n[1]}__{n[2]}"
                 for n in self.visited | set(self.provisional.values())
-                if n[:2] in self.tiles and part_count(n) > 1
+                if n[:2] in self.tiles and self.rooms.part_count(n) > 1
             ),
             "special_doors": dict(self.special_doors),
             "graph_layout": {
@@ -940,19 +484,19 @@ class GraphModel:
             "map_tile": tile,
         }
 
-    def _decoupled(self):
+    def decoupled(self):
         return self.experimental_flags["decoupled_doors"]
 
-    def _is_hidden_dark(self, tile):
+    def is_hidden_dark(self, tile):
         data = self.tiles.get(tile[:2])
         return bool(data and data["is_dark"] and not data["has_been_lit"])
 
-    def _link_map(self):
+    def link_map(self):
         """door -> linked door, both directions unless doors are decoupled."""
         links = {}
         for link in self.door_links:
             links[link["door"]] = link["linked_door"]
-            if not self._decoupled():
+            if not self.decoupled():
                 links.setdefault(link["linked_door"], link["door"])
         return links
 
@@ -960,30 +504,30 @@ class GraphModel:
         for link in self.door_links:
             if link["door"] == door:
                 return True
-            if not self._decoupled() and link["linked_door"] == door:
+            if not self.decoupled() and link["linked_door"] == door:
                 return True
         return False
 
-    def _lobby_door_names(self):
+    def lobby_door_names(self):
         return [x["door"] for x in self.lobby_doors]
 
     def add_lobby_door(self, door, lobby):
-        if door not in self._lobby_door_names():
+        if door not in self.lobby_door_names():
             self.lobby_doors.append({"door": door, "lobby": lobby})
         self.special_doors[door] = lobby
 
     def _sync_model(self):
         """Add any supertile referenced by a link or lobby; refresh derived state."""
         for link in self.door_links:
-            self._ensure_tile(door_tile(link["door"]))
-            self._ensure_tile(door_tile(link["linked_door"]))
+            self._ensure_tile(self.rooms.node(link["door"]))
+            self._ensure_tile(self.rooms.node(link["linked_door"]))
         for lobby in self.lobby_doors:
-            self._ensure_tile(door_tile(lobby["door"]))
+            self._ensure_tile(self.rooms.node(lobby["door"]))
 
         # Drop entrances and the sanctuary mirror route are always entrances
-        lobby_doors = self._lobby_door_names()
+        lobby_doors = self.lobby_door_names()
         for tile in list(self.tiles):
-            for door in tile_door_names(tile):
+            for door in self.rooms.doors(tile):
                 if door.startswith("Sanctuary") and not self.sanc_dungeon:
                     self.sanc_dungeon = True
                     if "Sanctuary Mirror Route" in door_coordinates_key:
@@ -993,7 +537,7 @@ class GraphModel:
 
         self.doors_available = self._reachable_doors()
         for door in self.doors_available:
-            tile = door_tile(door)
+            tile = self.rooms.node(door)
             if tile is not None and door in door_coordinates_key:
                 self._ensure_tile(tile)
 
@@ -1010,7 +554,7 @@ class GraphModel:
             adjacency[b].add(a)
         for link in self.door_links:
             adjacency[link["door"]].add(link["linked_door"])
-            if not self._decoupled():
+            if not self.decoupled():
                 adjacency[link["linked_door"]].add(link["door"])
 
         seen = set()
@@ -1042,7 +586,7 @@ class GraphModel:
 
         # Supertiles not reached from a lobby show all their doors
         for tile in list(self.tiles):
-            names = tile_door_names(tile)
+            names = self.rooms.doors(tile)
             if not any(name in seen for name in names):
                 for name in names:
                     push(name)
@@ -1053,15 +597,15 @@ class GraphModel:
         """Nodes to collapse: fully linked, single-route supertiles."""
         if not self.experimental_flags["hide_single_route_tiles"]:
             return set()
-        links = self._link_map()
-        lobbies = set(self._lobby_door_names())
+        links = self.link_map()
+        lobbies = set(self.lobby_door_names())
         compact = set()
         for tile in self.tiles:
             if tile not in simple_tiles and tile not in complex_tiles:
                 continue
-            if any(node[:2] == tile for node in self.pinned_eg_tiles) or self._is_hidden_dark(tile):
+            if any(node[:2] == tile for node in self.pinned_eg_tiles) or self.is_hidden_dark(tile):
                 continue
-            exits = [d for d in tile_door_names(tile) if d not in INTERIOR_DOORS]
+            exits = [d for d in self.rooms.doors(tile) if d not in INTERIOR_DOORS]
             if any(d in lobbies for d in exits):
                 continue
             linked = {d for d in exits if d in links}
@@ -1072,9 +616,9 @@ class GraphModel:
                     compact.add(tile)
             elif exits and len(linked) == len(exits):
                 compact.add(tile)
-        return {(tile[0], tile[1], k) for tile in compact for k in range(part_count(tile))}
+        return {(tile[0], tile[1], k) for tile in compact for k in range(self.rooms.part_count(tile))}
 
-    def _pieces(self, tile):
+    def pieces(self, tile):
         """Cached _work_out_pieces."""
         pieces = self._piece_cache.get(tile)
         if pieces is None:
@@ -1086,12 +630,12 @@ class GraphModel:
         if tile in self.compact:
             return [(-COMPACT_W / 2, -COMPACT_H / 2, COMPACT_W / 2, COMPACT_H / 2)]
         half = THUMB / 2
-        live = room_bounds.get(tile[:2], {}).get("live")
-        if not live or not self.experimental_flags.get("hide_dead_rooms") or self._is_hidden_dark(tile):
+        live = supertile(tile).live
+        if not live or not self.experimental_flags.get("hide_dead_rooms") or self.is_hidden_dark(tile):
             return [(-half, -half, half, half)]
         # Auto-detected rooms are on an 8px grid and get a margin; hand-set areas are exact
         found = {tuple(b) for b in live}
-        if part_count(tile) > 1:
+        if self.rooms.part_count(tile) > 1:
             live = part_areas(tile[:2])[tile[2]] or live
         scale = THUMB / 512
         pieces = []
@@ -1107,9 +651,9 @@ class GraphModel:
             )
         return pieces
 
-    def _box(self, tile):
+    def box(self, tile):
         """Bounding box of a node's pieces."""
-        pieces = self._pieces(tile)
+        pieces = self.pieces(tile)
         return (
             min(p[0] for p in pieces),
             min(p[1] for p in pieces),
@@ -1117,15 +661,15 @@ class GraphModel:
             max(p[3] for p in pieces),
         )
 
-    def _size(self, tile):
-        left, top, right, bottom = self._box(tile)
+    def size(self, tile):
+        left, top, right, bottom = self.box(tile)
         return right - left, bottom - top
 
-    def _port_offset(self, door):
+    def port_offset(self, door):
         """Door position relative to its node's centre, world units."""
-        tile = door_tile(door)
+        tile = self.rooms.node(door)
         fx, fy = door_fraction(door)
-        w, h = self._size(tile)
+        w, h = self.size(tile)
         if tile in self.compact:
             direction = door_direction(door)
             if direction == "No":
@@ -1137,19 +681,19 @@ class GraphModel:
             if direction == "Ea":
                 return w / 2, (fy - 0.5) * h * 0.6
             return (fx - 0.5) * w * 0.8, (fy - 0.5) * h * 0.6
-        if self._is_hidden_dark(tile):
+        if self.is_hidden_dark(tile):
             fx = fy = 0.5
         return (fx - 0.5) * THUMB, (fy - 0.5) * THUMB
 
     def _stackable(self, tile):
-        return tile[:2] in self.tiles and tile not in self.compact and not self._is_hidden_dark(tile)
+        return tile[:2] in self.tiles and tile not in self.compact and not self.is_hidden_dark(tile)
 
-    def _join_offset(self, a, b):
+    def join_offset(self, a, b):
         """Offset of b's node from a's when the two doorways are stacked; None unless they face each other."""
         da, db = DIRECTIONS.get(door_direction(a)), DIRECTIONS.get(door_direction(b))
         if da is None or db is None or (da[0] + db[0], da[1] + db[1]) != (0, 0):
             return None
-        ta, tb = door_tile(a), door_tile(b)
+        ta, tb = self.rooms.node(a), self.rooms.node(b)
         if ta == tb or not self._stackable(ta) or not self._stackable(tb):
             return None
         if a not in door_coordinates_key or b not in door_coordinates_key:
@@ -1167,9 +711,9 @@ class GraphModel:
 
     def _piece_at(self, door):
         """The piece of its node nearest to a door."""
-        ox, oy = self._port_offset(door)
+        ox, oy = self.port_offset(door)
         return min(
-            self._pieces(door_tile(door)),
+            self.pieces(self.rooms.node(door)),
             key=lambda p: max(p[0] - ox, 0, ox - p[2]) + max(p[1] - oy, 0, oy - p[3]),
         )
 
@@ -1193,7 +737,7 @@ class GraphModel:
         root = {t: t for t in nodes}
         off = {t: (0.0, 0.0) for t in nodes}
         members = {t: [t] for t in nodes}
-        boxes = {t: self._pieces(t) for t in nodes}
+        boxes = {t: self.pieces(t) for t in nodes}
         # Parts of a supertile shown whole stay in one stack at zero offset
         for tile in self._whole:
             parts = [t for t in nodes if t[:2] == tile]
@@ -1208,10 +752,10 @@ class GraphModel:
             if wanted is False or (wanted is None and not auto):
                 continue
             a, b = link["door"], link["linked_door"]
-            rel = self._join_offset(a, b)
+            rel = self.join_offset(a, b)
             if rel is None:
                 continue
-            ta, tb = door_tile(a), door_tile(b)
+            ta, tb = self.rooms.node(a), self.rooms.node(b)
             ra, rb = root[ta], root[tb]
             # Shift from b's stack frame to a's
             sx = off[ta][0] + rel[0] - off[tb][0]
@@ -1252,7 +796,7 @@ class GraphModel:
     def _optimise_stack_order(self):
         """Random search for the stacking order that joins the most links. Full re-layout only."""
         keys = [(x["door"], x["linked_door"]) for x in self.door_links]
-        candidates = [n for n, x in enumerate(self.door_links) if self._join_offset(*keys[n]) is not None]
+        candidates = [n for n, x in enumerate(self.door_links) if self.join_offset(*keys[n]) is not None]
         if len(candidates) < 3:
             return
         rng = random.Random(len(self.door_links))
@@ -1268,30 +812,30 @@ class GraphModel:
         self._stack_rank = best_rank
         self._build_stacks()
 
-    def _stack_of(self, tile):
+    def stack_of(self, tile):
         return self.stack_members.get(self.stack_root.get(tile, tile), [tile])
 
     def _place_stack(self, anchor, x, y):
         """Move a stack so that `anchor` is at (x, y)."""
         ax, ay = self.stack_off[anchor]
-        for m in self._stack_of(anchor):
+        for m in self.stack_of(anchor):
             mx, my = self.stack_off[m]
             self.pos[m] = [x + mx - ax, y + my - ay]
 
-    def _port(self, door):
-        tile = door_tile(door)
-        ox, oy = self._port_offset(door)
+    def port(self, door):
+        tile = self.rooms.node(door)
+        ox, oy = self.port_offset(door)
         x, y = self.pos[tile]
         return x + ox, y + oy
 
-    def _edges(self, known=None):
+    def edges(self, known=None):
         """All drawable edges as (door, linked_door, kind, link_index)."""
         known = self.pos if known is None else known
         edges = []
         seen = set()
         for n, link in enumerate(self.door_links):
             a, b = link["door"], link["linked_door"]
-            if door_tile(a) not in known or door_tile(b) not in known:
+            if self.rooms.node(a) not in known or self.rooms.node(b) not in known:
                 continue
             if a not in door_coordinates_key or b not in door_coordinates_key:
                 continue
@@ -1304,7 +848,7 @@ class GraphModel:
                 continue
             if a not in door_coordinates_key or b not in door_coordinates_key:
                 continue
-            if door_tile(a) not in known or door_tile(b) not in known:
+            if self.rooms.node(a) not in known or self.rooms.node(b) not in known:
                 continue
             if not self._door_visible(a) or not self._door_visible(b):
                 continue
@@ -1314,7 +858,7 @@ class GraphModel:
         for a, b in vanilla_drops.items():
             if frozenset((a, b)) in seen or self.has_target(a):
                 continue
-            if door_tile(a) not in known or door_tile(b) not in known:
+            if self.rooms.node(a) not in known or self.rooms.node(b) not in known:
                 continue
             if not self._door_visible(a) or not self._door_visible(b):
                 continue
@@ -1323,8 +867,8 @@ class GraphModel:
         for link in ROOM_LINKS:
             if link["kind"] == "hole" and not self.experimental_flags.get("vanilla_drops"):
                 continue
-            ta, tb = door_tile(link["a"]), door_tile(link["b"])
-            if ta not in known or tb not in known or self._is_hidden_dark(ta) or self._is_hidden_dark(tb):
+            ta, tb = self.rooms.node(link["a"]), self.rooms.node(link["b"])
+            if ta not in known or tb not in known or self.is_hidden_dark(ta) or self.is_hidden_dark(tb):
                 continue
             edges.append((link["a"], link["b"], link["kind"] + ("_both" if link["both_ways"] else ""), None))
         return edges
@@ -1382,11 +926,11 @@ class GraphModel:
         new_tiles = [m for root in pending for m in self.stack_members[root]]
 
         def place_from(anchor_door, new_door):
-            anchor = door_tile(anchor_door)
-            new = door_tile(new_door)
+            anchor = self.rooms.node(anchor_door)
+            new = self.rooms.node(new_door)
             ax, ay = self.pos[anchor]
-            aox, aoy = self._port_offset(anchor_door)
-            nox, noy = self._port_offset(new_door)
+            aox, aoy = self.port_offset(anchor_door)
+            nox, noy = self.port_offset(new_door)
             direction = DIRECTIONS.get(door_direction(anchor_door))
             if direction is None:
                 opposite = DIRECTIONS.get(door_direction(new_door))
@@ -1397,7 +941,7 @@ class GraphModel:
             placed = list(self.pos.values())
             if not placed:
                 self._place_stack(root, 0.0, 0.0)
-            elif self.player and self.player[0] in self.pos and self.player[0] not in self._stack_of(root):
+            elif self.player and self.player[0] in self.pos and self.player[0] not in self.stack_of(root):
                 px, py = self.pos[self.player[0]]
                 self._place_stack(root, px + THUMB + LINK_GAP * 2, py + 20.0)
             else:
@@ -1408,14 +952,14 @@ class GraphModel:
                 )
 
         # Place lobby stacks first
-        lobby_roots = [self.stack_root.get(door_tile(x["door"])) for x in self.lobby_doors]
+        lobby_roots = [self.stack_root.get(self.rooms.node(x["door"])) for x in self.lobby_doors]
         order = [r for r in lobby_roots if r in pending] + sorted(pending, key=lambda r: -len(self.stack_members[r]))
         while pending:
             progressed = True
             while progressed:
                 progressed = False
                 for a, b in edges:
-                    ra, rb = self.stack_root[door_tile(a)], self.stack_root[door_tile(b)]
+                    ra, rb = self.stack_root[self.rooms.node(a)], self.stack_root[self.rooms.node(b)]
                     if ra in pending and rb not in pending:
                         place_from(b, a)
                         pending.discard(ra)
@@ -1435,240 +979,19 @@ class GraphModel:
             self._relax(iterations=90, old_mobility=0.0, edges=edges, cold=True)
             # then separate overlaps
             self._relax(iterations=0, old_mobility=1.0, edges=edges, cold=True)
-        elif self.experimental_flags.get("stress_layout"):
+        else:
             # Stress for the global shape, then forces to shorten links and separate overlaps
             self._stress_layout(edges)
             self._relax(iterations=180, old_mobility=1.0, edges=edges, improve=True)
-            self._relax(iterations=150, old_mobility=1.0, edges=edges, cold=True)
-            self._park_unlinked(edges)
-        else:
-            # Multi-start: keep the lowest-cost of a few jittered runs
-            rng = random.Random(len(tiles) * 1000 + len(edges))
-            start = {t: list(p) for t, p in self.pos.items()}
-            best = None
-            blocks = len(self.stack_members)
-            attempts = 5 if blocks <= 20 else 3 if blocks <= 35 else 2
-            steps = 260 if blocks <= 35 else 180
-            for attempt in range(attempts):
-                self.pos = {t: list(p) for t, p in start.items()}
-                if attempt:
-                    for root, members in self.stack_members.items():
-                        if not any(m in self.fixed for m in members):
-                            x, y = self.pos[root]
-                            self._place_stack(root, x + rng.uniform(-260, 260), y + rng.uniform(-260, 260))
-                self._relax(iterations=steps, old_mobility=1.0, edges=edges, improve=True)
-                cost = self._relax(iterations=80, old_mobility=0.5, edges=edges, improve=True)
-                if best is None or cost < best[0]:
-                    best = (cost, {t: list(p) for t, p in self.pos.items()})
-            self.pos = best[1]
             self._relax(iterations=150, old_mobility=1.0, edges=edges, cold=True)
             self._park_unlinked(edges)
         self._laid_spacing = self.spacing
 
         linked = set()
         for a, b in edges:
-            linked.update(self._stack_of(door_tile(a)))
-            linked.update(self._stack_of(door_tile(b)))
+            linked.update(self.stack_of(self.rooms.node(a)))
+            linked.update(self.stack_of(self.rooms.node(b)))
         self.unsettled -= linked
-
-    def _stress_layout(self, edges):
-        """Place stacks by stress majorization (Gansner, Koren and North 2004).
-
-        Ideal distance between two stacks is the shortest path through links. Directly linked stacks
-        also get a target offset from their door directions. Does not resolve overlaps.
-        """
-        roots = list(self.stack_members)
-        index = {r: i for i, r in enumerate(roots)}
-        n = len(roots)
-        gap = LINK_GAP + self.spacing * 0.5
-        # Per stack: bounding-box centre and half size, relative to the stack origin
-        centre, half, movable = [], [], []
-        for r in roots:
-            boxes = []
-            for m in self.stack_members[r]:
-                left, top, right, bottom = self._box(m)
-                ox, oy = self.stack_off[m]
-                boxes.append((ox + left, oy + top, ox + right, oy + bottom))
-            left, top = min(b[0] for b in boxes), min(b[1] for b in boxes)
-            right, bottom = max(b[2] for b in boxes), max(b[3] for b in boxes)
-            centre.append(((left + right) / 2, (top + bottom) / 2))
-            half.append(((right - left) / 2, (bottom - top) / 2))
-            movable.append(not any(m in self.fixed for m in self.stack_members[r]))
-        size = [(w + h) / 2 for w, h in half]
-
-        def origin(r):
-            return self.pos[r][0] - self.stack_off[r][0], self.pos[r][1] - self.stack_off[r][1]
-
-        wants = {}  # (i, j), i < j -> target centre offsets, one per link
-        loose = {}  # (i, j) linked without a direction (stairs, drops, warps)
-        ends = []
-        for a, b in edges:
-            i, j = index[self.stack_root[door_tile(a)]], index[self.stack_root[door_tile(b)]]
-            if i > j:
-                a, b, i, j = b, a, j, i
-            port = []
-            for door, k in ((a, i), (b, j)):
-                ox, oy = self.stack_off[door_tile(door)]
-                px, py = self._port_offset(door)
-                port.append((ox + px - centre[k][0], oy + py - centre[k][1]))
-            ends.append((i, j, port[0], port[1]))
-            da, db = DIRECTIONS.get(door_direction(a)), DIRECTIONS.get(door_direction(b))
-            nx = (da[0] if da else 0) - (db[0] if db else 0)
-            ny = (da[1] if da else 0) - (db[1] if db else 0)
-            length = math.hypot(nx, ny)
-            if length < 0.5:
-                loose[(i, j)] = True
-                continue
-            nx, ny = nx / length, ny / length
-            wants.setdefault((i, j), []).append((port[0][0] + nx * gap - port[1][0], port[0][1] + ny * gap - port[1][1]))
-        target = {}
-        for (i, j), vectors in wants.items():
-            tx, ty = sum(v[0] for v in vectors) / len(vectors), sum(v[1] for v in vectors) / len(vectors)
-            # Opposing links can average to ~0: enforce a minimum
-            least = size[i] + size[j] + gap * 0.5
-            length = math.hypot(tx, ty)
-            if length < least:
-                tx, ty = (tx / length * least, ty / length * least) if length > 1 else (least, 0.0)
-            target[(i, j)] = (tx, ty)
-            target[(j, i)] = (-tx, -ty)
-
-        # All-pairs shortest paths (Floyd-Warshall)
-        far = float("inf")
-        dist = [[far] * n for _ in range(n)]
-        for i in range(n):
-            dist[i][i] = 0.0
-        for (i, j), (tx, ty) in target.items():
-            dist[i][j] = min(dist[i][j], math.hypot(tx, ty))
-        for i, j in loose:
-            if (i, j) not in target:
-                dist[i][j] = dist[j][i] = min(dist[i][j], size[i] + size[j] + gap)
-        for k in range(n):
-            row_k = dist[k]
-            for i in range(n):
-                through = dist[i][k]
-                if through == far:
-                    continue
-                row_i = dist[i]
-                for j in range(n):
-                    if through + row_k[j] < row_i[j]:
-                        row_i[j] = through + row_k[j]
-        group = list(range(n))
-        for i in range(n):
-            for j in range(i):
-                if dist[i][j] < far:
-                    group[i] = group[j]
-                    break
-        pairs = [[] for _ in range(n)]  # per stack: (other, weight, ideal distance, target offset or None)
-        for i in range(n):
-            for j in range(n):
-                if i == j or dist[i][j] == far:
-                    continue
-                want = target.get((i, j))
-                ideal = max(dist[i][j], size[i] + size[j] + gap * 0.5)
-                # Direct links weigh 3x
-                pairs[i].append((j, (3.0 if want else 1.0) / (ideal * ideal), ideal, want))
-
-        def crossings(xs, ys):
-            lines = [(xs[i] + pa[0], ys[i] + pa[1], xs[j] + pb[0], ys[j] + pb[1], i, j) for i, j, pa, pb in ends]
-            count = 0
-            for p, (ax, ay, bx, by, ai, aj) in enumerate(lines):
-                for cx, cy, dx, dy, ci, cj in lines[p + 1 :]:
-                    if ai in (ci, cj) or aj in (ci, cj):
-                        continue
-                    d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
-                    d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax)
-                    d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx)
-                    d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx)
-                    if d1 * d2 < 0 and d3 * d4 < 0:
-                        count += 1
-            return count
-
-        def solve(xs, ys):
-            for sweep in range(200):
-                moved = 0.0
-                for i in range(n):
-                    if not movable[i] or not pairs[i]:
-                        continue
-                    x, y = xs[i], ys[i]
-                    sx = sy = sw = 0.0
-                    for j, weight, ideal, want in pairs[i]:
-                        if want:
-                            sx += weight * (xs[j] - want[0])
-                            sy += weight * (ys[j] - want[1])
-                        else:
-                            dx, dy = x - xs[j], y - ys[j]
-                            apart = math.hypot(dx, dy)
-                            if apart < 1e-6:
-                                dx, dy, apart = 1.0, 0.0, 1.0
-                            sx += weight * (xs[j] + ideal * dx / apart)
-                            sy += weight * (ys[j] + ideal * dy / apart)
-                        sw += weight
-                    xs[i], ys[i] = sx / sw, sy / sw
-                    moved = max(moved, abs(xs[i] - x), abs(ys[i] - y))
-                if moved < 0.3:
-                    break
-            stress = 0.0
-            for i in range(n):
-                for j, weight, ideal, want in pairs[i]:
-                    if want:
-                        stress += weight * ((xs[j] - xs[i] - want[0]) ** 2 + (ys[j] - ys[i] - want[1]) ** 2)
-                    else:
-                        stress += weight * (math.hypot(xs[i] - xs[j], ys[i] - ys[j]) - ideal) ** 2
-            return stress
-
-        start_x = [origin(r)[0] + centre[i][0] for i, r in enumerate(roots)]
-        start_y = [origin(r)[1] + centre[i][1] for i, r in enumerate(roots)]
-        rng = random.Random(n * 1000 + len(edges))
-        spread = (sum(size) / max(n, 1) * 2 + gap) * math.sqrt(n)
-        best = None
-        for attempt in range(8 if n <= 40 else 5 if n <= 80 else 3):
-            xs, ys = start_x[:], start_y[:]
-            if attempt:
-                for i in range(n):
-                    if movable[i]:
-                        xs[i], ys[i] = rng.uniform(-spread, spread), rng.uniform(-spread, spread)
-            stress = solve(xs, ys)
-            score = (crossings(xs, ys), stress)
-            if best is None or score < best[0]:
-                best = (score, xs, ys)
-        xs, ys = best[1], best[2]
-
-        # Pack disconnected components in rows
-        groups = {}
-        for i in range(n):
-            groups.setdefault(group[i], []).append(i)
-        free = [g for g in groups.values() if all(movable[i] for i in g)]
-        held = [i for g in groups.values() if g not in free for i in g]
-        free.sort(key=lambda g: -len(g))
-        boxes = []
-        for g in free:
-            boxes.append(
-                (
-                    min(xs[i] - half[i][0] for i in g),
-                    min(ys[i] - half[i][1] for i in g),
-                    max(xs[i] + half[i][0] for i in g),
-                    max(ys[i] + half[i][1] for i in g),
-                )
-            )
-        if free:
-            area = sum((b[2] - b[0] + gap) * (b[3] - b[1] + gap) for b in boxes)
-            row_width = max(math.sqrt(area) * 1.5, boxes[0][2] - boxes[0][0])
-            left = max((xs[i] + half[i][0] for i in held), default=0.0) + (gap * 2 if held else 0.0)
-            top = min((ys[i] - half[i][1] for i in held), default=0.0)
-            x, y, row_height = left, top, 0.0
-            for g, box in zip(free, boxes):
-                width, height = box[2] - box[0], box[3] - box[1]
-                if x > left and x + width > left + row_width:
-                    x, y, row_height = left, y + row_height + gap * 2, 0.0
-                for i in g:
-                    xs[i] += x - box[0]
-                    ys[i] += y - box[1]
-                x += width + gap * 2
-                row_height = max(row_height, height)
-
-        for i, r in enumerate(roots):
-            if movable[i]:
-                self._place_stack(r, xs[i] - centre[i][0] + self.stack_off[r][0], ys[i] - centre[i][1] + self.stack_off[r][1])
 
     def repulsion_shapes(self):
         """Per stack: (circle or None, room boxes, reach) in world units, for the debug overlay."""
@@ -1679,7 +1002,7 @@ class GraphModel:
             boxes = []
             for m in members:
                 x, y = self.pos[m]
-                boxes.extend((x + left, y + top, x + right, y + bottom) for left, top, right, bottom in self._pieces(m))
+                boxes.extend((x + left, y + top, x + right, y + bottom) for left, top, right, bottom in self.pieces(m))
             circle = None
             if self.circle_repulsion:
                 corners = [(bx, by) for left, top, right, bottom in boxes for bx in (left, right) for by in (top, bottom)]
@@ -1691,8 +1014,8 @@ class GraphModel:
         """Line up unlinked stacks beside the map."""
         linked = set()
         for a, b in edges:
-            linked.add(self.stack_root[door_tile(a)])
-            linked.add(self.stack_root[door_tile(b)])
+            linked.add(self.stack_root[self.rooms.node(a)])
+            linked.add(self.stack_root[self.rooms.node(b)])
         loose = [
             r
             for r, members in self.stack_members.items()
@@ -1701,14 +1024,14 @@ class GraphModel:
         rest = [t for r in self.stack_members if r not in loose for t in self.stack_members[r]]
         if not loose or not rest:
             return
-        right = max(self.pos[t][0] + self._box(t)[2] for t in rest)
-        y = min(self.pos[t][1] + self._box(t)[1] for t in rest)
+        right = max(self.pos[t][0] + self.box(t)[2] for t in rest)
+        y = min(self.pos[t][1] + self.box(t)[1] for t in rest)
         gap = max(self.spacing, LINK_GAP)
         for r in sorted(loose):
             members = self.stack_members[r]
-            left = min(self.stack_off[m][0] + self._box(m)[0] for m in members)
-            top = min(self.stack_off[m][1] + self._box(m)[1] for m in members)
-            bottom = max(self.stack_off[m][1] + self._box(m)[3] for m in members)
+            left = min(self.stack_off[m][0] + self.box(m)[0] for m in members)
+            top = min(self.stack_off[m][1] + self.box(m)[1] for m in members)
+            bottom = max(self.stack_off[m][1] + self.box(m)[3] for m in members)
             self._place_stack(r, right + gap * 2 - left, y - top)
             y += bottom - top + gap
 
@@ -1716,454 +1039,123 @@ class GraphModel:
         """Edges between different stacks."""
         return [
             e
-            for e in self._edges(known=set(self.nodes()))
-            if e[3] not in self.joined and self.stack_root[door_tile(e[0])] != self.stack_root[door_tile(e[1])]
+            for e in self.edges(known=set(self.nodes()))
+            if e[3] not in self.joined and self.stack_root[self.rooms.node(e[0])] != self.stack_root[self.rooms.node(e[1])]
         ]
+
+    def _bodies(self, old_mobility):
+        """Stacks as layout.Body, in stack_members order. Unsettled stacks are free; the rest get old_mobility."""
+        bodies = []
+        for root, members in self.stack_members.items():
+            rects = []
+            for m in members:
+                ox, oy = self.stack_off[m]
+                for left, top, right, bottom in self.pieces(m):
+                    rects.append((ox + (left + right) / 2, oy + (top + bottom) / 2, (right - left) / 2, (bottom - top) / 2))
+            if any(m in self.fixed or m in self.held for m in members):
+                mobility = 0.0
+            elif all(m in self.unsettled for m in members):
+                mobility = 1.0
+            else:
+                mobility = old_mobility
+            bodies.append(
+                layout.Body(rects, mobility, len(members), self._damping.setdefault(root, [1.0, 0.0, 0.0]), tile_dungeon(root))
+            )
+        return bodies
+
+    def _links(self, edges):
+        """Edges in the form the solvers take; see layout.relax."""
+        index = {root: i for i, root in enumerate(self.stack_members)}
+        links = []
+        for a, b in edges:
+            ta, tb = self.rooms.node(a), self.rooms.node(b)
+            ax, ay = self.port_offset(a)
+            bx, by = self.port_offset(b)
+            links.append(
+                (
+                    index[self.stack_root[ta]],
+                    ax + self.stack_off[ta][0],
+                    ay + self.stack_off[ta][1],
+                    index[self.stack_root[tb]],
+                    bx + self.stack_off[tb][0],
+                    by + self.stack_off[tb][1],
+                    DIRECTIONS.get(door_direction(a)),
+                    DIRECTIONS.get(door_direction(b)),
+                )
+            )
+        return links
+
+    def _stress_layout(self, edges):
+        """Place every unpinned stack with the stress solver."""
+        roots = list(self.stack_members)
+        boxes, movable = [], []
+        for root in roots:
+            members = self.stack_members[root]
+            parts = [(self.stack_off[m], self.box(m)) for m in members]
+            boxes.append(
+                (
+                    min(off[0] + box[0] for off, box in parts),
+                    min(off[1] + box[1] for off, box in parts),
+                    max(off[0] + box[2] for off, box in parts),
+                    max(off[1] + box[3] for off, box in parts),
+                )
+            )
+            movable.append(not any(m in self.fixed for m in members))
+        xs, ys = layout.stress(
+            boxes,
+            movable,
+            [self.pos[r][0] - self.stack_off[r][0] for r in roots],
+            [self.pos[r][1] - self.stack_off[r][1] for r in roots],
+            self._links(edges),
+            spacing=self.spacing,
+        )
+        for root, x, y, free in zip(roots, xs, ys, movable):
+            if free:
+                self._place_stack(root, x + self.stack_off[root][0], y + self.stack_off[root][1])
 
     def _relax(self, iterations, old_mobility, edges, improve=False, cold=False):
-        """Force solver over stacks as rigid bodies. Returns total link length."""
-        gap = LINK_GAP
+        """Run the force solver on the current positions. Returns total link length."""
         roots = list(self.stack_members)
-        index = {r: i for i, r in enumerate(roots)}
-        n = len(roots)
-        xs = [self.pos[r][0] for r in roots]
-        ys = [self.pos[r][1] for r in roots]
-        start_x, start_y = xs[:], ys[:]
-        # Per stack: [step scale, last dx, last dy], persisted between calls
-        damping = [self._damping.setdefault(r, [1.0, 0.0, 0.0]) for r in roots]
-        # Rooms of each stack as (dx, dy, half width, half height) around the stack origin
-        rects = []
-        centres = []
-        extents = []
-        mobility = []
-        for r in roots:
-            members = self.stack_members[r]
-            boxes = []
-            for m in members:
-                for left, top, right, bottom in self._pieces(m):
-                    boxes.append(
-                        (
-                            self.stack_off[m][0] + (left + right) / 2,
-                            self.stack_off[m][1] + (top + bottom) / 2,
-                            (right - left) / 2,
-                            (bottom - top) / 2,
-                        )
-                    )
-            rects.append(boxes)
-            centres.append((sum(b[0] for b in boxes) / len(boxes), sum(b[1] for b in boxes) / len(boxes)))
-            extents.append(
-                (
-                    min(b[0] - b[2] for b in boxes),
-                    max(b[0] + b[2] for b in boxes),
-                    min(b[1] - b[3] for b in boxes),
-                    max(b[1] + b[3] for b in boxes),
-                )
-            )
-            if any(m in self.fixed or m in self._held for m in members):
-                mobility.append(0.0)
-            elif all(m in self.unsettled for m in members):
-                mobility.append(1.0)
-            else:
-                mobility.append(old_mobility)
-
-        # Bounding circles for a quick reject
-        mid_x = [(e[0] + e[1]) / 2 for e in extents]
-        mid_y = [(e[2] + e[3]) / 2 for e in extents]
-        radius = [math.hypot(e[1] - e[0], e[3] - e[2]) / 2 for e in extents]
-
-        springs = []
-        for a, b in edges:
-            ta, tb = door_tile(a), door_tile(b)
-            ia, ib = index[self.stack_root[ta]], index[self.stack_root[tb]]
-            aox, aoy = self._port_offset(a)
-            box, boy = self._port_offset(b)
-            da, db = DIRECTIONS.get(door_direction(a)), DIRECTIONS.get(door_direction(b))
-            # Where the far port should sit relative to the near one; None for stairs and drops
-            if da is not None and db is not None:
-                want = ((da[0] - db[0]) / 2 * gap, (da[1] - db[1]) / 2 * gap)
-            elif da is not None:
-                want = (da[0] * gap, da[1] * gap)
-            elif db is not None:
-                want = (-db[0] * gap, -db[1] * gap)
-            else:
-                want = None
-            springs.append(
-                (
-                    ia,
-                    aox + self.stack_off[ta][0],
-                    aoy + self.stack_off[ta][1],
-                    ib,
-                    box + self.stack_off[tb][0],
-                    boy + self.stack_off[tb][1],
-                    want,
-                )
-            )
-        incident = [[] for _ in range(n)]
-        for spring in springs:
-            incident[spring[0]].append(spring)
-            incident[spring[3]].append(spring)
-
-        groups = []
-        if self.group_by_dungeon:
-            by_dungeon = defaultdict(list)
-            for r in roots:
-                by_dungeon[tile_dungeon(r)].append(index[r])
-            groups = [members for members in by_dungeon.values() if len(members) > 1]
-
-        margin_x = margin_y = HARD_GAP if cold else MIN_GAP
-        reach = self.spacing
-        far = max(reach, CONTACT_RANGE)
-
-        circles = []
-        if self.circle_repulsion:
-            for boxes in rects:
-                corners = [(bx + sx * hw, by + sy * hh) for bx, by, hw, hh in boxes for sx in (-1, 1) for sy in (-1, 1)]
-                circles.append(enclosing_circle(corners))
-
-        def repulsion():
-            """Push apart stacks closer than the reach."""
-            # Circle mode still uses wall-to-wall contact at close range
-            near = CONTACT_RANGE if circles else far
-            for a in range(n):
-                ea = extents[a]
-                for b in range(a + 1, n):
-                    ma, mb = mobility[a], mobility[b]
-                    if ma + mb == 0:
-                        continue
-                    if not circles:
-                        dx = xs[b] + mid_x[b] - xs[a] - mid_x[a]
-                        dy = ys[b] + mid_y[b] - ys[a] - mid_y[a]
-                        limit = radius[a] + radius[b] + near
-                        if dx * dx + dy * dy > limit * limit:
-                            continue
-                    # Split the move by inverse mass (room count)
-                    ease_a, ease_b = ma / weight[a], mb / weight[b]
-                    share_a, share_b = ease_a / (ease_a + ease_b), ease_b / (ease_a + ease_b)
-                    if circles:
-                        ca, cb = circles[a], circles[b]
-                        cx = xs[b] + cb[0] - xs[a] - ca[0]
-                        cy = ys[b] + cb[1] - ys[a] - ca[1]
-                        apart = math.hypot(cx, cy)
-                        gap = apart - ca[2] - cb[2]
-                        if gap < reach:
-                            if apart < 1e-6:
-                                cx, cy, apart = 1.0, 0.0, 1.0
-                            push = REPEL_STRENGTH * (reach - max(0.0, gap))
-                            xs[a] -= cx / apart * push * share_a
-                            ys[a] -= cy / apart * push * share_a
-                            xs[b] += cx / apart * push * share_b
-                            ys[b] += cy / apart * push * share_b
-                    eb = extents[b]
-                    sx, sy = xs[b] - xs[a], ys[b] - ys[a]
-                    if (
-                        sx + eb[0] - near >= ea[1]
-                        or sx + eb[1] + near <= ea[0]
-                        or sy + eb[2] - near >= ea[3]
-                        or sy + eb[3] + near <= ea[2]
-                    ):
-                        continue
-                    # Wall-to-wall gap of the closest pair of rooms
-                    nearest = near
-                    ux = uy = 0.0
-                    for ax, ay, ahw, ahh in rects[a]:
-                        for bx, by, bhw, bhh in rects[b]:
-                            dx = sx + bx - ax
-                            dy = sy + by - ay
-                            gap_x = max(0.0, abs(dx) - ahw - bhw)
-                            gap_y = max(0.0, abs(dy) - ahh - bhh)
-                            distance = math.hypot(gap_x, gap_y)
-                            if distance < nearest:
-                                nearest = distance
-                                if distance > 1e-6:
-                                    ux, uy = (gap_x if dx >= 0 else -gap_x), (gap_y if dy >= 0 else -gap_y)
-                                else:
-                                    ux, uy = dx, dy
-                    if nearest >= near:
-                        continue
-                    norm = math.hypot(ux, uy) or 1.0
-                    # Applied per pair (Gauss-Seidel), which avoids overshoot in crowds
-                    push = CONTACT_STRENGTH * max(0.0, CONTACT_RANGE - nearest)
-                    if not circles:
-                        push += REPEL_STRENGTH * max(0.0, reach - nearest)
-                    xs[a] -= ux / norm * push * share_a
-                    ys[a] -= uy / norm * push * share_a
-                    xs[b] += ux / norm * push * share_b
-                    ys[b] += uy / norm * push * share_b
-
-        def overlap(a, b):
-            """Shortest axis-aligned move of stack b that clears stack a; (0, 0) if clear."""
-            ea, eb = extents[a], extents[b]
-            sx, sy = xs[b] - xs[a], ys[b] - ys[a]
-            if (
-                sx + eb[0] - margin_x >= ea[1]
-                or sx + eb[1] + margin_x <= ea[0]
-                or sy + eb[2] - margin_y >= ea[3]
-                or sy + eb[3] + margin_y <= ea[2]
-            ):
-                return 0.0, 0.0
-            # One move that clears every room pair; per-pair pushes can cycle in a notch
-            right = left = down = up = 0.0
-            touching = False
-            for ax, ay, ahw, ahh in rects[a]:
-                for bx, by, bhw, bhh in rects[b]:
-                    dx = sx + bx - ax
-                    dy = sy + by - ay
-                    wsum = ahw + bhw + margin_x
-                    hsum = ahh + bhh + margin_y
-                    in_row = -hsum < dy < hsum
-                    in_column = -wsum < dx < wsum
-                    if not in_row and not in_column:
-                        continue
-                    if in_row:
-                        right = max(right, wsum - dx)
-                        left = max(left, wsum + dx)
-                    if in_column:
-                        down = max(down, hsum - dy)
-                        up = max(up, hsum + dy)
-                    if in_row and in_column:
-                        touching = True
-            if not touching:
-                return 0.0, 0.0
-            shortest = min(right, left, down, up)
-            if shortest == right:
-                return right, 0.0
-            if shortest == left:
-                return -left, 0.0
-            if shortest == down:
-                return 0.0, down
-            return 0.0, -up
-
-        def separate(strength):
-            moved = False
-            for a in range(n):
-                for b in range(a + 1, n):
-                    ma, mb = mobility[a], mobility[b]
-                    if ma + mb == 0:
-                        continue
-                    dx = xs[b] + mid_x[b] - xs[a] - mid_x[a]
-                    dy = ys[b] + mid_y[b] - ys[a] - mid_y[a]
-                    limit = radius[a] + radius[b] + margin_x
-                    if dx * dx + dy * dy > limit * limit:
-                        continue
-                    push_x, push_y = overlap(a, b)
-                    if not push_x and not push_y:
-                        continue
-                    moved = True
-                    # Split the move by inverse mass (room count)
-                    ease_a, ease_b = ma / weight[a], mb / weight[b]
-                    share_a, share_b = ease_a / (ease_a + ease_b), ease_b / (ease_a + ease_b)
-                    xs[a] -= push_x * strength * share_a
-                    xs[b] += push_x * strength * share_b
-                    ys[a] -= push_y * strength * share_a
-                    ys[b] += push_y * strength * share_b
-            return moved
-
-        def cost(i):
-            total = 0.0
-            for ia, aox, aoy, ib, box, boy, want in incident[i]:
-                dx = xs[ib] + box - xs[ia] - aox
-                dy = ys[ib] + boy - ys[ia] - aoy
-                if want is not None:
-                    dx -= want[0]
-                    dy -= want[1]
-                total += math.hypot(dx, dy)
-            return total
-
-        degree = [len(x) for x in incident]
-        # Satellite pull: links of a stack connected to only one other stack pull leaf_pull**3 harder
-        neighbours = [set() for _ in range(n)]
-        for spring in springs:
-            neighbours[spring[0]].add(spring[3])
-            neighbours[spring[3]].add(spring[0])
-        pull_limit = [
-            LINK_PULL_MAX * (self.leaf_pull**3 if len(neighbours[sp[0]]) == 1 or len(neighbours[sp[3]]) == 1 else 1.0)
-            for sp in springs
-        ]
-        weight = [len(self.stack_members[r]) for r in roots]
-        total_weight = sum(weight)
-
-        for it in range(iterations):
-            cooling = 1 - it / iterations
-            # Cold: no large moves
-            temperature = 10 if cold else 80 * cooling + 4
-            if cold:
-                prev_x, prev_y = xs[:], ys[:]
-            tx = [0.0] * n
-            ty = [0.0] * n
-            for k, (ia, aox, aoy, ib, box, boy, want) in enumerate(springs):
-                pax, pay = xs[ia] + aox, ys[ia] + aoy
-                pbx, pby = xs[ib] + box, ys[ib] + boy
-                if want is None:
-                    # No direction: target one card apart
-                    dx, dy = pbx - pax, pby - pay
-                    dist = math.hypot(dx, dy) or 0.01
-                    vx, vy = dx / dist * gap * 2, dy / dist * gap * 2
-                else:
-                    vx, vy = want
-                ex, ey = pax + vx - pbx, pay + vy - pby
-                if cold:
-                    stretch = math.hypot(ex, ey)
-                    if stretch > pull_limit[k]:
-                        # Beyond LINK_PULL_MAX the pull grows as sqrt(stretch)
-                        pull = math.sqrt(stretch * pull_limit[k])
-                        ex, ey = ex / stretch * pull, ey / stretch * pull
-                # Equal and opposite, split by inverse mass; asymmetric pulls make the map drift
-                share = 2 / max(degree[ia], degree[ib]) / (weight[ia] + weight[ib])
-                tx[ib] += ex * share * weight[ia]
-                ty[ib] += ey * share * weight[ia]
-                tx[ia] -= ex * share * weight[ib]
-                ty[ia] -= ey * share * weight[ib]
-
-            # No centring force; "Group by original dungeon" pulls towards each dungeon's centroid
-            gx = [None] * n
-            gy = [None] * n
-            for members in groups:
-                mx = sum(xs[i] + centres[i][0] for i in members) / len(members)
-                my = sum(ys[i] + centres[i][1] for i in members) / len(members)
-                for i in members:
-                    gx[i], gy[i] = mx, my
-
-            moves = []
-            fastest = 0.0
-            for i in range(n):
-                if mobility[i] == 0:
-                    moves.append((0.0, 0.0))
-                    continue
-                dx = dy = 0.0
-                if gx[i] is not None:
-                    dx = (gx[i] - xs[i] - centres[i][0]) * 0.25
-                    dy = (gy[i] - ys[i] - centres[i][1]) * 0.25
-                dx += tx[i] * 0.45
-                dy += ty[i] * 0.45
-                dx *= mobility[i]
-                dy *= mobility[i]
-                moves.append((dx, dy))
-                fastest = max(fastest, math.hypot(dx, dy))
-            # Cold: scale all moves by one factor; per-stack caps break momentum balance and cause drift
-            together = min(1.0, temperature / fastest) if cold and fastest else 1.0
-            for i, (dx, dy) in enumerate(moves):
-                step = math.hypot(dx, dy)
-                if cold:
-                    dx, dy = dx * together, dy * together
-                elif step > temperature:
-                    dx, dy = dx / step * temperature, dy / step * temperature
-                xs[i] += dx
-                ys[i] += dy
-            repulsion()
-            separate(1.0 if cold else 0.3 + 0.5 * (1 - cooling))
-            if cold:
-                # Half steps stop two stacks swapping places. Adaptive damping: halve a stack's
-                # step scale when it reverses direction, grow it while it keeps going.
-                for i in range(n):
-                    dx = (xs[i] - prev_x[i]) / 2
-                    dy = (ys[i] - prev_y[i]) / 2
-                    state = damping[i]
-                    if dx * state[1] + dy * state[2] < 0:
-                        state[0] = max(0.02, state[0] * 0.5)
-                    else:
-                        state[0] = min(1.0, state[0] * 1.15)
-                    state[1], state[2] = dx, dy
-                    xs[i] = prev_x[i] + dx * state[0]
-                    ys[i] = prev_y[i] + dy * state[0]
-
-        for _ in range(80):
-            if not separate(1.0):
-                break
-
-        if improve:
-            # Relocation: try each stack at the spot each of its links wants; keep it if total length drops
-            def settle(i):
-                for _ in range(40):
-                    clear = True
-                    for other in range(n):
-                        if other == i:
-                            continue
-                        dx = xs[i] + mid_x[i] - xs[other] - mid_x[other]
-                        dy = ys[i] + mid_y[i] - ys[other] - mid_y[other]
-                        limit = radius[i] + radius[other] + margin_x
-                        if dx * dx + dy * dy > limit * limit:
-                            continue
-                        push_x, push_y = overlap(other, i)
-                        if push_x or push_y:
-                            clear = False
-                            xs[i] += push_x
-                            ys[i] += push_y
-                    if clear:
-                        return True
-                return False
-
-            movable = [i for i in range(n) if mobility[i] > 0 and degree[i]]
-            for _ in range(5 if n <= 35 else 3):
-                improved = False
-                for i in sorted(movable, key=cost, reverse=True):
-                    before = cost(i)
-                    best = (before - 1, xs[i], ys[i])
-                    home = (xs[i], ys[i])
-                    spots = []
-                    sum_x = sum_y = 0.0
-                    for ia, aox, aoy, ib, box, boy, want in incident[i]:
-                        vx, vy = want if want is not None else (0.0, gap * 2)
-                        if ib == i and ia != i:
-                            spot = (xs[ia] + aox + vx - box, ys[ia] + aoy + vy - boy)
-                        elif ia == i and ib != i:
-                            spot = (xs[ib] + box - vx - aox, ys[ib] + boy - vy - aoy)
-                        else:
-                            continue
-                        spots.append(spot)
-                        sum_x += spot[0]
-                        sum_y += spot[1]
-                    if not spots:
-                        continue
-                    spots.append((sum_x / len(spots), sum_y / len(spots)))
-                    for spot_x, spot_y in spots:
-                        xs[i], ys[i] = spot_x, spot_y
-                        if settle(i):
-                            value = cost(i)
-                            if value < best[0]:
-                                best = (value, xs[i], ys[i])
-                    xs[i], ys[i] = best[1], best[2]
-                    if (xs[i], ys[i]) != home:
-                        improved = True
-                if not improved:
-                    break
-
-        if cold and iterations and all(mobility):
-            # Cancel net drift
-            shift_x = sum((xs[i] - start_x[i]) * weight[i] for i in range(n)) / total_weight
-            shift_y = sum((ys[i] - start_y[i]) * weight[i] for i in range(n)) / total_weight
-            xs = [x - shift_x for x in xs]
-            ys = [y - shift_y for y in ys]
-        # Residual movement; the simulation timer stops when this is small
-        self._last_step = max(
-            (math.hypot(xs[i] - start_x[i], ys[i] - start_y[i]) for i in range(n)), default=0.0
-        ) / max(1, iterations)
-        for i, r in enumerate(roots):
-            self._place_stack(r, xs[i], ys[i])
-        return sum(cost(i) for i in range(n)) / 2
+        xs, ys, cost, self._last_step = layout.relax(
+            self._bodies(old_mobility),
+            [self.pos[r][0] for r in roots],
+            [self.pos[r][1] for r in roots],
+            self._links(edges),
+            iterations=iterations,
+            spacing=self.spacing,
+            leaf_pull=self.leaf_pull,
+            improve=improve,
+            cold=cold,
+            circles=self.circle_repulsion,
+            grouped=self.group_by_dungeon,
+        )
+        for root, x, y in zip(roots, xs, ys):
+            self._place_stack(root, x, y)
+        return cost
 
     def _keep_centre(self, before):
         """Translate the map so its bounds centre matches `before`."""
-        after = self._bounds()
+        after = self.bounds()
         dx = (before[0] + before[2] - after[0] - after[2]) / 2
         dy = (before[1] + before[3] - after[1] - after[3]) / 2
         for position in self.pos.values():
             position[0] += dx
             position[1] += dy
 
-    def _bounds(self):
+    def bounds(self):
         if not self.pos:
             return 0, 0, 1, 1
-        x0 = min(self.pos[t][0] + self._box(t)[0] for t in self.pos)
-        y0 = min(self.pos[t][1] + self._box(t)[1] for t in self.pos)
-        x1 = max(self.pos[t][0] + self._box(t)[2] for t in self.pos)
-        y1 = max(self.pos[t][1] + self._box(t)[3] for t in self.pos)
+        x0 = min(self.pos[t][0] + self.box(t)[0] for t in self.pos)
+        y0 = min(self.pos[t][1] + self.box(t)[1] for t in self.pos)
+        x1 = max(self.pos[t][0] + self.box(t)[2] for t in self.pos)
+        y1 = max(self.pos[t][1] + self.box(t)[3] for t in self.pos)
         return x0, y0, x1, y1
 
-    def _door_dots(self, tile):
-        """Doors of a node as (door, x, y, radius, fill, outline); x, y relative to its centre."""
-        lobby_doors = set(self._lobby_door_names())
+    def door_dots(self, tile):
+        """Doors of a node as (door, x, y, state); x, y relative to its centre, state open/linked/interior."""
+        lobby_doors = set(self.lobby_door_names())
         dots = []
-        for door in tile_door_names(tile):
+        for door in self.rooms.doors(tile):
             if door in ENTRANCE_ONLY_DOORS or door.startswith("Skull Drop Entrance"):
                 continue
             if door in self._seam_doors or not self._door_visible(door):
@@ -2172,19 +1164,12 @@ class GraphModel:
             if interior and tile in self.compact:
                 continue
             linked = door in self._linked_doors or door in lobby_doors
-            if interior:
-                fill = DOOR_INTERIOR
-            elif linked:
-                fill = DOOR_LINKED
-            else:
-                fill = DOOR_OPEN
-            ox, oy = self._port_offset(door)
-            small = interior or linked
-            dots.append((door, ox, oy, DOOR_RADIUS * (0.7 if small else 1.0), fill, 1 if small else 1.5))
+            ox, oy = self.port_offset(door)
+            dots.append((door, ox, oy, "interior" if interior else "linked" if linked else "open"))
         return dots
 
     def _is_linked(self, door):
-        if door in self._lobby_door_names():
+        if door in self.lobby_door_names():
             return True
         for link in self.door_links:
             if link["door"] == door or link["linked_door"] == door:

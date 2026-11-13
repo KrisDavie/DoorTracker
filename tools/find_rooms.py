@@ -264,7 +264,7 @@ def share_out(px, live, parts, tile):
 
 
 def main():
-    from gui.Doors.graph_model import DOORLESS_ROOMS, PARTS
+    from gui.Doors.rooms import DOORLESS_ROOMS, supertile
 
     # Points that mark a room live: door positions, plus the spot of each doorless room
     marks = {tile: [(door["x"], door["y"]) for door in doors] for tile, doors in door_coordinates.items()}
@@ -289,7 +289,7 @@ def main():
             "dead": [room for i, room in enumerate(rooms) if i not in live],
             "background": background,
         }
-        parts = PARTS.get(tile, [])
+        parts = supertile(tile).parts
         if len(parts) > 1 and entry["live"]:
             entry["areas"] = share_out(picture.load(), entry["live"], parts, tile)
             for door, boxes in HAND_AREAS.get(tile, {}).items():

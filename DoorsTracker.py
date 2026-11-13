@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import os
 import signal
 import sys
 from pathlib import Path
@@ -28,8 +27,7 @@ import data.doors_sprite_data as sprites
 from data.doors_data import eg_tile_multiuse
 from data.vanilla_data import vanilla_layout_optimized
 from data.worlds_data import dungeon_worlds
-from gui.Doors import graph_model
-from gui.Doors.graph_model import tile_title
+from gui.Doors import rooms
 from gui.qt.graph_page import Assets, GraphPage
 
 WINDOW_SIZES = {"small": (1064, 632), "medium": (1588, 888), "large": (2088, 1144)}
@@ -83,7 +81,7 @@ class EgPicker(QDialog):
                 button = QToolButton()
                 button.setIcon(QIcon(assets.thumbnail(tile, 96)))
                 button.setIconSize(QSize(96, 96))
-                button.setToolTip(tile_title(tile))
+                button.setToolTip(rooms.WHOLE.title(tile))
                 # Disabled if already on the map or used up
                 button.setEnabled(tile not in unavailable)
                 button.clicked.connect(lambda checked=False, tile=tile: self._pick(tile))
@@ -110,7 +108,6 @@ class MainWindow(QMainWindow):
             "vanilla_drops": True,
             "hide_dead_rooms": True,
             "split_rooms": True,
-            "stress_layout": True,
         }
         self.device = None
         self.sni_task = None
@@ -162,7 +159,6 @@ class MainWindow(QMainWindow):
             ("Drops Are Not Shuffled", "vanilla_drops"),
             ("Hide Dead Rooms", "hide_dead_rooms"),
             ("Split Partitioned Rooms", "split_rooms"),
-            ("Stress Layout", "stress_layout"),
         ):
             action = QAction(label, self, checkable=True)
             action.setChecked(self.experimental_flags[flag])
@@ -176,10 +172,8 @@ class MainWindow(QMainWindow):
 
     def _set_flag(self, flag, checked):
         self.experimental_flags[flag] = checked
-        if flag == "split_rooms":
-            graph_model.SPLIT_ROOMS = checked
         for page in self.pages.values():
-            if flag in ("hide_dead_rooms", "split_rooms", "stress_layout"):
+            if flag in ("hide_dead_rooms", "split_rooms"):
                 # These change block shapes or count
                 page.relayout()
             else:
