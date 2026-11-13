@@ -123,6 +123,8 @@ DEFAULT_DOORS = {}
 for _door_set in [logical_connections, interior_doors, falldown_pits, dungeon_warps, vanilla_logical_connections]:
     DEFAULT_DOORS.update(_door_set)
 DEFAULT_DOORS.update(MANUAL_DROPS)
+# Keys of DEFAULT_DOORS that cannot be gone back through: holes, warps and drops
+ONE_WAY = {name for name, _target in list(falldown_pits) + list(dungeon_warps)} | set(MANUAL_DROPS)
 
 # Rooms with no doors, by region
 DOORLESS_ROOMS = {
@@ -405,20 +407,26 @@ def door_fraction(name):
 class Rooms:
     """Lookups that depend on whether supertiles are split into parts."""
 
-    def __init__(self, split):
+    def __init__(self, split, whole=lambda tile: False):
         self.split = split
+        self._whole = whole  # says which supertiles count as unsplit for now
+
+    def _is_split(self, tile):
+        return self.split and len(supertile(tile).parts) > 1 and not self._whole(tile)
 
     def part_count(self, tile):
-        return len(supertile(tile).parts) if self.split else 1
+        return len(supertile(tile).parts) if self._is_split(tile) else 1
 
     def node(self, name):
         """Node of a door or port; None if unknown."""
         door = find_door(name)
-        return Node(*door.tile, door.part if self.split else 0) if door else None
+        if door is None:
+            return None
+        return Node(*door.tile, door.part if door.part and self._is_split(door.tile) else 0)
 
     def doors(self, node):
         st = supertile(node.tile)
-        if self.split and len(st.parts) > 1:
+        if self._is_split(node.tile):
             return list(st.parts[node.part]) if node.part < len(st.parts) else []
         return list(st.doors)
 

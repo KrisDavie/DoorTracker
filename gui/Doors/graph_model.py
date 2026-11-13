@@ -34,6 +34,7 @@ from gui.Doors.rooms import (
     INTERIOR_DOORS,
     MANUAL_DROPS,
     MANUAL_REGIONS_ADDED,
+    ONE_WAY,
     ROOM_LINKS,
     VALID_AUTO_LINKS,
     door_direction,
@@ -140,10 +141,17 @@ class GraphModel:
         self.spacing = float(REPEL_RANGE)  # repulsion reach
         self.leaf_pull = 2.5  # pull boost for blocks linked to a single other block
         self.circle_repulsion = False  # repel as one enclosing circle per block
+        self._shown_rooms = rooms.Rooms(True, whole=self.is_hidden_dark)
         self.reset()
 
     @property
     def rooms(self):
+        """Room lookups as shown on the map: an unlit dark supertile is one card, whatever its parts."""
+        return self._shown_rooms if self.experimental_flags.get("split_rooms", True) else rooms.WHOLE
+
+    @property
+    def real_rooms(self):
+        """Room lookups by the supertiles' real parts, for recording where the player has been."""
         return rooms.SPLIT if self.experimental_flags.get("split_rooms", True) else rooms.WHOLE
 
     def reset(self):
@@ -303,7 +311,7 @@ class GraphModel:
 
     def player_node(self, tile, x, y):
         """Node for a position in a supertile. A guess: areas of different parts can overlap."""
-        if self.rooms.part_count(tile) == 1:
+        if self.real_rooms.part_count(tile) == 1:
             return Node(*tile)
         # Smallest containing area wins (a nook inside its lobby)
         best = None
@@ -319,7 +327,7 @@ class GraphModel:
         """Record that the player entered by this door; overrides any position guess."""
         if door not in DOORS:
             return
-        node = self.rooms.node(door)
+        node = self.real_rooms.node(door)
         self.located = node
         self.visited.add(node)
         self.provisional.pop(node.tile, None)
@@ -336,7 +344,7 @@ class GraphModel:
         if self.located is not None and self.located.tile == tile:
             return self.located
         self.located = None
-        if self.rooms.part_count(tile) > 1 and self._sighted != tile:
+        if self.real_rooms.part_count(tile) > 1 and self._sighted != tile:
             self._sighted = tile
             return None
         self._sighted = tile
@@ -381,6 +389,13 @@ class GraphModel:
         if state.has_been_lit:
             return False
         state.has_been_lit = True
+        # The parts take the place of the single card the supertile was while unlit
+        card = Node(*tile)
+        for part in range(1, self.rooms.part_count(tile)):
+            if card in self.pos:
+                self.pos[Node(*tile, part)] = list(self.pos[card])
+            if card in self.fixed:
+                self.fixed.add(Node(*tile, part))
         self.update()
         return True
 
@@ -389,7 +404,7 @@ class GraphModel:
         if tile in self.tiles:
             return False
         self._ensure_tile(tile, has_been_lit=has_been_lit)
-        if player is not None and self.rooms.part_count(tile) > 1:
+        if player is not None and self.real_rooms.part_count(tile) > 1:
             self.provisional[tile] = self.player_node(tile, *player)
         if at is not None:
             self.pos[Node(*tile)] = [at[0], at[1]]
@@ -503,7 +518,7 @@ class GraphModel:
         self.visited, self.provisional, self.located, self._sighted = set(), {}, None, None
         for key in data.get("reached_parts") or []:
             node = Node(*(int(x) for x in str(key).split("__")))
-            if node.tile in self.tiles and node.part < self.rooms.part_count(node.tile):
+            if node.tile in self.tiles and node.part < self.real_rooms.part_count(node.tile):
                 self.visited.add(node)
         for key, value in (data.get("graph_layout") or {}).items():
             # Keys: "x__y" for part 0, "x__y__part" otherwise
@@ -564,7 +579,7 @@ class GraphModel:
             "reached_parts": sorted(
                 f"{n.x}__{n.y}__{n.part}"
                 for n in self.visited | set(self.provisional.values())
-                if n.tile in self.tiles and self.rooms.part_count(n.tile) > 1
+                if n.tile in self.tiles and self.real_rooms.part_count(n.tile) > 1
             ),
             "special_doors": dict(self.special_doors),
             "graph_layout": {
@@ -637,22 +652,32 @@ class GraphModel:
                 if "Drop" in door and door in dungeon_lobbies[self.tab_world] and door not in lobby_doors:
                     self.add_lobby_door(door, door)
 
+        # Add the supertiles that fixed connections lead to. That can show more parts, which lead further.
+        while True:
+            doors = self._reachable_doors(both_ways=False)
+            led_to = {DOORS[door].tile for door in doors if door in DOORS} - set(self.tiles)
+            if not led_to:
+                break
+            for tile in sorted(led_to):
+                self._ensure_tile(tile)
         self.doors_available = self._reachable_doors()
-        for door in self.doors_available:
-            if door in DOORS:
-                self._ensure_tile(DOORS[door].tile)
 
         self._piece_cache = {}
         self.compact = self._compact_nodes()
         self._piece_cache = {}
         self._build_blocks()
 
-    def _reachable_doors(self):
-        """Doors reachable from the lobbies via regions, fixed connections and links."""
+    def _reachable_doors(self, both_ways=True):
+        """Doors reachable from the lobbies via regions, fixed connections and links.
+
+        With both_ways=False, warps and drops are followed only the way they go. Which door dots are
+        shown uses both ways; which supertiles are added to the map does not.
+        """
         adjacency = defaultdict(set)
         for a, b in DEFAULT_DOORS.items():
             adjacency[a].add(b)
-            adjacency[b].add(a)
+            if both_ways or a not in ONE_WAY:
+                adjacency[b].add(a)
         for link in self.door_links:
             adjacency[link.door].add(link.linked_door)
             if not self.decoupled():
@@ -685,9 +710,9 @@ class GraphModel:
             push(lobby.door)
         drain()
 
-        # Supertiles not reached from a lobby show all their doors
-        for tile in list(self.tiles):
-            names = supertile(tile).doors
+        # Nodes not reached from a lobby show all their doors
+        for node in self.nodes():
+            names = self.rooms.doors(node)
             if not any(name in seen for name in names):
                 for name in names:
                     push(name)

@@ -63,6 +63,47 @@ def test_a_warp_shows_the_part_it_lands_in_but_not_the_part_it_leaves():
     assert parts_shown(model, (11, 7)) == [2]
 
 
+def test_a_warp_brings_in_the_supertile_it_leads_to_but_not_the_one_it_comes_from():
+    # From part 0 of (13, 9) a warp leads to part 0 of (11, 7)
+    model = new_model("Ganons_Tower")
+    model.add_tile((13, 9), has_been_lit=True, player=point_in(model, (13, 9), 0))
+    assert parts_shown(model, (11, 7)) == [0]
+
+    # Part 1 of (13, 9) is only where a warp from (11, 7) lands
+    model = new_model("Ganons_Tower")
+    model.add_tile((13, 9), has_been_lit=True, player=point_in(model, (13, 9), 1))
+    assert (11, 7) not in model.tiles
+
+
+def test_an_unlit_dark_supertile_is_one_card_whatever_is_known_of_its_parts():
+    # (10, 6): part 0 PoD Dark Basement, part 1 PoD Dark Alley, where the warp from (11, 0) lands
+    model = new_model("Palace_of_Darkness")
+    model.add_tile((10, 6), has_been_lit=False, player=point_in(model, (10, 6), 0))
+    model.add_tile((11, 0), has_been_lit=True)
+    assert parts_shown(model, (10, 6)) == [0]
+    card = Node(10, 6)
+    assert sorted(model.rooms.doors(card)) == sorted(supertile((10, 6)).doors)
+    assert {model.rooms.node(door) for door in supertile((10, 6)).doors} == {card}
+    x, y = model.pos[card]
+
+    # Lit: the parts that are known, about where the card was
+    model.light((10, 6))
+    assert parts_shown(model, (10, 6)) == [0, 1]
+    for part in (0, 1):
+        px, py = model.pos[Node(10, 6, part)]
+        assert abs(px - x) + abs(py - y) < 128
+
+
+def test_what_is_learnt_in_the_dark_is_kept_for_when_the_room_is_lit():
+    model = new_model("Palace_of_Darkness")
+    model.add_tile((10, 6), has_been_lit=False, player=point_in(model, (10, 6), 1))
+    assert parts_shown(model, (10, 6)) == [0]
+    again = new_model("Palace_of_Darkness")
+    again.load(model.save())
+    again.light((10, 6))
+    assert parts_shown(again, (10, 6)) == [1]
+
+
 def test_parts_reached_without_a_link_survive_a_save():
     model = new_model()
     model.add_tile((13, 9), has_been_lit=True, player=point_in(model, (13, 9), 1))
