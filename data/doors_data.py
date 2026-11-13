@@ -6782,7 +6782,7 @@ doors_data = {
     "Thieves Conveyor Bridge WS": (68, "We", "00"),
     "Thieves Big Chest Room ES": (68, "Ea", "00"),
     "Thieves Conveyor Block WN": (68, "We", "00"),
-    "Thieves Trap EN": (68, "Ea", "Top"),
+    "Thieves Trap EN": (68, "Ea", "00"),
     "Ice Lobby SE": (14, "So", "00"),
     "Ice Lobby WS": (14, "We", "00"),
     "Ice Jelly Key ES": (14, "Ea", "00"),
