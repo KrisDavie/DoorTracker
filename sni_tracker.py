@@ -123,7 +123,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, seen):
         if len(response.devices) > 0:
             break
         else:
-            ui.set_title(f"Jank Door Tracker - Waiting for devices...")
+            ui.set_title("Jank Door Tracker - Waiting for devices...")
             await asyncio.sleep(1)
     ui.set_devices([_device.uri for _device in response.devices])
 
@@ -199,7 +199,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, seen):
 
             if data["race"] == "01" and not forced_autotrack:
                 ui.race_rom_warning()
-                ui.set_title(f"Jank Door Tracker - Auto-tracking Disabled")
+                ui.set_title("Jank Door Tracker - Auto-tracking Disabled")
                 break
 
             # if args.darkpos:
@@ -217,7 +217,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, seen):
                     ui.highlight_dungeon(None)
                     # Just left a dungeon, add the last door as a lobby
                     new_door = find_closest_door(current_x, current_y, eg_tile, previous_layer)
-                    dp_content.auto_add_lobby(new_door)  # type: ignore
+                    ui.pages[dungeon_ids[previous_dungeon]].auto_add_lobby(new_door)
                 current_tile = None
                 previous_tile = None
                 current_x = None

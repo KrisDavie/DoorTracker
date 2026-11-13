@@ -84,32 +84,32 @@ class EgPicker(QDialog):
             page = QWidget()
             grid = QGridLayout(page)
             grid.setSpacing(3)
-
-            def add(tile, row, column):
-                button = QToolButton()
-                button.setIcon(QIcon(assets.thumbnail(tile, 96)))
-                button.setIconSize(QSize(96, 96))
-                button.setToolTip(rooms.WHOLE.title(rooms.Node(*tile)))
-                # Disabled if already on the map or used up
-                button.setEnabled(tile not in unavailable)
-                button.clicked.connect(lambda checked=False: self._pick(tile))
-                grid.addWidget(button, row, column)
-                self.buttons[tile] = button
-
             columns = [t["map_tile"][0] for t in tiles.values()]
             rows = [t["map_tile"][1] for t in tiles.values()]
             for tile, placement in tiles.items():
-                add(tile, placement["map_tile"][1] - min(rows), placement["map_tile"][0] - min(columns))
+                button = self._button(tile, assets, unavailable)
+                grid.addWidget(button, placement["map_tile"][1] - min(rows), placement["map_tile"][0] - min(columns))
             # A gap, then the rest in rows as wide as the layout
             width = max(columns) - min(columns) + 1
             below = max(rows) - min(rows) + 1
             grid.setRowMinimumHeight(below, 12)
             for index, tile in enumerate(left_out.get(name, [])):
-                add(tile, below + 1 + index // width, index % width)
+                grid.addWidget(self._button(tile, assets, unavailable), below + 1 + index // width, index % width)
 
             tabs.addTab(page, "Other Lobby Tiles" if name == "Lobbyable_Tiles" else name.replace("_", " "))
             if name == parent.current_dungeon():
                 tabs.setCurrentWidget(page)
+
+    def _button(self, tile, assets, unavailable):
+        button = QToolButton()
+        button.setIcon(QIcon(assets.thumbnail(tile, 96)))
+        button.setIconSize(QSize(96, 96))
+        button.setToolTip(rooms.WHOLE.title(rooms.Node(*tile)))
+        # Disabled if already on the map or used up
+        button.setEnabled(tile not in unavailable)
+        button.clicked.connect(lambda checked=False: self._pick(tile))
+        self.buttons[tile] = button
+        return button
 
     def _pick(self, tile):
         self.choice = tile

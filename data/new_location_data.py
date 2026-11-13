@@ -952,7 +952,7 @@ underworld_items = {
         "Ganons Tower - Hope Room - Left": {"x": 312, "y": 73, "loc_type": "chest"},
         "Ganons Tower - Hope Room - Right": {"x": 456, "y": 73, "loc_type": "chest"},
         "Ganons Tower - Big Chest": {"x": 128, "y": 392, "loc_type": "chest"},
-        "Ganons Tower - Bob's Torch": {"x": 456, "y": 441, "loc_type": "chest"},
+        "Ganons Tower - Bob's Chest": {"x": 456, "y": 441, "loc_type": "chest"},
         "GT Hope Room Pot #2": {"x": 456, "y": 200, "loc_type": "pot"},
         "GT Bob's Room Pot #3": {"x": 312, "y": 328, "loc_type": "pot"},
         "GT Bob's Room Pot #4": {"x": 376, "y": 328, "loc_type": "pot"},

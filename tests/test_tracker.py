@@ -25,7 +25,7 @@ def door_facing(facing, avoid=None):
     raise AssertionError(f"no {facing} door")
 
 
-def reading(tile, x, y, lamp=True, transitioning=False):
+def reading(tile, x, y, lamp=True, transitioning=False, indoors=True):
     """What the tracker reads from memory with the player at pixel (x, y) of a supertile."""
 
     def coordinate(supertile, pixel):
@@ -35,7 +35,7 @@ def reading(tile, x, y, lamp=True, transitioning=False):
     return {
         "race": "00",
         "gamemode": "07",
-        "indoors": "01",
+        "indoors": "01" if indoors else "00",
         "link_y": coordinate(tile[1], y),
         "link_x": coordinate(tile[0], x),
         "falling": "00",
@@ -69,6 +69,7 @@ def play(window, app, monkeypatch, steps):
         return {
             "player": model.player and model.player.node.tile,
             "links": [(link.door, link.linked_door) for link in model.door_links],
+            "entrances": [lobby.door for lobby in model.lobby_doors],
             "dark room lit": DARK_ROOM in model.tiles and model.tiles[DARK_ROOM].has_been_lit,
             "dark room hidden": model.is_hidden_dark(DARK_ROOM),
         }
@@ -145,3 +146,33 @@ def test_walking_through_a_door_and_into_a_dark_room(window, app, monkeypatch):
     # Dark with no lamp: on the map but hidden, and the player is not drawn
     assert seen["lamp lit"] == {**seen["lamp lit"], "player": None, "dark room lit": False, "dark room hidden": True}
     assert seen["end"] == {**seen["end"], "player": DARK_ROOM, "dark room lit": True, "dark room hidden": False}
+
+
+def test_leaving_a_dungeon_makes_the_door_left_by_an_entrance(window, app, monkeypatch):
+    # A lit supertile with a north door to come in by (not an entrance) and a south door to leave by
+    for tile, entries in sorted(door_coordinates.items()):
+        doors = {}
+        for entry in entries:
+            name = entry["name"]
+            if name.startswith("PoD") and name not in INTERIOR_DOORS and doors_data[name][2] == "00":
+                doors.setdefault(doors_data[name][1], entry)
+        if tile not in dark_tiles and "No" in doors and "So" in doors:
+            break
+    at_north = (tile, doors["No"]["x"], doors["No"]["y"])
+    at_south = (tile, doors["So"]["x"], doors["So"]["y"])
+
+    seen = play(
+        window,
+        app,
+        monkeypatch,
+        [
+            ("came in", reading(*at_north)),
+            ("walked across", reading(*at_south)),
+            ("at the south door", reading(*at_south)),
+            ("outside", reading(*at_south, indoors=False)),
+            ("still outside", reading(*at_south, indoors=False)),
+        ],
+    )
+
+    assert doors["So"]["name"] not in seen["outside"]["entrances"]
+    assert doors["So"]["name"] in seen["end"]["entrances"]
