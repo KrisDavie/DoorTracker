@@ -36,12 +36,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from data.doors_data import door_coordinates_key, mandatory_tiles
+from data.doors_data import mandatory_tiles
 from data.doors_sprite_data import ITEM_SHEET_PATH
 from data.room_bounds import room_bounds
 from gui.Doors.graph_model import THUMB, GraphModel
 from gui.Doors.layout import LINK_GAP, convex_hull
-from gui.Doors.rooms import DIRECTIONS, DUNGEON_BACKGROUNDS, INTERIOR_DOORS, door_direction, tile_dungeon
+from gui.Doors.rooms import (
+    DIRECTIONS,
+    DOORS,
+    DUNGEON_BACKGROUNDS,
+    INTERIOR_DOORS,
+    WHOLE,
+    Node,
+    door_direction,
+    supertile,
+)
 from gui.qt.style import (
     BACKGROUND,
     DOOR_RADIUS,
@@ -138,8 +147,8 @@ class RoomItem(QGraphicsItem):
         self.player_outline = self._around(self.pieces, 3)
         self.w, self.h = self.box[2] - self.box[0], self.box[3] - self.box[1]
         self.blank_dead = bool(model.experimental_flags.get("hide_dead_rooms"))
-        self.colour = QColor(DUNGEON_COLOURS.get(tile_dungeon(tile), UNKNOWN_DUNGEON_COLOUR))
-        self.hidden = model.is_hidden_dark(tile)
+        self.colour = QColor(DUNGEON_COLOURS.get(supertile(tile.tile).dungeon, UNKNOWN_DUNGEON_COLOUR))
+        self.hidden = model.is_hidden_dark(tile.tile)
         self.compact = tile in model.compact
         self.title = "Dark room" if self.hidden else model.rooms.title(tile)
         self.pinned = tile in model.fixed
@@ -178,7 +187,7 @@ class RoomItem(QGraphicsItem):
             painter.drawText(first, Qt.AlignCenter, "?")
         else:
             pixmap = self.page.assets.tile(
-                self.tile[:2], THUMB * lod * painter.device().devicePixelRatioF(), blank_dead=self.blank_dead
+                self.tile.tile, THUMB * lod * painter.device().devicePixelRatioF(), blank_dead=self.blank_dead
             )
             per_unit = pixmap.width() / THUMB
             for rect in self.pieces:
@@ -472,8 +481,8 @@ class LinkItem(QGraphicsPathItem):
         node_a, node_b = model.rooms.node(a), model.rooms.node(b)
         if node_a == node_b:
             reach = max(reach, 30.0)
-        da = DIRECTIONS.get(door_direction(a)) if not model.is_hidden_dark(node_a) else None
-        db = DIRECTIONS.get(door_direction(b)) if not model.is_hidden_dark(node_b) else None
+        da = DIRECTIONS.get(door_direction(a)) if not model.is_hidden_dark(node_a.tile) else None
+        db = DIRECTIONS.get(door_direction(b)) if not model.is_hidden_dark(node_b.tile) else None
         path = QPainterPath(QPointF(ax, ay))
         c1 = QPointF(ax + da[0] * reach, ay + da[1] * reach) if da else None
         c2 = QPointF(bx + db[0] * reach, by + db[1] * reach) if db else None
@@ -807,7 +816,7 @@ class GraphPage(QWidget):
         if model.group_by_dungeon:
             by_dungeon = {}
             for tile in model.nodes():
-                by_dungeon.setdefault(tile_dungeon(tile), []).append(tile)
+                by_dungeon.setdefault(supertile(tile.tile).dungeon, []).append(tile)
             for dungeon, members in by_dungeon.items():
                 colour = DUNGEON_COLOURS.get(dungeon, UNKNOWN_DUNGEON_COLOUR)
                 hull = QGraphicsPolygonItem()
@@ -834,14 +843,14 @@ class GraphPage(QWidget):
 
         for door, icon in model.special_doors.items():
             tile = self.model.rooms.node(door)
-            if tile not in self._doors or door not in door_coordinates_key:
+            if tile not in self._doors or door not in DOORS:
                 continue
             x, y = model.port_offset(door)
             if door in lobbies:
                 direction = DIRECTIONS.get(door_direction(door)) or (0, 1)
                 if door in ("Sanctuary Mirror Route", "Sewer Drop") or "Drop" in door:
                     direction = (0, -1)
-                if model.is_hidden_dark(tile):
+                if model.is_hidden_dark(tile.tile):
                     direction = (0, 1)
                 lobby = lobbies[door]
                 picture = "Drop" if "Drop" in lobby or "Drop" in door else lobby
@@ -1209,9 +1218,9 @@ class GraphPage(QWidget):
                 menu.addAction("Unpin", lambda: self.set_pinned(tile, False))
             else:
                 menu.addAction("Pin in place", lambda: self.set_pinned(tile, True))
-            if tile[:2] not in mandatory_tiles[self.tab_world]:
+            if tile.tile not in mandatory_tiles[self.tab_world]:
                 menu.addSeparator()
-                menu.addAction("Remove supertile…", lambda: self.remove_tile(tile))
+                menu.addAction("Remove supertile…", lambda: self.remove_tile(tile.tile))
             menu.exec(event.globalPosition().toPoint())
         else:
             menu = QMenu(self)
@@ -1239,7 +1248,7 @@ class GraphPage(QWidget):
         answer = QMessageBox.question(
             self,
             "Remove supertile",
-            f"Remove {self.model.rooms.title(tile[:2])} and every link, lobby and annotation on it?",
+            f"Remove {WHOLE.title(Node(*tile))} and every link, lobby and annotation on it?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

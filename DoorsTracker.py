@@ -81,7 +81,7 @@ class EgPicker(QDialog):
                 button = QToolButton()
                 button.setIcon(QIcon(assets.thumbnail(tile, 96)))
                 button.setIconSize(QSize(96, 96))
-                button.setToolTip(rooms.WHOLE.title(tile))
+                button.setToolTip(rooms.WHOLE.title(rooms.Node(*tile)))
                 # Disabled if already on the map or used up
                 button.setEnabled(tile not in unavailable)
                 button.clicked.connect(lambda checked=False, tile=tile: self._pick(tile))
