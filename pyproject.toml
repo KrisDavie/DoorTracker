@@ -14,5 +14,5 @@ dependencies = [
 ]
 
 [tool.uv]
-# An application run from the checkout (uv run DoorsTracker.py), not an installable package
+# Not packaged: top-level gui/, data/ and sni/ would install under those names
 package = false

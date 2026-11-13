@@ -1,15 +1,7 @@
-"""Work out what is drawn where inside each supertile picture, and write data/room_bounds.py.
+"""Generate data/room_bounds.py from data/maps/egmap.png.
 
-A supertile picture is a 512x512 square that can hold several separate rooms.
-
-* Some rooms are blank placeholders the game never uses (the right half of GT Gauntlet 4). The
-  picture is split into rooms wherever the background colour shows through; a room is "live" when
-  at least one door sits in it and "dead" otherwise.
-* Some supertiles hold places that cannot be walked between (see _build_parts in graph_model). When
-  two such parts share one drawn room, a bridge over a corridor say, each part's share of the
-  picture is measured from the picture: the patch of floor its doors stand on.
-
-Run it again after changing data/maps/egmap.png or the door coordinates:
+Per supertile: the drawn rooms (live = has a door, dead = none), the background colour, and for
+split supertiles the picture boxes of each part.
 
     uv run tools/find_rooms.py
 """
@@ -25,38 +17,37 @@ from PIL import Image  # noqa: E402
 
 from data.doors_data import door_coordinates, doors_data  # noqa: E402
 
-CELL = 8  # the picture is examined in 8x8 pixel cells
+CELL = 8  # grid cell, pixels
 N = 512 // CELL
-SPECK = 40  # groups of fewer cells than this are decoration, not rooms
+SPECK = 40  # components smaller than this many cells are ignored
 INWARD = {"No": (0, 1), "So": (0, -1), "We": (1, 0), "Ea": (-1, 0)}
 
 
-# Shares of the picture set by eye, where measuring gets it wrong: two floors on top of each other,
-# or a floor that is not one colour. {supertile: {a door of the part: its boxes}}
+# Hand-set part areas, overriding the measured ones. {supertile: {any door of the part: boxes}}
 HAND_AREAS = {
-    # The catwalk is the raised corner; the abyss is everything
+    # Catwalk: raised corner. Abyss: whole room
     (2, 8): {
         "Hyrule Dungeon South Abyss Catwalk North Edge": [(0, 0, 76, 150)],
         "Hyrule Dungeon South Abyss North Edge": [(0, 0, 448, 472)],
     },
-    # The top room is the BK door room's floor, with the minibridge crossing over it
+    # Top room is the BK door room; the minibridge crosses over it
     (2, 11): {
         "Mire BK Door Room N": [(16, 32, 496, 240)],
         "Mire Minibridge NE": [(355, 32, 412, 240), (16, 288, 240, 496), (272, 288, 496, 496)],
     },
-    # The ledge is the two side pockets and the bottom; the courtyard is the middle
+    # Ledge: side pockets and bottom. Courtyard: middle
     (9, 10): {
         "Eastern Courtyard N": [(16, 32, 496, 250), (130, 250, 382, 330)],
         "Eastern Courtyard Ledge S": [(16, 250, 130, 330), (382, 250, 496, 330), (16, 330, 496, 496)],
     },
-    # The alley is the fenced strip down the middle and the platform at its end
+    # Alley: fenced middle strip and end platform
     (10, 6): {
         "PoD Dark Alley NE": [(350, 37, 416, 380), (332, 370, 436, 452)],
         "PoD Dark Basement W Up Stairs": [(272, 32, 350, 496), (416, 32, 496, 496), (350, 452, 416, 496)],
     },
-    # The valley is the low floor: the corner at its west door, each fenced hole, and the way out south
+    # Valley: low floor (west corner, the five holes, south exit)
     (10, 10): {
-        # Upstairs is the walkways between the holes; the other two rooms are all its own
+        # Upstairs: walkways between the holes, plus the other two rooms
         "Eastern East Wing W": [
             (116, 100, 240, 138),
             (16, 172, 120, 186),
@@ -81,12 +72,12 @@ HAND_AREAS = {
             (110, 390, 148, 492),
         ],
     },
-    # The nook is the sunken chest room in the corner
+    # Nook: sunken chest room
     (11, 13): {
         "Thieves Big Chest Nook ES Edge": [(336, 280, 476, 436)],
         "Thieves Lobby S": [(16, 32, 496, 496)],
     },
-    # Each set of doors with the pipes that join them
+    # Each door pair with its pipes
     (4, 1): {
         "TR Lava Island WS": [(20, 127, 493, 437)],
         "TR Lava Escape NW": [(100, 34, 413, 493)],
@@ -102,15 +93,14 @@ HAND_AREAS = {
     },
     (7, 12): {"TR Torches Ledge WS": [(16, 330, 100, 496)]},
     (10, 1): {"PoD Big Chest Balcony W": [(16, 238, 96, 312)]},
-    # The walkway ring that crosses over the room
+    # Ledge: walkway ring over the room
     (9, 11): {
         "Eastern Cannonball Ledge WN": [(16, 104, 496, 236)],
         "Eastern Cannonball S": [(16, 32, 496, 104), (16, 236, 496, 496)],
     },
-    # The middle column, down to its railing
+    # Landing: middle column down to its railing
     (10, 3): {"PoD Big Key Landing Down Stairs": [(216, 32, 296, 190)]},
-    # The fenced square in the corner of the petting zoo's room is a pocket of the warp maze: it goes
-    # with the maze, and the petting zoo is its room without it
+    # The fenced square in the petting zoo's room is a warp maze pocket
     (13, 7): {
         "GT Firesnake Room SW": [(80, 64, 496, 240), (16, 288, 240, 496), (400, 310, 456, 358)],
         "GT Petting Zoo SE": [(272, 288, 400, 496), (400, 358, 496, 496), (456, 288, 496, 358), (400, 288, 456, 310)],
@@ -119,7 +109,7 @@ HAND_AREAS = {
 
 
 def find_rooms(picture):
-    """Rooms as (x0, y0, x1, y1) boxes in picture pixels, plus the background colour."""
+    """(room boxes, background colour). Rooms are connected non-background regions."""
     px = picture.load()
     background = px[1, 1]
 
@@ -163,12 +153,10 @@ def distance_to(box, x, y):
 
 
 def floor_patch(px, room, x, y, facing):
-    """The box around the floor a door stands on, or None when it cannot be told from the picture.
+    """Box around the floor inside a door, or None.
 
-    Floors are drawn from a handful of repeating tiles, so the colours just inside the door are the
-    floor's colours. Spreading out from there over pixels of those colours covers the floor and
-    stops at walls, railings, pits and stairs. Several starting distances are tried, since how far
-    the door frame reaches into the room varies; the tightest sensible result wins.
+    Flood fill over the colours sampled just inside the door, tried at several distances from it;
+    the smallest plausible result wins.
     """
     left, top, right, bottom = room
     step = INWARD.get(facing, (0, 0))
@@ -183,7 +171,7 @@ def floor_patch(px, room, x, y, facing):
                 qx, qy = sx + dx, sy + dy
                 if left <= qx < right and top <= qy < bottom:
                     colour = px[qx, qy]
-                    if max(colour) >= 28:  # pits are black; they are never floor
+                    if max(colour) >= 28:  # exclude black (pits)
                         palette.add(colour)
         if px[sx, sy] not in palette:
             continue
@@ -200,16 +188,16 @@ def floor_patch(px, room, x, y, facing):
                     queue.append((bx, by))
         width, height = x1 - x0 + 1, y1 - y0 + 1
         if width < 24 or height < 24 or len(seen) < 400:
-            continue  # landed on a door frame or a decoration, not a floor
+            continue  # too small to be a floor
         if width * height > room_area * 0.85:
-            continue  # leaked along the walls and swallowed the room
+            continue  # fill leaked into the whole room
         if best is None or width * height < best[0]:
             best = (width * height, (x0, y0, x1 + 1, y1 + 1))
     return best[1] if best else None
 
 
 def share_out(px, live, parts, tile):
-    """Each part's share of the picture, as boxes in picture pixels (see the module docstring)."""
+    """Picture boxes for each part of a split supertile."""
     entries = {entry["name"]: entry for entry in door_coordinates[tile]}
 
     def room_of(name):
@@ -236,9 +224,9 @@ def share_out(px, live, parts, tile):
                 x, y = entries[name]["x"], entries[name]["y"]
                 patch = floor_patch(px, room, x, y, doors_data[name][1])
                 if patch is None:
-                    # Nothing readable: a small box around the door is the honest fallback
+                    # Fallback: small box around the door
                     patch = (x - 40, y - 40, x + 40, y + 40)
-                # Room for the railing or wall around the floor, and for the door itself
+                # Pad to include the surrounding wall and the door
                 pad = 12
                 box = (
                     max(left, min(patch[0] - pad, x - 14)),
@@ -247,7 +235,7 @@ def share_out(px, live, parts, tile):
                     min(bottom, max(patch[3] + pad, y + 14)),
                 )
                 boxes.append(box)
-            # Doors standing on the same floor give the same box: keep one, merged
+            # Merge overlapping boxes
             merged = []
             for box in boxes:
                 for i, other in enumerate(merged):
@@ -258,7 +246,7 @@ def share_out(px, live, parts, tile):
                     merged.append(box)
             areas[k].extend(merged)
             for box in merged:
-                # A walkway from wall to wall divides the room for whoever is underneath it
+                # A wall-to-wall walkway is cut out of the main part's area
                 if box[2] - box[0] >= (right - left) * 0.85:
                     across.append((box[1], box[3]))
                 elif box[3] - box[1] >= (bottom - top) * 0.85:
@@ -276,10 +264,9 @@ def share_out(px, live, parts, tile):
 
 
 def main():
-    # PARTS: which doors can be walked between. DOORLESS_ROOMS: rooms with no doors. Neither needs a picture
     from gui.Doors.graph_model import DOORLESS_ROOMS, PARTS
 
-    # What marks a room as used: its doors, or for a room without doors the spot it was given
+    # Points that mark a room live: door positions, plus the spot of each doorless room
     marks = {tile: [(door["x"], door["y"]) for door in doors] for tile, doors in door_coordinates.items()}
     for tile, dungeon, place in DOORLESS_ROOMS.values():
         marks.setdefault(tile, []).append((place[0] * 512, place[1] * 512))
@@ -294,7 +281,7 @@ def main():
         for mark_x, mark_y in marks[tile]:
             if not rooms:
                 break
-            # A door belongs to the room it is in, or failing that the nearest one
+            # Nearest room
             nearest = min(range(len(rooms)), key=lambda i: distance_to(rooms[i], mark_x, mark_y))
             live.add(nearest)
         entry = {

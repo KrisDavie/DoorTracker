@@ -1,8 +1,4 @@
-"""Jank Door Tracker.
-
-Auto-tracks dungeon layouts from the ALttP door randomizer through SNI. The map is drawn with Qt's
-graphics view: rooms live in a scene in world coordinates and the window is a camera onto it.
-"""
+"""Jank Door Tracker: auto-tracks ALttP door randomizer dungeon layouts through SNI. Qt entry point."""
 
 import argparse
 import asyncio
@@ -88,7 +84,7 @@ class EgPicker(QDialog):
                 button.setIcon(QIcon(assets.thumbnail(tile, 96)))
                 button.setIconSize(QSize(96, 96))
                 button.setToolTip(tile_title(tile))
-                # Already on this map, or used as often as the game has it
+                # Disabled if already on the map or used up
                 button.setEnabled(tile not in unavailable)
                 button.clicked.connect(lambda checked=False, tile=tile: self._pick(tile))
                 grid.addWidget(button, placement["map_tile"][1] - min_y, placement["map_tile"][0] - min_x)
@@ -184,7 +180,7 @@ class MainWindow(QMainWindow):
             graph_model.SPLIT_ROOMS = checked
         for page in self.pages.values():
             if flag in ("hide_dead_rooms", "split_rooms", "stress_layout"):
-                # Rooms change size or number, so blocks have to be fitted together again
+                # These change block shapes or count
                 page.relayout()
             else:
                 page.redraw_canvas()
@@ -249,7 +245,7 @@ class MainWindow(QMainWindow):
         dialog = EgPicker(self, self.assets, unavailable)
         return dialog.choice if dialog.exec() else None
 
-    # ------------------------------------------------------- what tracking calls
+    # ------------------------------------------------------- called by the tracker
 
     def set_title(self, text):
         self.setWindowTitle(text)
@@ -276,7 +272,7 @@ class MainWindow(QMainWindow):
         force = box.addButton("Force Auto-Tracking", QMessageBox.DestructiveRole)
         box.exec()
         if box.clickedButton() is force:
-            # Not from inside the tracking task that is about to be replaced
+            # Deferred: this runs inside the task being restarted
             QTimer.singleShot(0, lambda: self.start_tracking(forced=True, device=self.device))
 
     def highlight_dungeon(self, name):
@@ -308,7 +304,7 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{TITLE} - Auto-tracking disabled")
 
     def _pump_asyncio(self):
-        """Give asyncio (the SNI polling) a turn, then hand control straight back to Qt."""
+        """Run pending asyncio callbacks once, from the Qt timer."""
         self.loop.call_soon(self.loop.stop)
         self.loop.run_forever()
         if self.sni_task is not None and self.sni_task.done() and not self.sni_task.cancelled():
@@ -325,7 +321,7 @@ class MainWindow(QMainWindow):
 
 
 def _add_thumbnails(assets):
-    """Small pictures for the supertile picker, kept apart from the full-size ones the map uses."""
+    """Add a cached thumbnail() to assets, for the supertile picker."""
     cache = {}
 
     def thumbnail(tile, size):
@@ -341,12 +337,10 @@ def _add_thumbnails(assets):
 
 
 def install_interrupt_handler(app, window):
-    """Make Ctrl+C in the terminal close the tracker.
+    """Close the window on Ctrl+C.
 
-    Python only runs its signal handlers between bytecodes, and Qt's event loop is not Python, so
-    without help an interrupt just sits there until the window is next touched. A timer that does
-    nothing gives the interpreter a turn a few times a second, and the handler closes the window the
-    normal way so tracking is shut down properly.
+    Python signal handlers only run when the interpreter does, so a no-op timer wakes it while Qt's
+    event loop is running.
     """
     signal.signal(signal.SIGINT, lambda signum, frame: window.close())
     wake = QTimer(app)

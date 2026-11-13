@@ -1,8 +1,4 @@
-"""Auto-tracking: reads the game's memory through SNI and turns it into rooms, links and lobbies.
-
-Every call into the window goes through a small `ui` object (set_title, set_devices,
-race_rom_warning, highlight_dungeon, select_dungeon, pages), so nothing here depends on how the map is drawn.
-"""
+"""Auto-tracking: polls game memory through SNI and reports rooms, links and lobbies to the UI."""
 
 import argparse
 import asyncio
@@ -93,13 +89,10 @@ RETRY_SECONDS = 2
 
 
 async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False, device: str = None):
-    """Poll the game through SNI and feed what the player does into the dungeon pages.
+    """Run tracking, reconnecting on SNI/device errors.
 
-    `ui` is the window, reduced to what tracking needs from it: set_title, set_devices,
-    race_rom_warning, highlight_dungeon, select_dungeon and a `pages` dict of dungeon name -> page.
-
-    SNI not running, the console unplugged, the serial port busy: none of that ends tracking. It
-    says so in the title and tries again until it works, picking up the same device when it is back.
+    `ui` needs set_title, set_devices, race_rom_warning, highlight_dungeon, select_dungeon and
+    `pages` (dungeon name -> page).
     """
     last_error = None
     resumed = False
@@ -107,7 +100,7 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
         channel = grpc.aio.insecure_channel(f"localhost:{args.port}")
         try:
             await _sni_session(ui, args, channel, forced_autotrack, device or getattr(ui, "device", None), resumed)
-            return  # stopped on purpose (a race rom)
+            return  # race rom
         except (grpc.aio.AioRpcError, OSError) as error:
             details = error.details() if isinstance(error, grpc.aio.AioRpcError) else str(error)
             if details != last_error:
@@ -121,7 +114,7 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
 
 
 async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=False):
-    """One connection's worth of tracking. Returns when tracking should stop; raises when the connection drops."""
+    """Track over one connection. Returns to stop tracking; raises AioRpcError if the connection drops."""
     debug = args.debug
     stub = sni.DevicesStub(channel)
     while True:
@@ -163,8 +156,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=Fals
     previous_layer = None
     was_transitioning = False
     was_falling = False
-    # The first room seen is normally a dungeon being entered, and its door an entrance. Picking up
-    # after a lost connection it is not: the same flag that skips this after a death skips it here.
+    # After a reconnect, don't treat the first room as a dungeon entry (same skip as after a death)
     was_dead = resumed
     cycle_skipped = False
     was_mirroring = False
@@ -342,7 +334,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=Fals
 
             await asyncio.sleep(0.1)
         except grpc.aio.AioRpcError:
-            raise  # the device or SNI went away: sni_probe connects again
+            raise  # sni_probe reconnects
         # except Exception as e:
         #     print(e)
         #     await asyncio.sleep(1)

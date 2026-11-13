@@ -1,9 +1,4 @@
-"""Qt view of a dungeon map.
-
-The scene is the world: rooms sit at the positions the model gives them, in world units. The view
-is a camera onto it: panning and zooming only change the view's transform, so nothing is redrawn
-or rescaled by hand and the graphics card does the work.
-"""
+"""Qt view of a dungeon map. Scene coordinates are the model's world units; the view transform is the camera."""
 
 import math
 
@@ -74,11 +69,11 @@ from gui.Doors.graph_model import (
 )
 
 MIN_ZOOM, MAX_ZOOM = 0.1, 4.0
-WORLD = 1_000_000  # the scene is effectively endless
+WORLD = 1_000_000  # scene half-extent
 
 
 class Assets:
-    """Pictures shared by every tab: supertile thumbnails at a few sizes, and the icon sheet."""
+    """Pixmaps shared by all tabs: supertile pictures at several sizes, and the icon sheet."""
 
     def __init__(self, eg_img):
         self.eg_img = eg_img  # PIL image of the whole EG map
@@ -87,10 +82,7 @@ class Assets:
         self._icons = {}
 
     def tile(self, tile, wanted_px, blank_dead=False):
-        """The supertile picture, at the smallest stored size that is at least wanted_px wide.
-
-        With blank_dead, rooms that have no door are painted over with the picture's background.
-        """
+        """Supertile pixmap at the smallest stored size >= wanted_px. blank_dead paints over dead rooms."""
         bounds = room_bounds.get(tile, {})
         blank_dead = blank_dead and bool(bounds.get("dead"))
         key = (tile, blank_dead)
@@ -137,7 +129,7 @@ class Assets:
 
 
 class RoomItem(QGraphicsItem):
-    """One supertile: picture, border, name and pin. Doors are drawn by DoorsItem, above the links."""
+    """One node: picture, border, pin. Doors are a separate item (DoorsItem) above the links."""
 
     def __init__(self, page, tile):
         super().__init__()
@@ -147,12 +139,12 @@ class RoomItem(QGraphicsItem):
         self.payload = tile
         model = page.model
         self.box = model._box(tile)
-        # One rectangle per real room, top-left one first
+        # Sorted so pieces[0] is the top-left one
         self.pieces = [
             QRectF(left, top, right - left, bottom - top)
             for left, top, right, bottom in sorted(model._pieces(tile), key=lambda p: (p[1], p[0]))
         ]
-        # Pieces may touch or overlap; the border goes round them all together, never through the picture
+        # Border follows the union of the pieces
         self.outline = self._around(self.pieces, 0)
         self.player_outline = self._around(self.pieces, 3)
         self.w, self.h = self.box[2] - self.box[0], self.box[3] - self.box[1]
@@ -163,7 +155,6 @@ class RoomItem(QGraphicsItem):
         self.title = "Dark room" if self.hidden else tile_title(tile)
         self.pinned = tile in model.fixed
         self.keep_expanded = tile in model.pinned_eg_tiles
-        # The name goes inside the room when another room is stacked on top of it
         self.setZValue(1)
 
     @staticmethod
@@ -200,7 +191,6 @@ class RoomItem(QGraphicsItem):
             pixmap = self.page.assets.tile(
                 self.tile[:2], THUMB * lod * painter.device().devicePixelRatioF(), blank_dead=self.blank_dead
             )
-            # Each piece shows the part of the picture that falls inside it
             per_unit = pixmap.width() / THUMB
             for rect in self.pieces:
                 source = QRectF(
@@ -228,7 +218,7 @@ class RoomItem(QGraphicsItem):
                 painter.setPen(QColor("#111"))
                 text = metrics.elidedText(self.title, Qt.ElideRight, first.width() - 6)
                 painter.drawText(first, Qt.AlignCenter, text)
-            # Full-size rooms get their name from a LabelItem, which is never cut to the room's width
+            # Full-size rooms are labelled by LabelItem
 
         if self.pinned:
             self._paint_pin(painter, first)
@@ -260,11 +250,7 @@ class RoomItem(QGraphicsItem):
 
 
 class LabelItem(QGraphicsItem):
-    """A room's name, written out in full at the top-left corner of its first piece.
-
-    It sits on a layer above every room, so a name that is wider than its room runs over whatever is
-    next to it and is never cut short or hidden behind a neighbour.
-    """
+    """Room name at the top-left of its first piece, on a layer above all rooms so it is never clipped."""
 
     def __init__(self, room):
         super().__init__()
@@ -296,11 +282,7 @@ class LabelItem(QGraphicsItem):
 
 
 class ReachItem(QGraphicsItem):
-    """What each block repels as, drawn under the rooms.
-
-    The solid outline is the shape; the dashed one is half the reach further out, so two blocks are
-    pushing each other exactly when their dashed outlines overlap.
-    """
+    """Debug overlay of repulsion shapes. Dashed outline = shape grown by half the reach; overlap means repulsion."""
 
     def __init__(self, page):
         super().__init__()
@@ -344,7 +326,7 @@ class ReachItem(QGraphicsItem):
                 painter.setPen(solid)
                 painter.drawEllipse(QPointF(x, y), radius, radius)
             else:
-                # Wall to wall from every room: the rooms grown by half the reach, corners rounded
+                # Rooms grown by half the reach
                 grown = QPainterPath()
                 grown.setFillRule(Qt.WindingFill)
                 for left, top, right, bottom in boxes:
@@ -355,7 +337,7 @@ class ReachItem(QGraphicsItem):
 
 
 class DoorsItem(QGraphicsItem):
-    """The doors of one room, and the player marker. Sits above the links so a door is never hidden."""
+    """Door dots and player marker of one node, above the links."""
 
     def __init__(self, page, tile):
         super().__init__()
@@ -363,11 +345,11 @@ class DoorsItem(QGraphicsItem):
         self.tile = tile
         self.kind = "card"
         self.payload = tile
-        # Doors keep their place on the full supertile, whatever part of the room is drawn
+        # Door positions are relative to the full supertile, not the drawn pieces
         self.w, self.h = (page.model._size(tile) if tile in page.model.compact else (THUMB, THUMB))
         self.dots = page.model._door_dots(tile)
         self.setZValue(3)
-        # Only the dots count as this item; clicks elsewhere fall through to the link or the room below
+        # Hit shape is the dots only
         self.setAcceptedMouseButtons(Qt.NoButton)
 
     def boundingRect(self):
@@ -396,7 +378,7 @@ class DoorsItem(QGraphicsItem):
 
 
 class SeamItem(QGraphicsRectItem):
-    """A doorway shared by two stacked rooms: an opening across the wall instead of two dots and a line."""
+    """Bar across the doorway of two stacked rooms."""
 
     def __init__(self, parent, x, y, vertical, payload):
         long_side, short_side = 11.0, 5.0
@@ -409,7 +391,7 @@ class SeamItem(QGraphicsRectItem):
 
 
 class IconItem(QGraphicsItem):
-    """An annotation on a door, or a lobby drawn as an entrance hanging off its door."""
+    """Icon on a door: an annotation or a lobby entrance."""
 
     def __init__(self, parent, page, door, x, y, icon, lobby=None, direction=(0, 1)):
         super().__init__(parent)
@@ -450,7 +432,7 @@ class IconItem(QGraphicsItem):
                 font.setPixelSize(10)
                 font.setBold(True)
                 painter.setFont(font)
-                # Written straight on the map, so it has to stand out against that dungeon's background
+                # Text colour chosen for contrast with the tab background
                 painter.setPen(self.page.text_colour)
                 below = self.direction[1] >= 0
                 text_rect = QRectF(self.spot.x() - 60, self.spot.y() + (12 if below else -26), 120, 14)
@@ -458,7 +440,7 @@ class IconItem(QGraphicsItem):
 
 
 class LinkItem(QGraphicsPathItem):
-    """A link between two doors in different blocks (or an interior connection inside one room)."""
+    """A link, interior connection, drop or warp between two doors."""
 
     def __init__(self, page, a, b, n, kind, colour):
         super().__init__()
@@ -506,8 +488,7 @@ class LinkItem(QGraphicsPathItem):
         end = QPointF(bx, by)
         same_block = model.stack_root.get(door_tile(a)) == model.stack_root.get(door_tile(b))
         if same_block and da and db and not self.interior and dist > 1:
-            # Two doors of one block face away from each other, so the plain curve comes out as a
-            # straight line through the room: bow it to one side so it reads as a link
+            # Same block: the plain curve would be a straight line, so bow it sideways
             px, py = -(by - ay) / dist, (bx - ax) / dist
             if py < 0 or (py == 0 and px < 0):
                 px, py = -px, -py
@@ -530,13 +511,11 @@ class LinkItem(QGraphicsPathItem):
                 model._decoupled() or (door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a)
             )
         if one_way:
-            # A tracked drop can be stored either way round. You fall from the pit (facing down) to the
-            # drop entrance (facing up), so that is the way the arrow points whichever came first.
+            # Tracked drops can be stored either way round; the arrow always points pit -> landing
             backwards = (
                 not model._decoupled() and door_direction(a) == "Up" and door_direction(b) == "Dn"
             )
             tip_x, tip_y = (ax, ay) if backwards else (bx, by)
-            # Arrow head at the landing end, pointing along the last bit of the curve
             tail = path.pointAtPercent(0.08 if backwards else 0.92) if dist > 1 else QPointF(bx, by)
             angle = math.atan2(tip_y - tail.y(), tip_x - tail.x())
             head = QPolygonF(
@@ -555,7 +534,7 @@ class LinkItem(QGraphicsPathItem):
             self.arrow.setPolygon(head)
 
     def shape(self):
-        # Easier to hit than a three unit wide line
+        # Wider hit area than the drawn line
         stroker = QPainterPathStroker()
         stroker.setWidth(9)
         return stroker.createStroke(self.path())
@@ -567,7 +546,7 @@ class LinkItem(QGraphicsPathItem):
 
 
 class GraphView(QGraphicsView):
-    """The camera. Everything it does is a change of transform; the scene underneath never moves for it."""
+    """Camera: pan and zoom by view transform only."""
 
     def __init__(self, page, use_gl=True):
         super().__init__(page.scene)
@@ -578,7 +557,6 @@ class GraphView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.NoAnchor)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
-        # Each dungeon's map sits on that dungeon's own background, the colour between the rooms in its pictures
         self.setBackgroundBrush(QColor(DUNGEON_BACKGROUNDS.get(page.dungeon_name, BACKGROUND)))
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setDragMode(QGraphicsView.NoDrag)
@@ -599,7 +577,7 @@ class GraphView(QGraphicsView):
                 self.gl = False
         if not self.gl:
             self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
-        # Hovering needs mouse moves without a button held, on the view and on whichever viewport it ended up with
+        # Mouse tracking for hover, on both the view and its viewport
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
 
@@ -617,12 +595,12 @@ class GraphView(QGraphicsView):
         self.resetTransform()
         self.scale(zoom, zoom)
         self.centerOn(x, y)
-        # centerOn lands on a whole pixel; take up the remainder so the camera is exactly where asked
+        # centerOn rounds to whole pixels; correct the remainder
         centre = self.mapToScene(self.viewport().rect().center())
         self.translate(centre.x() - x, centre.y() - y)
 
     def zoom_at(self, view_pos, factor):
-        """Zoom keeping the world point under the mouse where it is on screen."""
+        """Zoom about a viewport point."""
         factor = max(MIN_ZOOM / self.zoom(), min(MAX_ZOOM / self.zoom(), factor))
         before = self.mapToScene(view_pos)
         self.scale(factor, factor)
@@ -639,7 +617,7 @@ class GraphView(QGraphicsView):
         zoom = min(size.width() / (x1 - x0 + pad * 2), size.height() / (y1 - y0 + pad * 2))
         self.set_camera((x0 + x1) / 2, (y0 + y1) / 2, min(1.0, zoom))
 
-    # ---- input goes to the page, which knows what the map means
+    # ---- input, forwarded to the page
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -676,7 +654,7 @@ class GraphView(QGraphicsView):
 
 
 class GraphPage(QWidget):
-    """One dungeon tab: toolbar, camera view, and the glue between mouse and model."""
+    """One dungeon tab: toolbar, view and input handling."""
 
     def __init__(self, top, tab_world, assets, use_gl=True):
         super().__init__()
@@ -802,7 +780,7 @@ class GraphPage(QWidget):
         self._forces_changed()
 
     def _forces_changed(self):
-        """With Simulate on the running simulation picks it up; otherwise move to the new resting place at once."""
+        """Settle now unless the simulation is running."""
         if not self.simulate_box.isChecked():
             self.model.settle(150)
             self.update_positions()
@@ -822,7 +800,7 @@ class GraphPage(QWidget):
     # -------------------------------------------------------------------- scene
 
     def rebuild(self):
-        """Throw the drawn map away and draw it again from the model. Done when the data changes, not per frame."""
+        """Recreate all scene items from the model. For data changes, not per frame."""
         model = self.model
         self.scene.clear()
         self._reach = ReachItem(self)
@@ -907,7 +885,7 @@ class GraphPage(QWidget):
             self.fit_view()
 
     def update_positions(self, links=True):
-        """Move what is drawn to where the model now has it. This is all a simulation frame or a drag costs."""
+        """Move existing items to the model's positions. The per-frame path."""
         model = self.model
         for tile, room in self._rooms.items():
             if tile in model.pos:
@@ -942,8 +920,7 @@ class GraphPage(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         if self._needs_fit and self.model.pos:
-            # A tab that has never been shown does not have its real size yet. Fit now, and again as the
-            # size arrives, until the user takes over the camera.
+            # A tab not yet shown has no real size: refit on resize until the user moves the camera
             self._settling_size = True
             self.fit_view()
             QTimer.singleShot(400, self._stop_settling)
@@ -956,7 +933,7 @@ class GraphPage(QWidget):
             self.fit_view()
 
     def relayout(self):
-        # Searching for an arrangement takes a second or two on a big map
+        # Can take a few seconds on a big map
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             no_map_before = self.model.relayout()
@@ -973,7 +950,7 @@ class GraphPage(QWidget):
     # ------------------------------------------------------------- hit testing
 
     def door_at(self, scene_pos):
-        """The door dot under the mouse, by geometry: doors are painted by their room, not items of their own."""
+        """Door under the mouse, found by geometry (dots are not separate items)."""
         model = self.model
         reach = max(1.0, 6 / self.view.zoom())
         best = None
@@ -999,7 +976,7 @@ class GraphPage(QWidget):
         return None
 
     def hit(self, event):
-        """What is under the mouse, as (kind, payload). Doors win over whatever is drawn across them."""
+        """(kind, payload) under the mouse. Doors take priority."""
         view_pos = event.position().toPoint()
         scene_pos = self.view.mapToScene(view_pos)
         item = self.view.itemAt(view_pos)
@@ -1039,7 +1016,7 @@ class GraphPage(QWidget):
         if kind in ("card", "icon", "door") or inside:
             press["tile"] = self._room_of(kind, payload, scene_pos)
         elif kind == "edge" and self.room_at(scene_pos) is not None:
-            # A link passing over a room does not get in the way of dragging that room
+            # Dragging on a link over a room drags the room
             press["tile"] = self.room_at(scene_pos)
         self._press = press
 
@@ -1073,7 +1050,6 @@ class GraphPage(QWidget):
             self._settling_size = False
             self.view.pan(delta.x(), delta.y())
             return
-        # A stack moves as one piece; with Simulate on everything else reacts while it is held
         zoom = self.view.zoom()
         self.model._held = set(self.model._stack_of(press["tile"]))
         self.model.move_stack(press["tile"], delta.x() / zoom, delta.y() / zoom)
@@ -1085,7 +1061,7 @@ class GraphPage(QWidget):
         if press is None or event.button() != Qt.LeftButton:
             return
         if press["moved"]:
-            # A dropped block stays exactly where it was put. It is not pinned.
+            # Dropping does not pin
             if press["tile"] is not None:
                 self.model.unsettled.difference_update(self.model._stack_of(press["tile"]))
             return
@@ -1190,7 +1166,7 @@ class GraphPage(QWidget):
             self.status.setText(text)
         if self._press is None and focus != self._focus:
             self._focus = focus
-            # Fade every link that does not touch the room under the mouse
+            # Fade links not touching the hovered room
             for link in self._links:
                 if link.interior:
                     continue
@@ -1267,7 +1243,7 @@ class GraphPage(QWidget):
             room.update()
 
     def remove_tile(self, tile):
-        # Takes the room's links, lobbies and annotations with it, so never without asking
+        # Also removes its links, lobbies and icons: confirm first
         answer = QMessageBox.question(
             self,
             "Remove supertile",
@@ -1282,11 +1258,11 @@ class GraphPage(QWidget):
         tile = self.top.pick_eg_tile(self)
         if tile is None or tile in self.model.tiles:
             return
-        # Picked by hand, so the player knows what it is: never obscure it
+        # Added by hand: show it lit
         self.model.add_tile(tile, has_been_lit=True, at=(x, y))
         self.rebuild()
 
-    # ------------------------------------------------- what the tracker calls
+    # ------------------------------------------------- called by the tracker
 
     @property
     def tiles(self):
@@ -1319,7 +1295,7 @@ class GraphPage(QWidget):
         self._needs_fit = not (camera and had_positions)
         self.rebuild()
         if camera and had_positions:
-            # Come back to the same view the map was saved with
+            # Restore the saved camera
             self.view.set_camera(float(camera[0]), float(camera[1]), float(camera[2]))
 
     def return_connections(self):
@@ -1329,7 +1305,7 @@ class GraphPage(QWidget):
         return data
 
     def auto_add_tile(self, tile, was_lit=False, player=None):
-        """The player walked into a supertile that is not on the map. `player` is where in it: (x, y)."""
+        """Add a supertile the player entered. player=(x, y) within it."""
         if self.model.add_tile(tile, has_been_lit=was_lit, player=player):
             self.rebuild()
 
@@ -1342,7 +1318,7 @@ class GraphPage(QWidget):
         self._arrived(door, added)
 
     def _arrived(self, door, changed):
-        """The player came in by this door: that, not where they stand, says which block they are in."""
+        """Tell the model which door the player entered by, then refresh."""
         if door is not None:
             self.model.arrive(door)
         if changed:
@@ -1357,19 +1333,18 @@ class GraphPage(QWidget):
         if current_tile not in model.tiles:
             return
         previous = model.player[0] if model.player else None
-        # A partitioned supertile is several blocks: the marker goes on the one the player is in
         current_tile = model.locate(current_tile, x, y)
         if current_tile is None:
-            return  # just walked in: the door that says which part comes next
+            return  # part not known yet; see GraphModel.locate
         model.player = (current_tile, x, y)
         if current_tile not in self._rooms:
-            self.redraw_canvas()  # a part of the supertile that was not on the map until now
+            self.redraw_canvas()  # newly shown part
         for tile in {previous, current_tile}:
             if tile in self._rooms:
                 self._rooms[tile].update()
                 self._doors[tile].update()
         if previous != current_tile and self.follow_box.isChecked() and current_tile in model.pos:
-            # Centre the camera on the player's room when it is not fully on screen
+            # Follow player: recentre when the room is not fully visible
             cx, cy, zoom = self.view.camera()
             size = self.view.viewport().size()
             px, py = model.pos[current_tile]
