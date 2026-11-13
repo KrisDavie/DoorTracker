@@ -1,0 +1,18 @@
+[project]
+name = "doortracker"
+version = "0.1.0"
+description = "Auto-tracker for dungeon layouts in the ALttP door randomizer"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "grpcio",
+    "protobuf",
+    "pillow",
+    "pyside6",
+    "pyyaml",
+]
+
+[tool.uv]
+# Not packaged: top-level gui/, data/ and sni/ would install under those names
+package = false

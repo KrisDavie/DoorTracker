@@ -14,17 +14,15 @@ This tracker will auto-track dungeon layouts from the Doors branch of ALttPR usi
 
 ## Basic Usage
 
-Auto-tracking will track supertiles, links between doors and lobbies. Dark rooms are only visible if the player has a lamp or a torch lit, otherwise they are obscured.
+The map is drawn as a graph. Every supertile is a card (a cluster of its doors, drawn at their real positions on a thumbnail of the room) and every door link is an edge between two doors. Cards are laid out automatically so that a link through a north door puts the linked room above, an east door to the right, and so on. Cards are coloured by the dungeon the supertile originally belongs to, which is what you want in crossed door shuffle.
 
-Manually link doors with left click. Right click a line to remove a link.
+Rooms whose linked doorways fit together (a north door onto a south door, an east door onto a west door) are stacked: they snap together wall to wall into one bigger block that moves as a single piece, and the shared doorway is drawn as an opening in the wall instead of a line. Links that cannot be stacked (stairs, drops, or rooms that would land on top of each other) stay as edges between the blocks.
 
-Right click a door to place an annotation or lobby on that door. Lobbies are the white squares and are used to start mapping a dungeon. Right click an annotation to remove it.
+Auto-tracking will track supertiles, links between doors and lobbies. Dark rooms are only visible if the player has a lamp or a torch lit, otherwise they are obscured. The card the player is in is outlined in red.
 
-Add new tiles by clicking an empty grey square. Ctrl-Right click to remove a tile.
+Green doors are still unexplored, grey doors are linked. Hover anything to see its name in the toolbar. Hovering a room also fades every link that does not touch it. Lobbies hang off the door they lead to as a small entrance node.
 
-You can save the current state of the tracker with File -> Save Tracker Data. This will save the current layout and the current annotations. You can load a saved layout File -> Load Tracker Data and selecting a file.
-
-The size and aspect ratio of the tracker can be modified under the view menu.
+You can save the current state of the tracker with File -> Save Tracker Data, including where you dragged the cards and where the view was. Files saved by older versions load fine and are laid out automatically.
 
 ## Installation
 
@@ -37,28 +35,48 @@ Download the latest release from the releases page. Run the `DoorsTracker_vx.x.x
 Clone the repo and install the requirements.
 `python DoorsTracker.py`
 
+With [uv](https://docs.astral.sh/uv/) no install step is needed, dependencies come from `pyproject.toml`:
+`uv run DoorsTracker.py`
+
 ## Usage
 
-Start SNI and launch the tracker. The tracker will automatically connect to SNI and start tracking.
+Start SNI and launch the tracker. The tracker will automatically connect to SNI and start tracking. Use `--no-autotrack` to run without SNI.
 
 ## Controls
 
-- Left click empty tile - Add a new tile
-- Left click door - Start link, select another door to complete
-- Right click door - Add annotation or lobby
+- Mouse wheel - Zoom, drag the background - Pan, `Fit` - Show everything. The view only ever moves when you move it: laying out again, resizing the window or new rooms appearing never zoom or scroll
+- Drag a card - Move it, together with everything stacked on it. It stays exactly where you drop it and nothing else moves (unless `Simulate` is on). It is not pinned, so a later layout may move it
+- Ctrl+click a card, or right click it -> Pin in place - Pin it (a pushpin appears in its corner). Pinned cards never move. Do the same again to unpin, or right click the background -> Unpin all
+- `Re-layout` - Lay the whole graph out again around the cards you placed. This also re-picks which doorways get stacked so that as many links as possible become shared doorways
+- Left click door, then another door - Link them (Esc cancels)
+- Right click door - Add annotation or lobby. Right click the annotation to remove it
 - Right click link - Remove link
-- Ctrl+Right click tile - Remove tile
+- Middle click a stacked doorway - Split the two rooms apart. Middle click a link - Stack the rooms on it (takes priority over automatic stacking)
+- Double click the background (or right click -> Add supertile here) - Add a supertile from the EG map
+- Double click an unlinked door - Add a supertile next to that door
+- Right click a card -> Remove supertile… - Remove it, after a confirmation. There is deliberately no shortcut for this
+- Middle click card - Keep it expanded (never collapsed by "Hide Single Route Tiles"; green border)
 
-### Advanced Controls
+### Options
 
-- Double left click door - Start link and add new tile
-- Middle click tile - Pin tile (prevents tile being hidden in "hide simple tiles" mode)
+- Experimental -> Split Partitioned Rooms - Some supertiles hold places you cannot walk between without leaving, like the compass room beside TR Main Lobby or the bridge in Mire that passes over two corridors. With this on (the default) each such part is its own block, named after its own room, and moves and stacks independently
+- Experimental -> Hide Dead Rooms - Supertile pictures often include blank rooms the game never uses. With this on (the default) those are painted out and each card shrinks to the rooms that have doors, so other rooms can sit in the space. The list of live and dead rooms is in `data/room_bounds.py`, generated by `tools/find_rooms.py`
+- `Spacing` slider - How far rooms push each other away. Linked rooms stay closer together than unrelated ones. The map moves to its new resting place as you drag the slider; the value is saved with the tracker file
+- `Satellite pull` slider (experimental) - How much harder links pull on a block whose links all lead to one other block, so it tucks in beside that block. Far left is no extra pull
+- `Simulate` - Keep the forces running all the time, so the map keeps adjusting, including while you drag a block through it. When it is off nothing moves on its own: the only thing that rearranges the map is moving the slider, which does it in one step
+- `Follow player` - Centre the view on the player's room whenever it is not fully on screen. Off by default
+- `Stack fitting rooms` - Stack rooms automatically as links are made. Turn it off to only stack the links you middle click
+- `Group by original dungeon` - Pull supertiles of the same vanilla dungeon together and draw a hull around them
+- Experimental -> Hide Single Route Tiles - Fully linked pass-through rooms shrink to a small pill instead of a full card
 
 ## Command Line Arguments
 
+- `tracker_file` - Optional path to saved tracker data to load on startup, e.g. `uv run DoorsTracker.py my_seed.yaml`
+- `--no-autotrack` - Run without connecting to SNI
 - `--size` - Size of the tracker window ('small', 'medium', 'large')
 - `--port` - Port to use for SNI connection
 - `--debug` - Show debug messages
+- `--no-gl` - Draw without OpenGL, if the map area stays blank on your machine
 
 ## Requirements
 
@@ -69,8 +87,9 @@ If you are using the Windows release, no other dependencies are required.
 If you are running from source, you will need the following dependencies:
 
 - Python 3.10+
+- PySide6
 - grpcio
-- grpcio-tools
+- protobuf
 - PyYAML
 - Pillow
 
