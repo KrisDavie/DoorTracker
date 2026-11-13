@@ -7,7 +7,6 @@ race_rom_warning, highlight_dungeon, select_dungeon, pages), so nothing here dep
 import argparse
 import asyncio
 import math
-import traceback
 
 import grpc.aio
 
@@ -115,13 +114,6 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
                 print(f"Auto-tracking lost its connection: {details}")
                 last_error = details
             ui.set_title(f"Jank Door Tracker - Reconnecting... ({details.split(chr(59))[0][:70]})")
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            # Not a connection error: log it and restart the session
-            print("Auto-tracking hit an error and is starting again:")
-            traceback.print_exc()
-            ui.set_title(f"Jank Door Tracker - Tracking error, restarting ({type(error).__name__}: {error})")
         finally:
             await channel.close()
         resumed = True
