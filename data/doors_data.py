@@ -1,5 +1,6 @@
 from data.worlds_data import World
 from collections import defaultdict
+from types import MappingProxyType
 from typing import Union, List, Tuple, Dict, DefaultDict
 
 
@@ -6781,7 +6782,7 @@ doors_data = {
     "Thieves Conveyor Bridge WS": (68, "We", "00"),
     "Thieves Big Chest Room ES": (68, "Ea", "00"),
     "Thieves Conveyor Block WN": (68, "We", "00"),
-    "Thieves Trap EN": (68, "Ea", "Top"),
+    "Thieves Trap EN": (68, "Ea", "00"),
     "Ice Lobby SE": (14, "So", "00"),
     "Ice Lobby WS": (14, "We", "00"),
     "Ice Jelly Key ES": (14, "Ea", "00"),
@@ -9542,3 +9543,6 @@ simple_tiles = {
     (0, 13),
     (0, 14),
 }
+
+# Read-only from here: a defaultdict would insert a key on every missed lookup
+door_coordinates = MappingProxyType(dict(door_coordinates))

@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import os
 import signal
 import sys
 from pathlib import Path
@@ -25,11 +24,10 @@ from PySide6.QtWidgets import (
 )
 
 import data.doors_sprite_data as sprites
-from data.doors_data import eg_tile_multiuse
+from data.doors_data import dungeon_lobbies, eg_tile_multiuse
 from data.vanilla_data import vanilla_layout_optimized
 from data.worlds_data import dungeon_worlds
-from gui.Doors import graph_model
-from gui.Doors.graph_model import tile_title
+from gui.Doors import rooms
 from gui.qt.graph_page import Assets, GraphPage
 
 WINDOW_SIZES = {"small": (1064, 632), "medium": (1588, 888), "large": (2088, 1144)}
@@ -61,15 +59,24 @@ class IconPicker(QDialog):
 
 
 class EgPicker(QDialog):
-    """Pick a supertile to add, from each dungeon's vanilla layout."""
+    """Pick a supertile to add. Each dungeon's tab is its vanilla layout, with its other supertiles underneath."""
 
     def __init__(self, parent, assets, unavailable):
         super().__init__(parent)
         self.setWindowTitle("Add supertile")
         self.choice = None
+        self.buttons = {}  # by supertile
         tabs = QTabWidget()
         layout = QVBoxLayout(self)
         layout.addWidget(tabs)
+
+        # Supertiles the vanilla layouts leave out, by dungeon
+        laid_out = {tile for layout_data in vanilla_layout_optimized.values() for tile in layout_data["tiles"]}
+        left_out = {}
+        for tile in sorted(rooms.SUPERTILES):
+            if tile not in laid_out:
+                left_out.setdefault(rooms.SUPERTILES[tile].dungeon, []).append(tile)
+
         for name, layout_data in vanilla_layout_optimized.items():
             tiles = layout_data["tiles"]
             if not tiles:
@@ -77,20 +84,32 @@ class EgPicker(QDialog):
             page = QWidget()
             grid = QGridLayout(page)
             grid.setSpacing(3)
-            min_x = min(t["map_tile"][0] for t in tiles.values())
-            min_y = min(t["map_tile"][1] for t in tiles.values())
+            columns = [t["map_tile"][0] for t in tiles.values()]
+            rows = [t["map_tile"][1] for t in tiles.values()]
             for tile, placement in tiles.items():
-                button = QToolButton()
-                button.setIcon(QIcon(assets.thumbnail(tile, 96)))
-                button.setIconSize(QSize(96, 96))
-                button.setToolTip(tile_title(tile))
-                # Disabled if already on the map or used up
-                button.setEnabled(tile not in unavailable)
-                button.clicked.connect(lambda checked=False, tile=tile: self._pick(tile))
-                grid.addWidget(button, placement["map_tile"][1] - min_y, placement["map_tile"][0] - min_x)
+                button = self._button(tile, assets, unavailable)
+                grid.addWidget(button, placement["map_tile"][1] - min(rows), placement["map_tile"][0] - min(columns))
+            # A gap, then the rest in rows as wide as the layout
+            width = max(columns) - min(columns) + 1
+            below = max(rows) - min(rows) + 1
+            grid.setRowMinimumHeight(below, 12)
+            for index, tile in enumerate(left_out.get(name, [])):
+                grid.addWidget(self._button(tile, assets, unavailable), below + 1 + index // width, index % width)
+
             tabs.addTab(page, "Other Lobby Tiles" if name == "Lobbyable_Tiles" else name.replace("_", " "))
             if name == parent.current_dungeon():
                 tabs.setCurrentWidget(page)
+
+    def _button(self, tile, assets, unavailable):
+        button = QToolButton()
+        button.setIcon(QIcon(assets.thumbnail(tile, 96)))
+        button.setIconSize(QSize(96, 96))
+        button.setToolTip(rooms.WHOLE.title(rooms.Node(*tile)))
+        # Disabled if already on the map or used up
+        button.setEnabled(tile not in unavailable)
+        button.clicked.connect(lambda checked=False: self._pick(tile))
+        self.buttons[tile] = button
+        return button
 
     def _pick(self, tile):
         self.choice = tile
@@ -110,7 +129,6 @@ class MainWindow(QMainWindow):
             "vanilla_drops": True,
             "hide_dead_rooms": True,
             "split_rooms": True,
-            "stress_layout": True,
         }
         self.device = None
         self.sni_task = None
@@ -162,7 +180,6 @@ class MainWindow(QMainWindow):
             ("Drops Are Not Shuffled", "vanilla_drops"),
             ("Hide Dead Rooms", "hide_dead_rooms"),
             ("Split Partitioned Rooms", "split_rooms"),
-            ("Stress Layout", "stress_layout"),
         ):
             action = QAction(label, self, checkable=True)
             action.setChecked(self.experimental_flags[flag])
@@ -176,10 +193,8 @@ class MainWindow(QMainWindow):
 
     def _set_flag(self, flag, checked):
         self.experimental_flags[flag] = checked
-        if flag == "split_rooms":
-            graph_model.SPLIT_ROOMS = checked
         for page in self.pages.values():
-            if flag in ("hide_dead_rooms", "split_rooms", "stress_layout"):
+            if flag in ("hide_dead_rooms", "split_rooms"):
                 # These change block shapes or count
                 page.relayout()
             else:
@@ -204,6 +219,18 @@ class MainWindow(QMainWindow):
                 data = parse_dr_spoiler(fh)
         if "Agahnims_Tower" in data:
             data["Castle_Tower"] = data.pop("Agahnims_Tower")
+        # A spoiler lists lobbies apart from the dungeons: file each under the dungeon that owns it
+        for lobby, door in (data.pop("lobbies", None) or {}).items():
+            if not isinstance(door, str):
+                continue  # the parser's entry also has its empty default fields
+            if door not in rooms.DOORS:
+                door = door.rsplit(" (", 1)[0]
+            dungeon = next((d for d, world in dungeon_worlds.items() if lobby in dungeon_lobbies.get(world, ())), None)
+            if dungeon is None or door not in rooms.DOORS:
+                print(f"Spoiler lobby not recognised: {lobby}: {door}")
+                continue
+            data[dungeon].setdefault("lobby_doors", []).append({"door": door, "lobby": lobby})
+            data[dungeon].setdefault("special_doors", {})[door] = lobby
         for dungeon, dungeon_data in data.items():
             if dungeon in self.pages:
                 self.pages[dungeon].load_yaml(dungeon_data)

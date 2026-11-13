@@ -64,7 +64,6 @@ def des_data(mem_request_names, mem_data):
 
 def find_closest_door(x, y, tile, layer, closest_distance=128):
     #  X and Y are none when dropping in a hole
-    # door_coordinates is a defaultdict; [] would insert the key
     everything = door_coordinates.get(tile)
     if not everything:
         return None
@@ -95,11 +94,11 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
     `pages` (dungeon name -> page).
     """
     last_error = None
-    resumed = False
+    seen = {"in_dungeon": False}  # kept across reconnects
     while True:
         channel = grpc.aio.insecure_channel(f"localhost:{args.port}")
         try:
-            await _sni_session(ui, args, channel, forced_autotrack, device or getattr(ui, "device", None), resumed)
+            await _sni_session(ui, args, channel, forced_autotrack, device or getattr(ui, "device", None), seen)
             return  # race rom
         except (grpc.aio.AioRpcError, OSError) as error:
             details = error.details() if isinstance(error, grpc.aio.AioRpcError) else str(error)
@@ -109,12 +108,14 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
             ui.set_title(f"Jank Door Tracker - Reconnecting... ({details.split(chr(59))[0][:70]})")
         finally:
             await channel.close()
-        resumed = True
         await asyncio.sleep(RETRY_SECONDS)
 
 
-async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=False):
-    """Track over one connection. Returns to stop tracking; raises AioRpcError if the connection drops."""
+async def _sni_session(ui, args, channel, forced_autotrack, device, seen):
+    """Track over one connection. Returns to stop tracking; raises AioRpcError if the connection drops.
+
+    seen["in_dungeon"] is updated on every reading, for the next session to pick up.
+    """
     debug = args.debug
     stub = sni.DevicesStub(channel)
     while True:
@@ -122,7 +123,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=Fals
         if len(response.devices) > 0:
             break
         else:
-            ui.set_title(f"Jank Door Tracker - Waiting for devices...")
+            ui.set_title("Jank Door Tracker - Waiting for devices...")
             await asyncio.sleep(1)
     ui.set_devices([_device.uri for _device in response.devices])
 
@@ -156,8 +157,9 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=Fals
     previous_layer = None
     was_transitioning = False
     was_falling = False
-    # After a reconnect, don't treat the first room as a dungeon entry (same skip as after a death)
-    was_dead = resumed
+    was_dead = False
+    # Reconnected mid-dungeon: the first room seen is not a dungeon entry
+    resumed = seen["in_dungeon"]
     cycle_skipped = False
     was_mirroring = False
     previous_dungeon = False
@@ -197,7 +199,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=Fals
 
             if data["race"] == "01" and not forced_autotrack:
                 ui.race_rom_warning()
-                ui.set_title(f"Jank Door Tracker - Auto-tracking Disabled")
+                ui.set_title("Jank Door Tracker - Auto-tracking Disabled")
                 break
 
             # if args.darkpos:
@@ -215,7 +217,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=Fals
                     ui.highlight_dungeon(None)
                     # Just left a dungeon, add the last door as a lobby
                     new_door = find_closest_door(current_x, current_y, eg_tile, previous_layer)
-                    dp_content.auto_add_lobby(new_door)  # type: ignore
+                    ui.pages[dungeon_ids[previous_dungeon]].auto_add_lobby(new_door)
                 current_tile = None
                 previous_tile = None
                 current_x = None
@@ -229,9 +231,11 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=Fals
                 tab_changed = False
                 is_dark = False
                 boss_just_killed = False
+                seen["in_dungeon"] = resumed = False
                 await asyncio.sleep(0.1)
                 continue
 
+            seen["in_dungeon"] = True
             previous_dungeon = data["dungeon"]
             ui.highlight_dungeon(dungeon_ids[data["dungeon"]])
 
@@ -283,10 +287,8 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=Fals
 
             if eg_tile not in dp_content.tiles:
                 dp_content.auto_add_tile(eg_tile, was_lit=not is_dark, player=(current_x, current_y))
-            else:
-                if not dp_content.tiles[eg_tile]["has_been_lit"] and not is_dark:
-                    dp_content.tiles[eg_tile]["has_been_lit"] = True
-                    dp_content.redraw_canvas()
+            elif not is_dark:
+                dp_content.auto_light_tile(eg_tile)
 
             if eg_tile not in dark_tiles or not is_dark:
                 dp_content.auto_draw_player(current_x, current_y, eg_tile)
@@ -296,9 +298,10 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, resumed=Fals
             if (previous_tile != eg_tile and previous_tile == None) or (was_mirroring and data["mirror"] != "0f"):
                 previous_tile = eg_tile
                 current_tile = eg_tile
-                if was_falling or was_dead:
+                if was_falling or was_dead or resumed:
                     was_falling = False
                     was_dead = False
+                    resumed = False
                     continue
                 # We just entered a new dungeon, add an entrance
                 if eg_tile == (2, 1):
