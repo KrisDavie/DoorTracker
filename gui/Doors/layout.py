@@ -3,7 +3,13 @@
 import math
 import random
 from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+
+Point = tuple[float, float]
+Circle = tuple[float, float, float]  # centre x, centre y, radius
+Rect = tuple[float, float, float, float]  # centre x, centre y, half width, half height
+Box = tuple[float, float, float, float]  # left, top, right, bottom
 
 LINK_GAP = 46  # preferred door-to-door distance of a link
 MIN_GAP = 14  # minimum block spacing during layout search
@@ -28,7 +34,7 @@ class Damping:
 class Body:
     """One block as the solvers see it. Positions are of its origin."""
 
-    rects: list  # rooms as (centre x, centre y, half width, half height), relative to the origin
+    rects: list[Rect]  # its rooms, relative to the origin
     mobility: float  # 0 fixed .. 1 free
     weight: int  # room count
     damping: Damping
@@ -45,12 +51,12 @@ class Spring:
     b: int
     bx: float
     by: float
-    facing_a: tuple = None  # unit vector the door faces; None for stairs, drops and warps
-    facing_b: tuple = None
+    facing_a: Point | None = None  # unit vector the door faces; None for stairs, drops and warps
+    facing_b: Point | None = None
 
 
-def enclosing_circle(points):
-    """Smallest circle containing every point, as (x, y, radius)."""
+def enclosing_circle(points: Iterable[Point]) -> Circle:
+    """Smallest circle containing every point, as (x, y, radius). There must be at least one point."""
 
     def from_two(a, b):
         return (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, math.dist(a, b) / 2
@@ -80,10 +86,12 @@ def enclosing_circle(points):
             for r in points[:j]:
                 if not holds(circle, r):
                     circle = from_three(p, q, r) or circle
+    if circle is None:
+        raise ValueError("no points")
     return circle
 
 
-def link_offset(facing_a, facing_b, gap=LINK_GAP):
+def link_offset(facing_a: Point | None, facing_b: Point | None, gap: float = LINK_GAP) -> Point | None:
     """Where door b should sit relative to door a, given the directions they face; None if neither has one."""
     if facing_a is not None and facing_b is not None:
         return ((facing_a[0] - facing_b[0]) / 2 * gap, (facing_a[1] - facing_b[1]) / 2 * gap)
@@ -94,7 +102,20 @@ def link_offset(facing_a, facing_b, gap=LINK_GAP):
     return None
 
 
-def relax(bodies, xs, ys, springs, *, iterations, spacing, leaf_pull, improve=False, cold=False, circles=False, grouped=False):
+def relax(
+    bodies: Sequence[Body],
+    xs: list[float],
+    ys: list[float],
+    springs: Sequence[Spring],
+    *,
+    iterations: int,
+    spacing: float,
+    leaf_pull: float,
+    improve: bool = False,
+    cold: bool = False,
+    circles: bool = False,
+    grouped: bool = False,
+) -> tuple[list[float], list[float], float, float]:
     """Force solver.
 
     Returns (xs, ys, total link length, mean movement per iteration).
@@ -141,13 +162,13 @@ def relax(bodies, xs, ys, springs, *, iterations, spacing, leaf_pull, improve=Fa
     reach = spacing
     far = max(reach, CONTACT_RANGE)
 
+    # One circle around each block, when repelling by circle
+    rings: list[Circle] = []
     if circles:
-        circles = [
+        rings = [
             enclosing_circle([(bx + sx * hw, by + sy * hh) for bx, by, hw, hh in boxes for sx in (-1, 1) for sy in (-1, 1)])
             for boxes in rects
         ]
-    else:
-        circles = []
 
     def repulsion():
         """Push apart blocks closer than the reach."""
@@ -169,7 +190,7 @@ def relax(bodies, xs, ys, springs, *, iterations, spacing, leaf_pull, improve=Fa
                 ease_a, ease_b = ma / weight[a], mb / weight[b]
                 share_a, share_b = ease_a / (ease_a + ease_b), ease_b / (ease_a + ease_b)
                 if circles:
-                    ca, cb = circles[a], circles[b]
+                    ca, cb = rings[a], rings[b]
                     cx = xs[b] + cb[0] - xs[a] - ca[0]
                     cy = ys[b] + cb[1] - ys[a] - ca[1]
                     apart = math.hypot(cx, cy)
@@ -316,8 +337,7 @@ def relax(bodies, xs, ys, springs, *, iterations, spacing, leaf_pull, improve=Fa
         cooling = 1 - it / iterations
         # Cold: no large moves
         temperature = 10 if cold else 80 * cooling + 4
-        if cold:
-            prev_x, prev_y = xs[:], ys[:]
+        prev_x, prev_y = xs[:], ys[:]  # for the half step when cold
         tx = [0.0] * n
         ty = [0.0] * n
         for k, spring in enumerate(springs):
@@ -346,8 +366,8 @@ def relax(bodies, xs, ys, springs, *, iterations, spacing, leaf_pull, improve=Fa
             ty[ia] -= ey * share * weight[ib]
 
         # No centring force; "Group by original dungeon" pulls towards each dungeon's centroid
-        gx = [None] * n
-        gy = [None] * n
+        gx: list[float | None] = [None] * n
+        gy: list[float | None] = [None] * n
         for members in groups:
             mx = sum(xs[i] + centres[i][0] for i in members) / len(members)
             my = sum(ys[i] + centres[i][1] for i in members) / len(members)
@@ -361,9 +381,10 @@ def relax(bodies, xs, ys, springs, *, iterations, spacing, leaf_pull, improve=Fa
                 moves.append((0.0, 0.0))
                 continue
             dx = dy = 0.0
-            if gx[i] is not None:
-                dx = (gx[i] - xs[i] - centres[i][0]) * 0.25
-                dy = (gy[i] - ys[i] - centres[i][1]) * 0.25
+            towards_x, towards_y = gx[i], gy[i]
+            if towards_x is not None and towards_y is not None:
+                dx = (towards_x - xs[i] - centres[i][0]) * 0.25
+                dy = (towards_y - ys[i] - centres[i][1]) * 0.25
             dx += tx[i] * 0.45
             dy += ty[i] * 0.45
             dx *= mobility[i]
@@ -470,7 +491,9 @@ def relax(bodies, xs, ys, springs, *, iterations, spacing, leaf_pull, improve=Fa
 
 
 
-def stress(boxes, movable, xs, ys, springs, *, spacing):
+def stress(
+    boxes: Sequence[Box], movable: Sequence[bool], xs: list[float], ys: list[float], springs: Sequence[Spring], *, spacing: float
+) -> tuple[list[float], list[float]]:
     """Place blocks by stress majorization (Gansner, Koren and North 2004).
 
     Ideal distance between two blocks is the shortest path through links. Directly linked blocks
@@ -601,18 +624,18 @@ def stress(boxes, movable, xs, ys, springs, *, spacing):
     start_y = [ys[i] + centre[i][1] for i in range(n)]
     rng = random.Random(n * 1000 + len(springs))
     spread = (sum(size) / max(n, 1) * 2 + gap) * math.sqrt(n)
-    best = None
+    best_score, best_xs, best_ys = None, start_x, start_y
     for attempt in range(8 if n <= 40 else 5 if n <= 80 else 3):
         xs, ys = start_x[:], start_y[:]
         if attempt:
             for i in range(n):
                 if movable[i]:
                     xs[i], ys[i] = rng.uniform(-spread, spread), rng.uniform(-spread, spread)
-        stress = solve(xs, ys)
-        score = (crossings(xs, ys), stress)
-        if best is None or score < best[0]:
-            best = (score, xs, ys)
-    xs, ys = best[1], best[2]
+        cost = solve(xs, ys)  # moves xs and ys; count crossings after
+        score = (crossings(xs, ys), cost)
+        if best_score is None or score < best_score:
+            best_score, best_xs, best_ys = score, xs, ys
+    xs, ys = best_xs, best_ys
 
     # Pack disconnected components in rows
     groups = {}
@@ -650,7 +673,7 @@ def stress(boxes, movable, xs, ys, springs, *, spacing):
     return [xs[i] - centre[i][0] for i in range(n)], [ys[i] - centre[i][1] for i in range(n)]
 
 
-def convex_hull(points):
+def convex_hull(points: Iterable[Point]) -> list[Point]:
     points = sorted(set(points))
     if len(points) <= 2:
         return points

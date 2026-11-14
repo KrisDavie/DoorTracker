@@ -5,11 +5,12 @@ import asyncio
 import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 from PIL import Image
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QIcon, QImage, QPixmap
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import (
 import data.doors_sprite_data as sprites
 from data.doors_data import dungeon_lobbies, eg_tile_multiuse
 from data.vanilla_data import vanilla_layout_optimized
-from data.worlds_data import dungeon_worlds
+from data.worlds_data import World, dungeon_worlds
 from gui.Doors import rooms
 from gui.qt.graph_page import Assets, GraphPage
 
@@ -45,7 +46,7 @@ class IconPicker(QDialog):
         grid.setSpacing(2)
         for name, (row, column) in sprites.all_icons.items():
             button = QToolButton()
-            button.setIcon(QIcon(assets.icon(name).scaled(32, 32, Qt.KeepAspectRatio, Qt.FastTransformation)))
+            button.setIcon(QIcon(assets.icon(name).scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)))
             button.setIconSize(QSize(32, 32))
             button.setToolTip(name.replace("_", " "))
             usable = (name in sprites.item_table or name in sprites.dungeon_lobbies[world]) and name != "Sanctuary_Mirror"
@@ -117,7 +118,7 @@ class EgPicker(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, args):
+    def __init__(self, args: argparse.Namespace):
         super().__init__()
         self.args = args
         self.setWindowTitle(TITLE)
@@ -130,17 +131,16 @@ class MainWindow(QMainWindow):
             "hide_dead_rooms": True,
             "split_rooms": True,
         }
-        self.device = None
-        self.sni_task = None
-        self.loop = None
+        self.device: str | None = None
+        self.sni_task: asyncio.Task | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
 
         eg_map = Path(__file__).parent / "data" / "maps" / "egmap.png"
         self.assets = Assets(Image.open(eg_map))
-        _add_thumbnails(self.assets)
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
-        self.pages = {}
+        self.pages: dict[str, GraphPage] = {}  # by dungeon, in tab order
         for dungeon, world in dungeon_worlds.items():
             if dungeon in ("Overworld", "Underworld"):
                 continue
@@ -167,8 +167,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Exit", self.close)
 
         view_menu = bar.addMenu("View")
-        view_menu.addAction("Fit to window", lambda: self.tabs.currentWidget().fit_view())
-        view_menu.addAction("Re-layout", lambda: self.tabs.currentWidget().relayout())
+        view_menu.addAction("Fit to window", lambda: self.current_page().fit_view())
+        view_menu.addAction("Re-layout", lambda: self.current_page().relayout())
         show_all = QAction("Show All Doors", self, checkable=True)
         show_all.toggled.connect(self._show_all_doors)
         view_menu.addAction(show_all)
@@ -186,12 +186,12 @@ class MainWindow(QMainWindow):
             action.toggled.connect(lambda checked, flag=flag: self._set_flag(flag, checked))
             experimental.addAction(action)
 
-    def _show_all_doors(self, checked):
+    def _show_all_doors(self, checked: bool) -> None:
         for page in self.pages.values():
             page.show_all_doors = checked
             page.redraw_canvas()
 
-    def _set_flag(self, flag, checked):
+    def _set_flag(self, flag: str, checked: bool) -> None:
         self.experimental_flags[flag] = checked
         for page in self.pages.values():
             if flag in ("hide_dead_rooms", "split_rooms"):
@@ -200,19 +200,22 @@ class MainWindow(QMainWindow):
             else:
                 page.redraw_canvas()
 
-    def current_dungeon(self):
-        return self.tabs.currentWidget().dungeon_name
+    def current_page(self) -> GraphPage:
+        return list(self.pages.values())[self.tabs.currentIndex()]
+
+    def current_dungeon(self) -> str:
+        return self.current_page().dungeon_name
 
     # -------------------------------------------------------------------- files
 
-    def load_file(self, file=None):
+    def load_file(self, file: str | None = None) -> None:
         if file is None:
             file, _ = QFileDialog.getOpenFileName(self, "Load Tracker Data", ".", "Yaml Files (*.yaml *.yml);;All Files (*)")
         if not file:
             return
         with open(file, mode="r") as fh:
             try:
-                data = yaml.safe_load(fh)
+                data: dict[str, Any] = yaml.safe_load(fh)
             except Exception:
                 from SpoilerToYaml import parse_dr_spoiler
 
@@ -235,7 +238,7 @@ class MainWindow(QMainWindow):
             if dungeon in self.pages:
                 self.pages[dungeon].load_yaml(dungeon_data)
 
-    def save_file(self):
+    def save_file(self) -> None:
         file, _ = QFileDialog.getSaveFileName(self, "Save Tracker Data", ".", "Yaml Files (*.yaml *.yml);;All Files (*)")
         if not file:
             return
@@ -249,21 +252,21 @@ class MainWindow(QMainWindow):
             self,
             "Reset?",
             "This will reset your tracker, losing all connections etc.\nAre you sure you want to continue?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        if answer == QMessageBox.Yes:
+        if answer == QMessageBox.StandardButton.Yes:
             for page in self.pages.values():
                 page.init_page()
 
     # ------------------------------------------------------------------ pickers
 
-    def pick_icon(self, world):
+    def pick_icon(self, world: World) -> str | None:
         dialog = IconPicker(self, self.assets, world)
         return dialog.choice if dialog.exec() else None
 
-    def pick_eg_tile(self, page):
-        used = {}
+    def pick_eg_tile(self, page: GraphPage) -> rooms.Tile | None:
+        used: dict[rooms.Tile, int] = {}
         for other in self.pages.values():
             for tile in other.model.tiles:
                 used[tile] = used.get(tile, 0) + 1
@@ -274,20 +277,20 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------- called by the tracker
 
-    def set_title(self, text):
+    def set_title(self, text: str) -> None:
         self.setWindowTitle(text)
 
-    def set_devices(self, uris):
+    def set_devices(self, uris: list[str]) -> None:
         self.devices_menu.clear()
         if not uris:
             self.devices_menu.addAction("No Devices...").setEnabled(False)
         for uri in uris:
             self.devices_menu.addAction(uri, lambda uri=uri: self.start_tracking(device=uri))
 
-    def race_rom_warning(self):
+    def race_rom_warning(self) -> None:
         box = QMessageBox(self)
         box.setWindowTitle("Warning - Race Rom Detected")
-        box.setIcon(QMessageBox.Warning)
+        box.setIcon(QMessageBox.Icon.Warning)
         box.setText(
             "A Race Rom has been detected, auto-tracking has been automatically disabled.\n\n"
             "When auto-tracking is enabled, this tracker does not abide by the current auto-tracking rules set by "
@@ -295,24 +298,24 @@ class MainWindow(QMainWindow):
             "If you would like to continue using auto-tracking, you can force it to be enabled by clicking the "
             "button below."
         )
-        box.addButton("OK", QMessageBox.AcceptRole)
-        force = box.addButton("Force Auto-Tracking", QMessageBox.DestructiveRole)
+        box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
+        force = box.addButton("Force Auto-Tracking", QMessageBox.ButtonRole.DestructiveRole)
         box.exec()
         if box.clickedButton() is force:
             # Deferred: this runs inside the task being restarted
             QTimer.singleShot(0, lambda: self.start_tracking(forced=True, device=self.device))
 
-    def highlight_dungeon(self, name):
+    def highlight_dungeon(self, name: str | None) -> None:
         for dungeon, page in self.pages.items():
             label = dungeon.replace("_", " ")
             self.tabs.setTabText(self.tabs.indexOf(page), f"▶ {label}" if dungeon == name else label)
 
-    def select_dungeon(self, name):
+    def select_dungeon(self, name: str) -> None:
         self.tabs.setCurrentWidget(self.pages[name])
 
     # ---------------------------------------------------------------------- SNI
 
-    def start_tracking(self, forced=False, device=None):
+    def start_tracking(self, forced: bool = False, device: str | None = None) -> None:
         from sni_tracker import sni_probe
 
         self.stop_tracking()
@@ -324,7 +327,7 @@ class MainWindow(QMainWindow):
             self._pump.start()
         self.sni_task = self.loop.create_task(sni_probe(self, self.args, forced_autotrack=forced, device=device))
 
-    def stop_tracking(self):
+    def stop_tracking(self) -> None:
         if self.sni_task is not None:
             self.sni_task.cancel()
             self.sni_task = None
@@ -332,8 +335,11 @@ class MainWindow(QMainWindow):
 
     def _pump_asyncio(self):
         """Run pending asyncio callbacks once, from the Qt timer."""
-        self.loop.call_soon(self.loop.stop)
-        self.loop.run_forever()
+        loop = self.loop
+        if loop is None:
+            return
+        loop.call_soon(loop.stop)
+        loop.run_forever()
         if self.sni_task is not None and self.sni_task.done() and not self.sni_task.cancelled():
             error = self.sni_task.exception()
             self.sni_task = None
@@ -345,22 +351,6 @@ class MainWindow(QMainWindow):
         if self.sni_task is not None:
             self.sni_task.cancel()
         super().closeEvent(event)
-
-
-def _add_thumbnails(assets):
-    """Add a cached thumbnail() to assets, for the supertile picker."""
-    cache = {}
-
-    def thumbnail(tile, size):
-        key = (tile, size)
-        if key not in cache:
-            x, y = tile
-            crop = assets.eg_img.crop((x * 512, y * 512, (x + 1) * 512, (y + 1) * 512)).convert("RGB")
-            crop = crop.resize((size, size), Image.BILINEAR, reducing_gap=2.0)
-            cache[key] = QPixmap.fromImage(QImage(crop.tobytes(), size, size, size * 3, QImage.Format_RGB888).copy())
-        return cache[key]
-
-    assets.thumbnail = thumbnail
 
 
 def install_interrupt_handler(app, window):

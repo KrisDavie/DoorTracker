@@ -3,6 +3,8 @@
 import argparse
 import asyncio
 import math
+from collections.abc import Container, Mapping
+from typing import Protocol
 
 import grpc.aio
 
@@ -69,7 +71,7 @@ def find_closest_door(x, y, tile, layer, closest_distance=128):
         return None
     try:
         # Filter by layer
-        doors = [door for door in everything if doors_data[door["name"]][2] == layer]  # type: ignore
+        doors = [door for door in everything if doors_data[door["name"]][2] == layer]
         if len(doors) == 0:
             print(f"No doors found for {tile} layer {layer}")
             doors = everything
@@ -87,21 +89,55 @@ def find_closest_door(x, y, tile, layer, closest_distance=128):
 RETRY_SECONDS = 2
 
 
-async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False, device: str = None):
-    """Run tracking, reconnecting on SNI/device errors.
+class TrackerPage(Protocol):
+    """What the tracker needs from a dungeon's page."""
 
-    `ui` needs set_title, set_devices, race_rom_warning, highlight_dungeon, select_dungeon and
-    `pages` (dungeon name -> page).
-    """
+    @property
+    def tiles(self) -> Container[tuple[int, int]]: ...
+
+    def auto_add_tile(self, tile: tuple[int, int], was_lit: bool = False, player: tuple[float, float] | None = None) -> None: ...
+
+    def auto_light_tile(self, tile: tuple[int, int]) -> None: ...
+
+    def auto_draw_player(self, x: float, y: float, tile: tuple[int, int]) -> None: ...
+
+    def clear_player(self) -> None: ...
+
+    def auto_add_lobby(self, door: str | None) -> None: ...
+
+    def auto_add_door_link(self, door: str | None, linked_door: str | None) -> None: ...
+
+
+class TrackerUI(Protocol):
+    """What the tracker needs from the window."""
+
+    device: str | None
+
+    @property
+    def pages(self) -> Mapping[str, TrackerPage]: ...  # by dungeon name
+
+    def set_title(self, text: str) -> None: ...
+
+    def set_devices(self, uris: list[str]) -> None: ...
+
+    def race_rom_warning(self) -> None: ...
+
+    def highlight_dungeon(self, name: str | None) -> None: ...
+
+    def select_dungeon(self, name: str) -> None: ...
+
+
+async def sni_probe(ui: TrackerUI, args: argparse.Namespace, forced_autotrack: bool = False, device: str | None = None) -> None:
+    """Run tracking, reconnecting on SNI/device errors."""
     last_error = None
     seen = {"in_dungeon": False}  # kept across reconnects
     while True:
         channel = grpc.aio.insecure_channel(f"localhost:{args.port}")
         try:
-            await _sni_session(ui, args, channel, forced_autotrack, device or getattr(ui, "device", None), seen)
+            await _sni_session(ui, args, channel, forced_autotrack, device or ui.device, seen)
             return  # race rom
         except (grpc.aio.AioRpcError, OSError) as error:
-            details = error.details() if isinstance(error, grpc.aio.AioRpcError) else str(error)
+            details = (error.details() if isinstance(error, grpc.aio.AioRpcError) else None) or str(error)
             if details != last_error:
                 print(f"Auto-tracking lost its connection: {details}")
                 last_error = details
@@ -111,7 +147,9 @@ async def sni_probe(ui, args: argparse.Namespace, forced_autotrack: bool = False
         await asyncio.sleep(RETRY_SECONDS)
 
 
-async def _sni_session(ui, args, channel, forced_autotrack, device, seen):
+async def _sni_session(
+    ui: TrackerUI, args: argparse.Namespace, channel, forced_autotrack: bool, device: str | None, seen: dict[str, bool]
+) -> None:
     """Track over one connection. Returns to stop tracking; raises AioRpcError if the connection drops.
 
     seen["in_dungeon"] is updated on every reading, for the next session to pick up.
@@ -162,7 +200,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, seen):
     resumed = seen["in_dungeon"]
     cycle_skipped = False
     was_mirroring = False
-    previous_dungeon = False
+    previous_dungeon: str | None = None
     tab_changed = False
     is_dark = False
     boss_just_killed = False
@@ -209,7 +247,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, seen):
 
             if data["dungeon"] not in dungeon_ids.keys() or data["indoors"] != "01":
                 if (
-                    previous_dungeon in dungeon_ids.keys()
+                    previous_dungeon in dungeon_ids
                     and data["indoors"] == "00"
                     and data["mirror"] != "0f"
                     and not boss_just_killed
@@ -227,7 +265,7 @@ async def _sni_session(ui, args, channel, forced_autotrack, device, seen):
                 previous_layer = None
                 cycle_skipped = False
                 was_mirroring = False
-                previous_dungeon = False
+                previous_dungeon = None
                 tab_changed = False
                 is_dark = False
                 boss_just_killed = False

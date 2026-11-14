@@ -51,19 +51,24 @@ DOOR_STYLES = {
 }
 
 
-def lighten(colour, amount):
-    r, g, b = ImageColor.getrgb(colour)
+def dungeon_colour(dungeon: str | None) -> str:
+    """Colour for the supertiles of a dungeon; grey when the dungeon is not known."""
+    return DUNGEON_COLOURS.get(dungeon, UNKNOWN_DUNGEON_COLOUR) if dungeon else UNKNOWN_DUNGEON_COLOUR
+
+
+def lighten(colour: str, amount: float) -> str:
+    r, g, b = ImageColor.getrgb(colour)[:3]
     r, g, b = (int(c + (255 - c) * amount) for c in (r, g, b))
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def link_colours(n):
+def link_colours(n: int) -> list[str]:
     """n distinct hues, dark enough to read on the light background."""
     colours = []
     for i in range(n):
         # Golden angle hue steps
         hue = (i * 137.508) % 360
-        r, g, b = ImageColor.getrgb(f"hsl({hue:.0f}, 78%, {38 + (i % 3) * 6}%)")
+        r, g, b = ImageColor.getrgb(f"hsl({hue:.0f}, 78%, {38 + (i % 3) * 6}%)")[:3]
         colours.append(f"#{r:02x}{g:02x}{b:02x}")
     return colours
 

@@ -267,7 +267,9 @@ def main():
     from gui.Doors.rooms import DOORLESS_ROOMS, supertile
 
     # Points that mark a room live: door positions, plus the spot of each doorless room
-    marks = {tile: [(door["x"], door["y"]) for door in doors] for tile, doors in door_coordinates.items()}
+    marks: dict[tuple[int, int], list[tuple[float, float]]] = {
+        tile: [(door["x"], door["y"]) for door in doors] for tile, doors in door_coordinates.items()
+    }
     for room in DOORLESS_ROOMS.values():
         marks.setdefault(room.tile, []).append((room.x * 512, room.y * 512))
 
@@ -304,7 +306,22 @@ def main():
         'that are partitioned also have "areas": for each part in turn, the boxes of the picture that are its.',
         '"""',
         "",
-        "room_bounds = {",
+        "from typing import TypedDict",
+        "",
+        "Box = tuple[int, int, int, int]",
+        "",
+        "",
+        "class _Bounds(TypedDict):",
+        "    live: list[Box]",
+        "    dead: list[Box]",
+        "    background: tuple[int, int, int]",
+        "",
+        "",
+        "class RoomBounds(_Bounds, total=False):",
+        "    areas: list[list[Box]]",
+        "",
+        "",
+        "room_bounds: dict[tuple[int, int], RoomBounds] = {",
     ]
     for tile, entry in out.items():
         lines.append(f"    {tile}: {{")

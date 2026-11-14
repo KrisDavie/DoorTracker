@@ -94,7 +94,7 @@ def parse_doors(door_data):
     return doors
 
 
-def parse_dr_spoiler(fh):
+def parse_dr_spoiler(fh) -> dict:
     yaml_data = {"placements": {1: {}}}
     fh.seek(0)
     spoiler_data = [line.strip() for line in fh.readlines()]

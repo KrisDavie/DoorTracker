@@ -28,7 +28,7 @@ def test_the_door_entered_by_overrides_the_guess_from_position():
     model.arrive("Thieves Lobby S")
     model.update()
     assert parts_shown(model, (11, 13)) == [0]
-    assert model.move_player((11, 13), *nook).part == 0
+    assert model.move_player((11, 13), *nook) == Node(11, 13, 0)
 
 
 def test_a_supertile_added_by_hand_shows_every_part_as_one_block():

@@ -45,7 +45,7 @@ def test_stairs_link_rooms_without_joining_them():
     link = model.door_links[-1]
     assert link not in model.blocks.joined
     assert model.blocks.root[model.rooms.node(up)] != model.blocks.root[model.rooms.node(down)]
-    assert "cannot be joined" in model.toggle_join(link)
+    assert "cannot be joined" in (model.toggle_join(link) or "")
 
 
 def test_a_join_split_by_hand_stays_split():
@@ -142,6 +142,21 @@ def test_a_file_with_no_saved_joins_gets_them_from_its_positions():
     again = new_model()
     again.load(saved)
     assert joined_doors(again) == joined_doors(model)
+
+
+def test_a_file_naming_doors_this_version_does_not_know_still_loads():
+    model = decorated_map()
+    saved = model.save()
+    saved["door_links"].append({"door": "No Such Door N", "linked_door": saved["door_links"][0]["door"]})
+    saved["lobby_doors"].append({"door": "No Such Door S", "lobby": "Nowhere"})
+    saved["special_doors"]["No Such Door E"] = "Bow"
+
+    again = new_model()
+    again.load(saved)
+    again.relayout()
+    assert joined_doors(again) == joined_doors(model)
+    assert all("No Such Door" not in edge.a + edge.b for edge in again.edges())
+    assert again.save()["door_links"] == saved["door_links"]
 
 
 def test_removing_a_supertile_removes_everything_on_it():

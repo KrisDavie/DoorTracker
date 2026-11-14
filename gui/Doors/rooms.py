@@ -1,5 +1,6 @@
 """Static room data derived from the door tables: supertiles, their parts, doors, warps and holes."""
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from types import MappingProxyType
@@ -20,6 +21,10 @@ from data.doors_data import (
 from data.room_bounds import room_bounds
 
 
+Tile = tuple[int, int]  # a supertile, as (column, row) on the EG map
+Box = tuple[float, float, float, float]  # left, top, right, bottom
+
+
 class Node(NamedTuple):
     """A room card on the map: a supertile, or one part of a split one."""
 
@@ -28,7 +33,7 @@ class Node(NamedTuple):
     part: int = 0
 
     @property
-    def tile(self):
+    def tile(self) -> Tile:
         return (self.x, self.y)
 
 
@@ -36,17 +41,17 @@ class Node(NamedTuple):
 class Door:
     """A door, or one end of a warp or hole (see ROOM_PORTS)."""
 
-    tile: tuple  # supertile (x, y)
+    tile: Tile
     x: float  # position in the supertile picture, 0..1
     y: float
-    facing: str = None  # No, So, We, Ea, Up or Dn; None for a warp or hole end
-    regions: tuple = ()
+    facing: str | None = None  # No, So, We, Ea, Up or Dn; None for a warp or hole end
+    regions: tuple[str, ...] = ()
     part: int = 0  # index into its supertile's parts
 
 
 @dataclass(frozen=True)
 class DoorlessRoom:
-    tile: tuple  # supertile (x, y)
+    tile: Tile
     dungeon: str
     x: float  # position in the supertile picture, 0..1
     y: float
@@ -72,7 +77,7 @@ class RoomLink:
     both_ways: bool
 
 
-def _read_doors():
+def _read_doors() -> dict[str, Door]:
     doors = {}
     for tile, entries in door_coordinates.items():
         for entry in entries:
@@ -140,7 +145,7 @@ WARP_SPOTS = {
 }
 
 
-def _build_room_links():
+def _build_room_links() -> tuple[Mapping[str, Door], tuple[RoomLink, ...]]:
     """Warps and unmarked holes as (ports, links).
 
     Their ends are regions, not doors, so each end gets a port: a Door record with no facing.
@@ -241,7 +246,7 @@ def _build_room_links():
 ONE_PLACE = {(14, 1), (1, 1), (14, 7)}
 
 
-def _build_parts():
+def _build_parts() -> dict[Tile, list[list[str]]]:
     """Split each supertile into parts you cannot walk between.
 
     Doors share a part when their regions are joined by a logical connection, an interior door or
@@ -316,27 +321,27 @@ def _build_parts():
 class Supertile:
     """Static data for one supertile. Unknown supertiles get the empty record."""
 
-    doors: tuple = ()  # door names, in door table order
-    parts: tuple = ((),)  # door names per part; one part when not split
-    areas: tuple = ()  # picture boxes per part; empty when not split
-    live: tuple = ()  # picture boxes of rooms in use; empty when unknown
-    background: tuple = None
-    dungeon: str = None
-    title: str = None  # doorless rooms only; others are titled by region
+    doors: tuple[str, ...] = ()  # door names, in door table order
+    parts: tuple[tuple[str, ...], ...] = ((),)  # door names per part; one part when not split
+    areas: tuple[tuple[Box, ...], ...] = ()  # picture boxes per part; empty when not split
+    live: tuple[Box, ...] = ()  # picture boxes of rooms in use; empty when unknown
+    background: tuple[int, int, int] | None = None
+    dungeon: str | None = None
+    title: str | None = None  # doorless rooms only; others are titled by region
 
 
-def _build_supertiles():
+def _build_supertiles() -> Mapping[Tile, Supertile]:
     parts_by_tile = _build_parts()
     doorless = {room.tile: (region, room.dungeon) for region, room in DOORLESS_ROOMS.items()}
     records = {}
     for tile in set(parts_by_tile) | set(doorless):
         parts = parts_by_tile.get(tile, [[]])
         doors = [name for name, door in DOORS.items() if door.tile == tile]
-        bounds = room_bounds.get(tile, {})
-        live = bounds.get("live") or []
-        areas = []
+        bounds = room_bounds.get(tile)
+        live: Sequence[Box] = bounds["live"] if bounds else []
+        areas: Sequence[Sequence[Box]] = []
         if len(parts) > 1:
-            areas = bounds.get("areas")
+            areas = bounds.get("areas", []) if bounds else []
             if not areas or len(areas) != len(parts):
                 # No generated areas: each part gets the live rooms nearest its doors
                 rooms = live or [(0, 0, 512, 512)]
@@ -360,9 +365,9 @@ def _build_supertiles():
         records[tile] = Supertile(
             doors=tuple(doors),
             parts=tuple(tuple(names) for names in parts),
-            areas=tuple(tuple(tuple(box) for box in boxes) for boxes in areas),
-            live=tuple(tuple(box) for box in live),
-            background=tuple(bounds["background"]) if "background" in bounds else None,
+            areas=tuple(tuple(boxes) for boxes in areas),
+            live=tuple(live),
+            background=bounds["background"] if bounds else None,
             dungeon=dungeon,
             title=title,
         )
@@ -383,22 +388,28 @@ DOORS = MappingProxyType(
 ROOM_PORTS, ROOM_LINKS = _build_room_links()
 
 
-def supertile(tile):
+def supertile(tile: Tile) -> Supertile:
     """Record for a supertile (x, y)."""
     return SUPERTILES.get(tile, _UNKNOWN)
 
 
-def find_door(name):
+def find_door(name: str) -> Door | None:
     """Record of a door or port; None if unknown."""
     return DOORS.get(name) or ROOM_PORTS.get(name)
 
 
-def door_direction(name):
+def door_direction(name: str) -> str | None:
     door = find_door(name)
     return door.facing if door else None
 
 
-def door_fraction(name):
+def door_vector(name: str) -> tuple[int, int] | None:
+    """Unit vector the door faces on the map; None for stairs, warp and hole ends, and unknown names."""
+    facing = door_direction(name)
+    return DIRECTIONS.get(facing) if facing else None
+
+
+def door_fraction(name: str) -> tuple[float, float]:
     """Position of a door or port inside its supertile as 0..1 fractions."""
     door = find_door(name)
     return (door.x, door.y) if door else (0.5, 0.5)
@@ -407,30 +418,30 @@ def door_fraction(name):
 class Rooms:
     """Lookups that depend on whether supertiles are split into parts."""
 
-    def __init__(self, split, whole=lambda tile: False):
+    def __init__(self, split: bool, whole: Callable[[Tile], bool] = lambda tile: False):
         self.split = split
         self._whole = whole  # says which supertiles count as unsplit for now
 
-    def _is_split(self, tile):
+    def _is_split(self, tile: Tile) -> bool:
         return self.split and len(supertile(tile).parts) > 1 and not self._whole(tile)
 
-    def part_count(self, tile):
+    def part_count(self, tile: Tile) -> int:
         return len(supertile(tile).parts) if self._is_split(tile) else 1
 
-    def node(self, name):
-        """Node of a door or port; None if unknown."""
+    def node(self, name: str) -> Node:
+        """Node of a door or port. The name must be a known one: see find_door."""
         door = find_door(name)
         if door is None:
-            return None
+            raise KeyError(name)
         return Node(*door.tile, door.part if door.part and self._is_split(door.tile) else 0)
 
-    def doors(self, node):
+    def doors(self, node: Node) -> list[str]:
         st = supertile(node.tile)
         if self._is_split(node.tile):
             return list(st.parts[node.part]) if node.part < len(st.parts) else []
         return list(st.doors)
 
-    def regions(self, node):
+    def regions(self, node: Node) -> list[str]:
         regions = []
         for door in self.doors(node):
             for region in DOORS[door].regions:
@@ -438,12 +449,13 @@ class Rooms:
                     regions.append(region)
         return regions
 
-    def title(self, node):
+    def title(self, node: Node) -> str:
         regions = self.regions(node)
         if regions:
             return regions[0]
-        if supertile(node.tile).title:
-            return supertile(node.tile).title
+        title = supertile(node.tile).title
+        if title:
+            return title
         doors = self.doors(node)
         if doors:
             return " ".join(doors[0].split(" ")[:-1]) or doors[0]

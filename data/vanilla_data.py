@@ -1,4 +1,21 @@
-vanilla_layout_optimized = {
+from typing import TypedDict
+
+
+class Placement(TypedDict):
+    map_tile: tuple[int, int]
+
+
+class Layout(TypedDict):
+    """A dungeon's supertiles arranged on a grid."""
+
+    tiles: dict[tuple[int, int], Placement]
+    tile_size: int
+    map_dims: tuple[int, int]
+    x_offset: float
+    y_offset: float
+
+
+vanilla_layout_optimized: dict[str, Layout] = {
     "Hyrule_Castle": {
         "tiles": {
             # Lobbies

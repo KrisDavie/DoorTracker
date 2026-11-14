@@ -1,8 +1,12 @@
 """Qt view of a dungeon map. Scene coordinates are the model's world units; the view transform is the camera."""
 
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+from PIL import Image
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
@@ -40,17 +44,19 @@ from PySide6.QtWidgets import (
 from data.doors_data import mandatory_tiles
 from data.doors_sprite_data import ITEM_SHEET_PATH
 from data.room_bounds import room_bounds
-from gui.Doors.graph_model import THUMB, Edge, GraphModel
+from data.worlds_data import World
+from gui.Doors.graph_model import THUMB, Edge, GraphModel, TileState
 from gui.Doors.layout import LINK_GAP, convex_hull
 from gui.Doors.rooms import (
-    DIRECTIONS,
     DOORS,
     DUNGEON_BACKGROUNDS,
     INTERIOR_DOORS,
     WHOLE,
     EdgeKind,
     Node,
+    Tile,
     door_direction,
+    door_vector,
     supertile,
 )
 from gui.qt.style import (
@@ -59,14 +65,16 @@ from gui.qt.style import (
     DOOR_SELECTED,
     DOOR_STYLES,
     DROP_COLOUR,
-    DUNGEON_COLOURS,
     EDGE_FADED,
     PLAYER,
-    UNKNOWN_DUNGEON_COLOUR,
     WARP_COLOUR,
+    dungeon_colour,
     lighten,
     link_colours,
 )
+
+if TYPE_CHECKING:
+    from DoorsTracker import MainWindow
 
 MIN_ZOOM, MAX_ZOOM = 0.1, 4.0
 WORLD = 1_000_000  # scene half-extent
@@ -76,10 +84,10 @@ WORLD = 1_000_000  # scene half-extent
 class Hit:
     """What is under the mouse. One field is set, or none over the background."""
 
-    node: Node = None  # a room card
-    door: str = None  # a door dot
-    icon: str = None  # an icon, by the door it is on
-    edge: Edge = None  # a line between doors, or the seam of a joined link
+    node: Node | None = None  # a room card
+    door: str | None = None  # a door dot
+    icon: str | None = None  # an icon, by the door it is on
+    edge: Edge | None = None  # a line between doors, or the seam of a joined link
 
 
 @dataclass
@@ -88,20 +96,36 @@ class Press:
 
     hit: Hit
     pos: QPointF  # last mouse position, in view pixels
-    node: Node = None  # what dragging moves; None pans the view
+    node: Node | None = None  # what dragging moves; None pans the view
     moved: bool = False
 
 
 class Assets:
     """Pixmaps shared by all tabs: supertile pictures at several sizes, and the icon sheet."""
 
-    def __init__(self, eg_img):
-        self.eg_img = eg_img  # PIL image of the whole EG map
-        self._tiles = {}
-        self._sheet = None
-        self._icons = {}
+    def __init__(self, eg_img: Image.Image | None):
+        self.eg_img = eg_img  # the whole EG map
+        self._tiles: dict[tuple[Tile, bool], dict[int, QPixmap]] = {}
+        self._thumbnails: dict[tuple[Tile, int], QPixmap] = {}
+        self._sheet: QPixmap | None = None
+        self._icons: dict[str, QPixmap] = {}
 
-    def tile(self, tile, wanted_px, blank_dead=False):
+    def thumbnail(self, tile: Tile, size: int) -> QPixmap:
+        """Supertile picture at an exact size, for the supertile picker."""
+        key = (tile, size)
+        if key not in self._thumbnails:
+            x, y = tile
+            if self.eg_img is None:
+                image = QImage(size, size, QImage.Format.Format_RGB888)
+                image.fill(QColor("#444"))
+            else:
+                crop = self.eg_img.crop((x * 512, y * 512, (x + 1) * 512, (y + 1) * 512)).convert("RGB")
+                crop = crop.resize((size, size), Image.Resampling.BILINEAR, reducing_gap=2.0)
+                image = QImage(crop.tobytes(), size, size, size * 3, QImage.Format.Format_RGB888).copy()
+            self._thumbnails[key] = QPixmap.fromImage(image)
+        return self._thumbnails[key]
+
+    def tile(self, tile: Tile, wanted_px: float, blank_dead: bool = False) -> QPixmap:
         """Supertile pixmap at the smallest stored size >= wanted_px. blank_dead paints over dead rooms."""
         bounds = room_bounds.get(tile, {})
         blank_dead = blank_dead and bool(bounds.get("dead"))
@@ -109,7 +133,7 @@ class Assets:
         if key not in self._tiles:
             x, y = tile
             if self.eg_img is None:
-                image = QImage(256, 256, QImage.Format_RGB888)
+                image = QImage(256, 256, QImage.Format.Format_RGB888)
                 image.fill(QColor("#444"))
             else:
                 crop = self.eg_img.crop((x * 512, y * 512, (x + 1) * 512, (y + 1) * 512)).convert("RGB")
@@ -119,13 +143,13 @@ class Assets:
                     draw = ImageDraw.Draw(crop)
                     for left, top, right, bottom in bounds["dead"]:
                         draw.rectangle((left - 2, top - 2, right + 1, bottom + 1), fill=tuple(bounds["background"]))
-                image = QImage(crop.tobytes(), 512, 512, 512 * 3, QImage.Format_RGB888).copy()
+                image = QImage(crop.tobytes(), 512, 512, 512 * 3, QImage.Format.Format_RGB888).copy()
             levels = {}
             for size in (512, 256, 128, 64):
                 scaled = (
                     image
                     if image.width() == size
-                    else image.scaled(size, size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                    else image.scaled(size, size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 )
                 levels[size] = QPixmap.fromImage(scaled)
             self._tiles[key] = levels
@@ -135,7 +159,7 @@ class Assets:
                 return levels[size]
         return levels[512]
 
-    def icon(self, name):
+    def icon(self, name: str) -> QPixmap | None:
         import data.doors_sprite_data as sprites
 
         if name not in self._icons:
@@ -151,7 +175,7 @@ class Assets:
 class RoomItem(QGraphicsItem):
     """One node: picture, border, pin. Doors are a separate item (DoorsItem) above the links."""
 
-    def __init__(self, page, node):
+    def __init__(self, page: GraphPage, node: Node):
         super().__init__()
         self.page = page
         self.node = node
@@ -168,7 +192,7 @@ class RoomItem(QGraphicsItem):
         self.player_outline = self._around(self.pieces, 3)
         self.w, self.h = self.box[2] - self.box[0], self.box[3] - self.box[1]
         self.blank_dead = bool(model.experimental_flags.get("hide_dead_rooms"))
-        self.colour = QColor(DUNGEON_COLOURS.get(supertile(node.tile).dungeon, UNKNOWN_DUNGEON_COLOUR))
+        self.colour = QColor(dungeon_colour(supertile(node.tile).dungeon))
         self.hidden = model.is_hidden_dark(node.tile)
         self.compact = node in model.compact
         self.title = "Dark room" if self.hidden else model.rooms.title(node)
@@ -179,7 +203,7 @@ class RoomItem(QGraphicsItem):
     @staticmethod
     def _around(pieces, grow):
         path = QPainterPath()
-        path.setFillRule(Qt.WindingFill)
+        path.setFillRule(Qt.FillRule.WindingFill)
         for rect in pieces:
             path.addRect(rect.adjusted(-grow, -grow, grow, grow))
         return path.simplified()
@@ -205,7 +229,7 @@ class RoomItem(QGraphicsItem):
             font.setBold(True)
             painter.setFont(font)
             painter.setPen(QColor("#555"))
-            painter.drawText(first, Qt.AlignCenter, "?")
+            painter.drawText(first, Qt.AlignmentFlag.AlignCenter, "?")
         else:
             pixmap = self.page.assets.tile(
                 self.node.tile, THUMB * lod * painter.device().devicePixelRatioF(), blank_dead=self.blank_dead
@@ -220,7 +244,7 @@ class RoomItem(QGraphicsItem):
                 )
                 painter.drawPixmap(rect, pixmap, source)
 
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         if self.keep_expanded:
             painter.setPen(QPen(QColor("#18c418"), 6))
             painter.drawPath(self.outline)
@@ -235,8 +259,8 @@ class RoomItem(QGraphicsItem):
             metrics = QFontMetricsF(font)
             if self.compact:
                 painter.setPen(QColor("#111"))
-                text = metrics.elidedText(self.title, Qt.ElideRight, first.width() - 6)
-                painter.drawText(first, Qt.AlignCenter, text)
+                text = metrics.elidedText(self.title, Qt.TextElideMode.ElideRight, first.width() - 6)
+                painter.drawText(first, Qt.AlignmentFlag.AlignCenter, text)
             # Full-size rooms are labelled by LabelItem
 
         if self.pinned:
@@ -244,7 +268,7 @@ class RoomItem(QGraphicsItem):
 
         if self.page.model.player is not None and self.page.model.player.node == self.node:
             painter.setPen(QPen(QColor(PLAYER), 3))
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(self.player_outline)
 
     @staticmethod
@@ -255,7 +279,7 @@ class RoomItem(QGraphicsItem):
         painter.setPen(QPen(QColor("#222"), 1))
         painter.setBrush(QColor(255, 255, 255, 235))
         painter.drawEllipse(box)
-        painter.setPen(QPen(QColor("#222"), 1.6, Qt.SolidLine, Qt.RoundCap))
+        painter.setPen(QPen(QColor("#222"), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(
             QPointF(box.left() + size * 0.46, box.top() + size * 0.54),
             QPointF(box.left() + size * 0.2, box.top() + size * 0.8),
@@ -263,7 +287,7 @@ class RoomItem(QGraphicsItem):
         painter.setPen(QPen(QColor("#7a1512"), 1))
         painter.setBrush(QColor("#e53935"))
         painter.drawEllipse(QRectF(box.left() + size * 0.36, box.top() + size * 0.16, size * 0.48, size * 0.48))
-        painter.setPen(Qt.NoPen)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#ff8a80"))
         painter.drawEllipse(QRectF(box.left() + size * 0.52, box.top() + size * 0.24, size * 0.14, size * 0.14))
 
@@ -271,7 +295,7 @@ class RoomItem(QGraphicsItem):
 class LabelItem(QGraphicsItem):
     """Room name at the top-left of its first piece, on a layer above all rooms so it is never clipped."""
 
-    def __init__(self, room):
+    def __init__(self, room: RoomItem):
         super().__init__()
         self.text = room.title
         self.colour = room.colour
@@ -283,7 +307,7 @@ class LabelItem(QGraphicsItem):
         self.tag = QRectF(first.left(), first.top(), metrics.horizontalAdvance(self.text) + 7, metrics.height() + 2)
         self.setZValue(1.5)
         self.setOpacity(0.5)
-        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
     def boundingRect(self):
         return self.tag
@@ -297,19 +321,19 @@ class LabelItem(QGraphicsItem):
         painter.fillRect(self.tag, self.colour)
         painter.setFont(self.font)
         painter.setPen(QColor("white"))
-        painter.drawText(self.tag.adjusted(3, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, self.text)
+        painter.drawText(self.tag.adjusted(3, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
 
 
 class ReachItem(QGraphicsItem):
     """Debug overlay of repulsion shapes. Dashed outline = shape grown by half the reach; overlap means repulsion."""
 
-    def __init__(self, page):
+    def __init__(self, page: GraphPage):
         super().__init__()
         self.page = page
         self.shapes = []
         self.bounds = QRectF()
         self.setZValue(0.5)
-        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
     def refresh(self):
         self.prepareGeometryChange()
@@ -333,7 +357,7 @@ class ReachItem(QGraphicsItem):
 
     def paint(self, painter, option, widget=None):
         solid = QPen(QColor(255, 255, 255, 200), 0)
-        dashed = QPen(QColor(255, 255, 255, 200), 0, Qt.DashLine)
+        dashed = QPen(QColor(255, 255, 255, 200), 0, Qt.PenStyle.DashLine)
         fill = QColor(255, 255, 255, 28)
         for shape in self.shapes:
             reach, half = shape.reach, shape.reach / 2
@@ -342,13 +366,13 @@ class ReachItem(QGraphicsItem):
                 painter.setBrush(fill)
                 painter.setPen(dashed)
                 painter.drawEllipse(QPointF(x, y), radius + half, radius + half)
-                painter.setBrush(Qt.NoBrush)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.setPen(solid)
                 painter.drawEllipse(QPointF(x, y), radius, radius)
             else:
                 # Rooms grown by half the reach
                 grown = QPainterPath()
-                grown.setFillRule(Qt.WindingFill)
+                grown.setFillRule(Qt.FillRule.WindingFill)
                 for left, top, right, bottom in shape.boxes:
                     grown.addRoundedRect(QRectF(left - half, top - half, right - left + reach, bottom - top + reach), half, half)
                 painter.setBrush(fill)
@@ -359,7 +383,7 @@ class ReachItem(QGraphicsItem):
 class DoorsItem(QGraphicsItem):
     """Door dots and player marker of one node, above the links."""
 
-    def __init__(self, page, node):
+    def __init__(self, page: GraphPage, node: Node):
         super().__init__()
         self.page = page
         self.node = node
@@ -368,7 +392,7 @@ class DoorsItem(QGraphicsItem):
         self.dots = page.model.door_dots(node)
         self.setZValue(3)
         # Hit shape is the dots only
-        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
     def boundingRect(self):
         return QRectF(-self.w / 2 - 12, -self.h / 2 - 12, self.w + 24, self.h + 24)
@@ -392,7 +416,7 @@ class DoorsItem(QGraphicsItem):
         if player is not None and player.node == self.node and self.node not in page.model.compact:
             x = (player.x / 512 - 0.5) * THUMB
             y = (player.y / 512 - 0.5) * THUMB
-            painter.setPen(QPen(QColor(PLAYER), 3, Qt.SolidLine, Qt.RoundCap))
+            painter.setPen(QPen(QColor(PLAYER), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawLine(QPointF(x - 7, y - 7), QPointF(x + 7, y + 7))
             painter.drawLine(QPointF(x + 7, y - 7), QPointF(x - 7, y + 7))
 
@@ -400,7 +424,7 @@ class DoorsItem(QGraphicsItem):
 class SeamItem(QGraphicsRectItem):
     """Bar across the doorway of two joined rooms."""
 
-    def __init__(self, parent, x, y, vertical, edge):
+    def __init__(self, parent: QGraphicsItem, x: float, y: float, vertical: bool, edge: Edge):
         long_side, short_side = 11.0, 5.0
         hw, hh = (long_side, short_side) if vertical else (short_side, long_side)
         super().__init__(QRectF(x - hw, y - hh, hw * 2, hh * 2), parent)
@@ -412,7 +436,17 @@ class SeamItem(QGraphicsRectItem):
 class IconItem(QGraphicsItem):
     """Icon on a door: an annotation or a lobby entrance."""
 
-    def __init__(self, parent, page, door, x, y, icon, lobby=None, direction=(0, 1)):
+    def __init__(
+        self,
+        parent: QGraphicsItem,
+        page: GraphPage,
+        door: str,
+        x: float,
+        y: float,
+        icon: str,
+        lobby: str | None = None,
+        direction: tuple[int, int] = (0, 1),
+    ):
         super().__init__(parent)
         self.page = page
         self.hit = Hit(icon=door)
@@ -433,16 +467,16 @@ class IconItem(QGraphicsItem):
 
     def paint(self, painter, option, widget=None):
         if self.lobby:
-            painter.setPen(QPen(QColor("#111"), 2.5, Qt.DashLine))
+            painter.setPen(QPen(QColor("#111"), 2.5, Qt.PenStyle.DashLine))
             painter.drawLine(self.origin, self.spot)
         box = QRectF(self.spot.x() - 9, self.spot.y() - 9, 18, 18)
         painter.setPen(QPen(QColor("#111") if self.lobby else QColor("white"), 2 if self.lobby else 1))
         painter.setBrush(QColor("white"))
         painter.drawRect(box.adjusted(-1, -1, 1, 1) if self.lobby else box)
         if self.icon is not None:
-            painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
             painter.drawPixmap(QRectF(self.spot.x() - 8, self.spot.y() - 8, 16, 16), self.icon, QRectF(0, 0, 16, 16))
-            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         if self.lobby:
             lod = option.levelOfDetailFromTransform(painter.worldTransform())
             if lod * 10 >= 5:
@@ -454,13 +488,24 @@ class IconItem(QGraphicsItem):
                 painter.setPen(self.page.text_colour)
                 below = self.direction[1] >= 0
                 text_rect = QRectF(self.spot.x() - 60, self.spot.y() + (12 if below else -26), 120, 14)
-                painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignVCenter, self.lobby.replace("_", " "))
+                painter.drawText(text_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, self.lobby.replace("_", " "))
+
+
+class HullItem(QGraphicsPolygonItem):
+    """Outline around the supertiles of one original dungeon, when grouping by dungeon."""
+
+    def __init__(self, members: list[Node], colour: str):
+        super().__init__()
+        self.members = members
+        self.setPen(QPen(QColor(lighten(colour, 0.35)), 2))
+        self.setBrush(QColor(lighten(colour, 0.82)))
+        self.setZValue(0)
 
 
 class LinkItem(QGraphicsPathItem):
     """A link, interior connection, drop or warp between two doors."""
 
-    def __init__(self, page, edge, colour):
+    def __init__(self, page: GraphPage, edge: Edge, colour: str):
         super().__init__()
         self.page = page
         self.edge = edge
@@ -475,13 +520,13 @@ class LinkItem(QGraphicsPathItem):
 
     def set_state(self, faded, strong):
         if self.interior:
-            pen = QPen(self.colour, 1.5, Qt.DashLine)
+            pen = QPen(self.colour, 1.5, Qt.PenStyle.DashLine)
         else:
             pen = QPen(
                 QColor(EDGE_FADED) if faded else self.colour,
                 4 if strong else 3,
-                Qt.DashLine if self.dashed else Qt.SolidLine,
-                Qt.RoundCap,
+                Qt.PenStyle.DashLine if self.dashed else Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
             )
         self.setPen(pen)
         if self.arrow is not None:
@@ -499,24 +544,28 @@ class LinkItem(QGraphicsPathItem):
         node_a, node_b = model.rooms.node(a), model.rooms.node(b)
         if node_a == node_b:
             reach = max(reach, 30.0)
-        da = DIRECTIONS.get(door_direction(a)) if not model.is_hidden_dark(node_a.tile) else None
-        db = DIRECTIONS.get(door_direction(b)) if not model.is_hidden_dark(node_b.tile) else None
+        da = door_vector(a) if not model.is_hidden_dark(node_a.tile) else None
+        db = door_vector(b) if not model.is_hidden_dark(node_b.tile) else None
         path = QPainterPath(QPointF(ax, ay))
+        # Control points out from each door that faces a direction
         c1 = QPointF(ax + da[0] * reach, ay + da[1] * reach) if da else None
         c2 = QPointF(bx + db[0] * reach, by + db[1] * reach) if db else None
         end = QPointF(bx, by)
         same_block = model.blocks.root.get(node_a) == model.blocks.root.get(node_b)
-        if same_block and da and db and not self.interior and dist > 1:
-            # Same block: the plain curve would be a straight line, so bow it sideways
-            px, py = -(by - ay) / dist, (bx - ax) / dist
-            if py < 0 or (py == 0 and px < 0):
-                px, py = -px, -py
-            bow = dist * 0.3
-            path.cubicTo(c1 + QPointF(px * bow, py * bow), c2 + QPointF(px * bow, py * bow), end)
-        elif c1 is not None and c2 is not None:
-            path.cubicTo(c1, c2, end)
-        elif c1 is not None or c2 is not None:
-            path.quadTo(c1 if c1 is not None else c2, end)
+        if c1 is not None and c2 is not None:
+            if same_block and not self.interior and dist > 1:
+                # Same block: the plain curve would be a straight line, so bow it sideways
+                px, py = -(by - ay) / dist, (bx - ax) / dist
+                if py < 0 or (py == 0 and px < 0):
+                    px, py = -px, -py
+                bow = dist * 0.3
+                path.cubicTo(c1 + QPointF(px * bow, py * bow), c2 + QPointF(px * bow, py * bow), end)
+            else:
+                path.cubicTo(c1, c2, end)
+        elif c1 is not None:
+            path.quadTo(c1, end)
+        elif c2 is not None:
+            path.quadTo(c2, end)
         else:
             path.lineTo(end)
         self.setPath(path)
@@ -525,7 +574,7 @@ class LinkItem(QGraphicsPathItem):
             one_way = not edge.both_ways
         else:
             one_way = not self.interior and (
-                model.decoupled() or (door_direction(a) not in DIRECTIONS and "Stairs" not in a and "Ladder" not in a)
+                model.decoupled() or (door_vector(a) is None and "Stairs" not in a and "Ladder" not in a)
             )
         if one_way:
             # Tracked drops can be stored either way round; the arrow always points pit -> landing
@@ -544,7 +593,7 @@ class LinkItem(QGraphicsPathItem):
             )
             if self.arrow is None:
                 self.arrow = QGraphicsPolygonItem(self)
-                self.arrow.setPen(Qt.NoPen)
+                self.arrow.setPen(Qt.PenStyle.NoPen)
                 self.arrow.setBrush(self.pen().color())
             self.arrow.setPolygon(head)
 
@@ -556,25 +605,25 @@ class LinkItem(QGraphicsPathItem):
 
     def paint(self, painter, option, widget=None):
         painter.setPen(self.pen())
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(self.path())
 
 
 class GraphView(QGraphicsView):
     """Camera: pan and zoom by view transform only."""
 
-    def __init__(self, page, use_gl=True):
+    def __init__(self, page: GraphPage, use_gl: bool = True):
         super().__init__(page.scene)
         self.page = page
         self.setSceneRect(-WORLD, -WORLD, WORLD * 2, WORLD * 2)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setTransformationAnchor(QGraphicsView.NoAnchor)
-        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
-        self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform | QPainter.RenderHint.TextAntialiasing)
         self.setBackgroundBrush(QColor(DUNGEON_BACKGROUNDS.get(page.dungeon_name, BACKGROUND)))
-        self.setFrameShape(QGraphicsView.NoFrame)
-        self.setDragMode(QGraphicsView.NoDrag)
+        self.setFrameShape(QGraphicsView.Shape.NoFrame)
+        self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.gl = False
         if use_gl:
             try:
@@ -585,13 +634,13 @@ class GraphView(QGraphicsView):
                 fmt.setSamples(4)
                 viewport.setFormat(fmt)
                 self.setViewport(viewport)
-                self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+                self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
                 self.viewport().setMouseTracking(True)
                 self.gl = True
             except Exception:
                 self.gl = False
         if not self.gl:
-            self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
+            self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         # Mouse tracking for hover, on both the view and its viewport
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
@@ -658,7 +707,7 @@ class GraphView(QGraphicsView):
         self.page.on_double_click(event)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key.Key_Escape:
             self.page.cancel_selection()
         else:
             super().keyPressEvent(event)
@@ -671,7 +720,7 @@ class GraphView(QGraphicsView):
 class GraphPage(QWidget):
     """One dungeon tab: toolbar, view and input handling."""
 
-    def __init__(self, top, tab_world, assets, use_gl=True):
+    def __init__(self, top: MainWindow, tab_world: World, assets: Assets, use_gl: bool = True):
         super().__init__()
         self.top = top
         self.tab_world = tab_world
@@ -681,22 +730,22 @@ class GraphPage(QWidget):
 
         background = QColor(DUNGEON_BACKGROUNDS.get(self.dungeon_name, BACKGROUND))
         self.text_colour = QColor("#111") if background.lightness() > 150 else QColor("white")
-        self.selected_door = None
-        self.hot_door = None
-        self._focus = None
-        self._press = None
-        self._rooms = {}
-        self._doors = {}
-        self._labels = {}
-        self._links = []
-        self._hulls = []
-        self._reach = None
-        self._rubber = None
+        self.selected_door: str | None = None  # first door of a link being made
+        self.hot_door: str | None = None  # door under the mouse
+        self._focus: Node | None = None  # hovered room; links not touching it are faded
+        self._press: Press | None = None
+        self._rooms: dict[Node, RoomItem] = {}
+        self._doors: dict[Node, DoorsItem] = {}
+        self._labels: dict[Node, LabelItem] = {}
+        self._links: list[LinkItem] = []
+        self._hulls: list[HullItem] = []
+        self._reach: ReachItem | None = None
+        self._rubber: QGraphicsLineItem | None = None
         self._needs_fit = True
         self._settling_size = False
 
         self.scene = QGraphicsScene(self)
-        self.scene.setItemIndexMethod(QGraphicsScene.NoIndex)
+        self.scene.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.NoIndex)
         self.view = GraphView(self, use_gl=use_gl)
 
         self._build_toolbar()
@@ -726,12 +775,12 @@ class GraphPage(QWidget):
         self.join_box = QCheckBox("Join fitting rooms")
         self.join_box.setChecked(True)
         self.join_box.toggled.connect(self._on_join)
-        self.spacing_slider = QSlider(Qt.Horizontal)
+        self.spacing_slider = QSlider(Qt.Orientation.Horizontal)
         self.spacing_slider.setRange(10, 200)
         self.spacing_slider.setValue(int(self.model.spacing))
         self.spacing_slider.setFixedWidth(120)
         self.spacing_slider.valueChanged.connect(self._on_spacing)
-        self.pull_slider = QSlider(Qt.Horizontal)
+        self.pull_slider = QSlider(Qt.Orientation.Horizontal)
         self.pull_slider.setRange(10, 40)
         self.pull_slider.setValue(int(self.model.leaf_pull * 10))
         self.pull_slider.setFixedWidth(80)
@@ -814,7 +863,7 @@ class GraphPage(QWidget):
 
     # -------------------------------------------------------------------- scene
 
-    def rebuild(self):
+    def rebuild(self) -> None:
         """Recreate all scene items from the model. For data changes, not per frame."""
         model = self.model
         self.scene.clear()
@@ -828,16 +877,11 @@ class GraphPage(QWidget):
         self.hot_door = None
 
         if model.group_by_dungeon:
-            by_dungeon = {}
+            by_dungeon: dict[str | None, list[Node]] = {}
             for node in model.nodes():
                 by_dungeon.setdefault(supertile(node.tile).dungeon, []).append(node)
             for dungeon, members in by_dungeon.items():
-                colour = DUNGEON_COLOURS.get(dungeon, UNKNOWN_DUNGEON_COLOUR)
-                hull = QGraphicsPolygonItem()
-                hull.setPen(QPen(QColor(lighten(colour, 0.35)), 2))
-                hull.setBrush(QColor(lighten(colour, 0.82)))
-                hull.setZValue(0)
-                hull.members = members
+                hull = HullItem(members, dungeon_colour(dungeon))
                 self.scene.addItem(hull)
                 self._hulls.append(hull)
 
@@ -856,12 +900,14 @@ class GraphPage(QWidget):
                 self._labels[node] = label
 
         for door, icon in model.special_doors.items():
+            if door not in DOORS:
+                continue  # a file can name doors this version does not know
             node = self.model.rooms.node(door)
-            if node not in self._doors or door not in DOORS:
+            if node not in self._doors:
                 continue
             x, y = model.port_offset(door)
             if door in lobbies:
-                direction = DIRECTIONS.get(door_direction(door)) or (0, 1)
+                direction = door_vector(door) or (0, 1)
                 if door in ("Sanctuary Mirror Route", "Sewer Drop") or "Drop" in door:
                     direction = (0, -1)
                 if model.is_hidden_dark(node.tile):
@@ -880,15 +926,18 @@ class GraphPage(QWidget):
                 ax, ay = model.port(edge.a)
                 bx, by = model.port(edge.b)
                 cx, cy = model.pos[node]
-                vertical = DIRECTIONS[door_direction(edge.a)][0] == 0
+                # Joined doorways face north/south or east/west
+                vertical = door_vector(edge.a) in ((0, -1), (0, 1))
                 SeamItem(self._doors[node], (ax + bx) / 2 - cx, (ay + by) / 2 - cy, vertical, edge)
                 continue
             if edge.kind is EdgeKind.WARP:
                 colour = WARP_COLOUR
             elif edge.kind in (EdgeKind.DROP, EdgeKind.HOLE):
                 colour = DROP_COLOUR
+            elif edge.link is not None:
+                colour = colours[edge.link]
             else:
-                colour = colours.get(edge.link, "#222")
+                colour = "#222"
             link = LinkItem(self, edge, colour)
             self.scene.addItem(link)
             self._links.append(link)
@@ -897,7 +946,7 @@ class GraphPage(QWidget):
         if self._needs_fit and model.pos and self.view.viewport().width() > 50 and self.isVisible():
             self.fit_view()
 
-    def update_positions(self, links=True):
+    def update_positions(self, links: bool = True) -> None:
         """Move existing items to the model's positions. The per-frame path."""
         model = self.model
         for node, room in self._rooms.items():
@@ -947,7 +996,7 @@ class GraphPage(QWidget):
 
     def relayout(self):
         # Can take a few seconds on a big map
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             no_map_before = self.model.relayout()
         finally:
@@ -962,7 +1011,7 @@ class GraphPage(QWidget):
 
     # ------------------------------------------------------------- hit testing
 
-    def door_at(self, scene_pos):
+    def door_at(self, scene_pos: QPointF) -> str | None:
         """Door under the mouse, found by geometry (dots are not separate items)."""
         model = self.model
         reach = max(1.0, 6 / self.view.zoom())
@@ -979,7 +1028,7 @@ class GraphPage(QWidget):
                     nearest, found = distance, dot.door
         return found
 
-    def node_at(self, scene_pos):
+    def node_at(self, scene_pos: QPointF) -> Node | None:
         for node, (x, y) in self.model.pos.items():
             if any(
                 left <= scene_pos.x() - x <= right and top <= scene_pos.y() - y <= bottom
@@ -988,13 +1037,16 @@ class GraphPage(QWidget):
                 return node
         return None
 
-    def hit_at(self, event):
+    def hit_at(self, event) -> Hit:
         """What is under the mouse. A door dot wins over anything but an icon."""
         view_pos = event.position().toPoint()
+        # The item under the mouse, or the nearest parent of it, that says what it is
         item = self.view.itemAt(view_pos)
-        while item is not None and not hasattr(item, "hit"):
+        found: Hit | None = None
+        while item is not None and found is None:
+            found = getattr(item, "hit", None)
             item = item.parentItem()
-        hit = item.hit if item is not None else Hit()
+        hit = found if found is not None else Hit()
         if hit.icon is None:
             door = self.door_at(self.view.mapToScene(view_pos))
             if door is not None:
@@ -1007,39 +1059,40 @@ class GraphPage(QWidget):
         self.view.setFocus()
         hit = self.hit_at(event)
         scene_pos = self.view.mapToScene(event.position().toPoint())
-        if event.button() == Qt.RightButton:
+        if event.button() == Qt.MouseButton.RightButton:
             self._context(event, hit, scene_pos)
             return
-        if event.button() == Qt.MiddleButton:
+        if event.button() == Qt.MouseButton.MiddleButton:
             self._middle(hit)
             return
-        if event.button() != Qt.LeftButton:
+        if event.button() != Qt.MouseButton.LeftButton:
             return
         node = self._node_of(hit, scene_pos)
-        if event.modifiers() & Qt.ControlModifier:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             if node is not None:
                 self.set_pinned(node, node not in self.model.fixed)
             return
         self._press = Press(hit, event.position(), node)
 
-    def _node_of(self, hit, scene_pos):
+    def _node_of(self, hit: Hit, scene_pos: QPointF) -> Node | None:
         """The node a press on this would pin or drag; None for the background or a link in open space."""
         if hit.node is not None:
             return hit.node
-        if hit.door is not None or hit.icon is not None:
-            return self.model.rooms.node(hit.door or hit.icon)
+        door = hit.door or hit.icon
+        if door is not None:
+            return self.model.rooms.node(door)
         if hit.edge is not None:
             # A link over a room acts on that room
             return self.node_at(scene_pos) or (self.model.rooms.node(hit.edge.a) if self._within_block(hit.edge) else None)
         return None
 
-    def _within_block(self, edge):
+    def _within_block(self, edge: Edge) -> bool:
         """True for an edge that does not leave its block: a joined link, or both ends on one node."""
         return edge.link in self.model.blocks.joined or self.model.rooms.node(edge.a) == self.model.rooms.node(edge.b)
 
     def on_move(self, event):
         press = self._press
-        if press is None or not (event.buttons() & Qt.LeftButton):
+        if press is None or not (event.buttons() & Qt.MouseButton.LeftButton):
             self.set_hover(self.hit_at(event))
             if self.selected_door:
                 self._draw_rubber(self.view.mapToScene(event.position().toPoint()))
@@ -1060,7 +1113,7 @@ class GraphPage(QWidget):
     def on_release(self, event):
         press, self._press = self._press, None
         self.model.drop()
-        if press is None or event.button() != Qt.LeftButton or press.moved:
+        if press is None or event.button() != Qt.MouseButton.LeftButton or press.moved:
             return
         if press.hit.door is not None:
             self._door_clicked(press.hit.door)
@@ -1068,7 +1121,7 @@ class GraphPage(QWidget):
             self.cancel_selection()
 
     def on_double_click(self, event):
-        if event.button() != Qt.LeftButton:
+        if event.button() != Qt.MouseButton.LeftButton:
             return
         self._press = None
         hit = self.hit_at(event)
@@ -1079,13 +1132,13 @@ class GraphPage(QWidget):
                 return
             self.cancel_selection()
             x, y = self.model.port(door)
-            direction = DIRECTIONS.get(door_direction(door)) or (1, 0)
+            direction = door_vector(door) or (1, 0)
             reach = THUMB / 2 + LINK_GAP
             self.add_tile_from_picker(x + direction[0] * reach, y + direction[1] * reach)
         elif hit == Hit():
             self.add_tile_from_picker(scene_pos.x(), scene_pos.y())
 
-    def _door_clicked(self, door):
+    def _door_clicked(self, door: str) -> None:
         model = self.model
         if door in INTERIOR_DOORS or door in model.lobby_door_names():
             return
@@ -1111,13 +1164,16 @@ class GraphPage(QWidget):
             self._rubber = None
         self._repaint_doors()
 
-    def _draw_rubber(self, scene_pos):
+    def _draw_rubber(self, scene_pos: QPointF) -> None:
+        """Draw the line from the door being linked to the mouse."""
+        if self.selected_door is None:
+            return
         start = self.model.port(self.selected_door)
         if self._rubber is None:
             self._rubber = QGraphicsLineItem()
-            self._rubber.setPen(QPen(QColor(DOOR_SELECTED), 2, Qt.DashLine))
+            self._rubber.setPen(QPen(QColor(DOOR_SELECTED), 2, Qt.PenStyle.DashLine))
             self._rubber.setZValue(4)
-            self._rubber.setAcceptedMouseButtons(Qt.NoButton)
+            self._rubber.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             self.scene.addItem(self._rubber)
         self._rubber.setLine(start[0], start[1], scene_pos.x(), scene_pos.y())
 
@@ -1127,7 +1183,7 @@ class GraphPage(QWidget):
 
     # ------------------------------------------------------------------- hover
 
-    def set_hover(self, hit):
+    def set_hover(self, hit: Hit) -> None:
         """Show what the mouse is over in the status line, and highlight it."""
         model = self.model
         if hit.door != self.hot_door:
@@ -1180,7 +1236,7 @@ class GraphPage(QWidget):
 
     # ------------------------------------------------------------ other buttons
 
-    def _middle(self, hit):
+    def _middle(self, hit: Hit) -> None:
         model = self.model
         if hit.edge is not None:
             if hit.edge.link is None:
@@ -1194,7 +1250,7 @@ class GraphPage(QWidget):
             model.toggle_expanded(hit.node)
             self.rebuild()
 
-    def _context(self, event, hit, scene_pos):
+    def _context(self, event, hit: Hit, scene_pos: QPointF) -> None:
         model = self.model
         if hit.door is not None:
             icon = self.top.pick_icon(self.tab_world)
@@ -1229,7 +1285,7 @@ class GraphPage(QWidget):
             menu.addAction("Add supertile here…", lambda: self.add_tile_from_picker(scene_pos.x(), scene_pos.y()))
             menu.exec(event.globalPosition().toPoint())
 
-    def set_pinned(self, node, pinned):
+    def set_pinned(self, node: Node, pinned: bool) -> None:
         self.model.set_pinned(node, pinned)
         for member in self.model.blocks.of(node):
             if member in self._rooms:
@@ -1242,21 +1298,22 @@ class GraphPage(QWidget):
             room.pinned = False
             room.update()
 
-    def remove_tile(self, tile):
+    def remove_tile(self, tile: Tile) -> None:
         # Also removes its links, lobbies and icons: confirm first
         answer = QMessageBox.question(
             self,
             "Remove supertile",
             f"Remove {WHOLE.title(Node(*tile))} and every link, lobby and annotation on it?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        if answer == QMessageBox.Yes and self.model.remove_tile(tile):
-            if self.selected_door in DOORS and DOORS[self.selected_door].tile == tile:
+        if answer == QMessageBox.StandardButton.Yes and self.model.remove_tile(tile):
+            selected = DOORS.get(self.selected_door) if self.selected_door else None
+            if selected is not None and selected.tile == tile:
                 self.cancel_selection()
             self.rebuild()
 
-    def add_tile_from_picker(self, x, y):
+    def add_tile_from_picker(self, x: float, y: float) -> None:
         tile = self.top.pick_eg_tile(self)
         if tile is None or tile in self.model.tiles:
             return
@@ -1267,7 +1324,7 @@ class GraphPage(QWidget):
     # ------------------------------------------------- called by the tracker
 
     @property
-    def tiles(self):
+    def tiles(self) -> dict[Tile, TileState]:
         return self.model.tiles
 
     @property
@@ -1306,20 +1363,20 @@ class GraphPage(QWidget):
         data["camera"] = [round(x, 1), round(y, 1), round(zoom, 4)]
         return data
 
-    def auto_add_tile(self, tile, was_lit=False, player=None):
+    def auto_add_tile(self, tile: Tile, was_lit: bool = False, player: tuple[float, float] | None = None) -> None:
         """Add a supertile the player entered. player=(x, y) within it."""
         if self.model.add_tile(tile, has_been_lit=was_lit, player=player):
             self.rebuild()
 
-    def auto_add_door_link(self, door, linked_door):
+    def auto_add_door_link(self, door: str | None, linked_door: str | None) -> None:
         added = self.model.auto_add_door_link(door, linked_door)
         self._arrived(linked_door, added)
 
-    def auto_add_lobby(self, door):
+    def auto_add_lobby(self, door: str | None) -> None:
         added = self.model.auto_add_lobby(door)
         self._arrived(door, added)
 
-    def _arrived(self, door, changed):
+    def _arrived(self, door: str | None, changed: bool) -> None:
         """Tell the model which door the player entered by, then refresh."""
         if door is not None:
             self.model.arrive(door)
@@ -1330,12 +1387,12 @@ class GraphPage(QWidget):
         else:
             self.scene.update()
 
-    def auto_light_tile(self, tile):
+    def auto_light_tile(self, tile: Tile) -> None:
         """A dark supertile on the map has been seen lit."""
         if self.model.light(tile):
             self.rebuild()
 
-    def auto_draw_player(self, x, y, tile):
+    def auto_draw_player(self, x: float, y: float, tile: Tile) -> None:
         model = self.model
         if tile not in model.tiles:
             return
@@ -1360,7 +1417,7 @@ class GraphPage(QWidget):
             ):
                 self.view.set_camera(px, py, zoom)
 
-    def clear_player(self):
+    def clear_player(self) -> None:
         model = self.model
         if model.player is not None:
             node = model.player.node

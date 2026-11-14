@@ -43,7 +43,7 @@ def open_doors(model, tile):
     ]
 
 
-def next_link(model):
+def next_link(model: GraphModel) -> tuple[str, str]:
     """(door on the map, facing door of a supertile not on the map).
 
     The new supertile is lit and unsplit, and the one with the most doorways, so the map can keep growing.
@@ -52,18 +52,21 @@ def next_link(model):
     def doorways(tile):
         return [d for d in open_doors(model, tile) if DOORS[d].facing in OPPOSITE]
 
-    best = None
+    most, link = 0, None
     for tile in list(model.tiles):
         for door in doorways(tile):
+            wanted = OPPOSITE[DOORS[door].facing or ""]
             for other in sorted(SUPERTILES):
                 if other in model.tiles or other in dark_tiles or SPLIT.part_count(other) > 1:
                     continue
                 for candidate in doorways(other):
-                    if DOORS[candidate].facing == OPPOSITE[DOORS[door].facing]:
-                        if best is None or len(doorways(other)) > best[0]:
-                            best = (len(doorways(other)), door, candidate)
+                    if DOORS[candidate].facing == wanted:
+                        if len(doorways(other)) > most:
+                            most, link = len(doorways(other)), (door, candidate)
                         break
-    return best[1:]
+    if link is None:
+        raise AssertionError("nothing left to link onto the map")
+    return link
 
 
 def grow(model, rooms):

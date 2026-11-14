@@ -52,8 +52,20 @@ def test_the_mouse_leaving_the_map_clears_the_hover(window, app):
     node = next(iter(page._rooms))
     page.set_hover(Hit(node=node))
     assert page.status.text() != ""
-    app.sendEvent(page.view, QEvent(QEvent.Leave))
+    app.sendEvent(page.view, QEvent(QEvent.Type.Leave))
     assert page.status.text() == ""
+
+
+def test_a_file_naming_doors_this_version_does_not_know_is_still_drawn(window, app):
+    page = page_with_map(window, app)
+    saved = page.return_connections()
+    saved["door_links"].append({"door": "No Such Door N", "linked_door": saved["door_links"][0]["door"]})
+    saved["lobby_doors"].append({"door": "No Such Door S", "lobby": "Nowhere"})
+    saved["special_doors"]["No Such Door E"] = "Bow"
+
+    page.load_yaml(saved)
+    app.processEvents()
+    assert set(page._rooms) == set(page.model.nodes())
 
 
 def test_linking_two_doors_by_clicking_then_removing_the_link(window, app):
@@ -62,14 +74,14 @@ def test_linking_two_doors_by_clicking_then_removing_the_link(window, app):
     first, second = [doors[0] for doors in (open_doors(model, tile) for tile in model.tiles) if doors][:2]
     links = len(model.door_links)
 
-    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, on_screen(page, *model.port(first)))
+    QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, on_screen(page, *model.port(first)))
     assert page.selected_door == first
-    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, on_screen(page, *model.port(second)))
+    QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, on_screen(page, *model.port(second)))
     assert page.selected_door is None
     assert [(x.door, x.linked_door) for x in model.door_links[links:]] == [(first, second)]
 
     edge = next(item.edge for item in page._links if item.edge.link is model.door_links[-1])
-    QTest.mouseClick(viewport, Qt.RightButton, Qt.NoModifier, point_on(page, Hit(edge=edge)))
+    QTest.mouseClick(viewport, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, point_on(page, Hit(edge=edge)))
     assert len(model.door_links) == links
 
 
@@ -81,10 +93,10 @@ def test_dragging_moves_the_whole_block_and_pins_nothing(window, app):
     before = positions(model)
     start = point_on(page, Hit(node=node))
 
-    QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mousePress(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
     for step in range(1, 7):
         QTest.mouseMove(viewport, start + QPoint(10 * step, 4 * step))
-    QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, start + QPoint(60, 24))
+    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start + QPoint(60, 24))
 
     moves = {n: (model.pos[n][0] - before[n][0], model.pos[n][1] - before[n][1]) for n in before}
     assert moves[node][0] > 20
@@ -92,5 +104,5 @@ def test_dragging_moves_the_whole_block_and_pins_nothing(window, app):
     assert {moves[n] for n in before if n not in block} <= {(0.0, 0.0)}
     assert not model.fixed and not model.held
 
-    QTest.mouseClick(viewport, Qt.LeftButton, Qt.ControlModifier, start + QPoint(60, 24))
+    QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier, start + QPoint(60, 24))
     assert model.fixed == block

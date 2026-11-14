@@ -5,7 +5,22 @@ it has at least one door, dead when it has none. "background" is the colour betw
 that are partitioned also have "areas": for each part in turn, the boxes of the picture that are its.
 """
 
-room_bounds = {
+from typing import TypedDict
+
+Box = tuple[int, int, int, int]
+
+
+class _Bounds(TypedDict):
+    live: list[Box]
+    dead: list[Box]
+    background: tuple[int, int, int]
+
+
+class RoomBounds(_Bounds, total=False):
+    areas: list[list[Box]]
+
+
+room_bounds: dict[tuple[int, int], RoomBounds] = {
     (0, 2): {
         "live": [(0, 256, 512, 496)],
         "dead": [(16, 32, 240, 240), (272, 32, 496, 240)],

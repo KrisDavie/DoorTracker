@@ -148,16 +148,22 @@ def test_walking_through_a_door_and_into_a_dark_room(window, app, monkeypatch):
     assert seen["end"] == {**seen["end"], "player": DARK_ROOM, "dark room lit": True, "dark room hidden": False}
 
 
-def test_leaving_a_dungeon_makes_the_door_left_by_an_entrance(window, app, monkeypatch):
-    # A lit supertile with a north door to come in by (not an entrance) and a south door to leave by
+def supertile_with_doors_facing(*facings):
+    """(supertile, door table entry by facing) of a lit Palace of Darkness supertile with a door facing each way."""
     for tile, entries in sorted(door_coordinates.items()):
         doors = {}
         for entry in entries:
             name = entry["name"]
             if name.startswith("PoD") and name not in INTERIOR_DOORS and doors_data[name][2] == "00":
                 doors.setdefault(doors_data[name][1], entry)
-        if tile not in dark_tiles and "No" in doors and "So" in doors:
-            break
+        if tile not in dark_tiles and all(facing in doors for facing in facings):
+            return tile, doors
+    raise AssertionError(f"no supertile with doors facing {facings}")
+
+
+def test_leaving_a_dungeon_makes_the_door_left_by_an_entrance(window, app, monkeypatch):
+    # Come in by a north door, which is not an entrance, and leave by a south door
+    tile, doors = supertile_with_doors_facing("No", "So")
     at_north = (tile, doors["No"]["x"], doors["No"]["y"])
     at_south = (tile, doors["So"]["x"], doors["So"]["y"])
 

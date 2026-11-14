@@ -1,3 +1,12 @@
+from typing import TypedDict
+
+
+class ItemSpot(TypedDict):
+    x: float
+    y: float
+    loc_type: str
+
+
 lightworld_coordinates = {
     "Links House": {"x": 279.5, "y": 353.5},
     "Desert Palace Entrance (South)": {"x": 37.5, "y": 407.5},
@@ -87,7 +96,7 @@ lightworld_coordinates = {
     "Kakariko Gamble Game": {"x": 109.5, "y": 359.5},
 }
 
-lightworld_items = {
+lightworld_items: dict[str, ItemSpot] = {
     "Bombos Tablet": {"x": 111.5, "y": 470.5, "loc_type": "chest"},
     "Bottle Merchant": {"x": 48.5, "y": 237.5, "loc_type": "chest"},
     "Desert Ledge": {"x": 12.0, "y": 467.0, "loc_type": "chest"},
@@ -164,7 +173,7 @@ darkworld_coordinates = {
     "Dark Lake Hylia Shop": {"x": 331.5, "y": 411.0},
 }
 
-darkworld_items = {
+darkworld_items: dict[str, ItemSpot] = {
     "Bumper Cave Ledge": {"x": 174.5, "y": 79.5, "loc_type": "chest"},
     "Catfish": {"x": 457.5, "y": 87.5, "loc_type": "chest"},
     "Digging Game": {"x": 29.0, "y": 351.5, "loc_type": "chest"},
