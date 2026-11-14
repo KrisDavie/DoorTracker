@@ -8,7 +8,9 @@ a = Analysis(
     ['DoorsTracker.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # The door randomizer's files that gui/Doors/rules.py and checks.py read as text when the tracker starts.
+    # The modules checks.py imports are found from its imports
+    datas=[(f'ALttPDoorRandomizer/{name}', 'ALttPDoorRandomizer') for name in ('Rules.py', 'BaseClasses.py', 'Regions.py', 'DoorShuffle.py', 'MultiClient.py')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

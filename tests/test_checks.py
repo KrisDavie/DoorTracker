@@ -2,8 +2,9 @@
 
 from PySide6.QtCore import QPointF
 
-from data.checks import checks
-from gui.Doors.graph_model import CHECKS_BY_TILE
+from gui.Doors.checks import checks
+from gui.Doors.graph_model import CHECKS_BY_TILE, CheckState
+from gui.Doors.logic import ITEMS_AT, ITEMS_LENGTH, items_held
 from gui.Doors.rooms import SPLIT, Node
 from support import new_model
 
@@ -23,6 +24,66 @@ def test_every_check_is_drawn_on_exactly_one_part_of_its_supertile():
     for tile, names in CHECKS_BY_TILE.items():
         drawn = [spot.name for part in range(SPLIT.part_count(tile)) for spot in model.check_spots(Node(*tile, part))]
         assert sorted(drawn) == sorted(names), tile
+
+
+def test_items_are_read_from_the_save_data():
+    save = bytearray(ITEMS_LENGTH)
+    # Hammer, mitts, a swordless seed's sword byte, a shield that is not the mirror shield, red boomerang, bombs,
+    # and the big keys of Thieves' Town and Turtle Rock
+    for address, value in {0x34B: 1, 0x354: 2, 0x359: 0xFF, 0x35A: 2, 0x38C: 0x40, 0x370: 10, 0x366: 0x18}.items():
+        save[address - ITEMS_AT] = value
+    held = {"Hammer", "Power Glove", "Titans Mitts", "Red Boomerang", "Bombs", "Big Key (Thieves Town)", "Big Key (Turtle Rock)"}
+    assert items_held(bytes(save)) == held
+
+
+def test_a_check_is_blocked_until_the_item_its_rule_names_is_held():
+    name = "Thieves' Town - Big Chest"
+    model = new_model("Thieves_Town")
+    model.add_tile(checks[name]["tile"], has_been_lit=True)
+    model.update()
+    assert model.check_state(name) is CheckState.OPEN  # no game read yet: nothing is known to be missing
+    model.set_items(frozenset({"Big Key (Thieves Town)"}))
+    assert model.check_state(name) is CheckState.BLOCKED
+    model.set_items(frozenset({"Big Key (Thieves Town)", "Hammer"}))
+    assert model.check_state(name) is CheckState.OPEN
+
+
+def test_a_big_chest_takes_the_big_key_of_the_tab_it_is_on():
+    name = "Eastern Palace - Big Chest"
+    for tab, key in (("Eastern_Palace", "Big Key (Eastern Palace)"), ("Hyrule_Castle", "Big Key (Escape)")):
+        model = new_model(tab)
+        model.add_tile(checks[name]["tile"], has_been_lit=True)
+        model.update()
+        model.set_items(frozenset({"Big Key (Desert Palace)"}))
+        assert model.check_state(name) is CheckState.BLOCKED, tab
+        model.set_items(frozenset({key}))
+        assert model.check_state(name) is CheckState.OPEN, tab
+
+
+def test_a_check_past_a_passage_is_blocked_until_the_item_for_the_passage_is_held():
+    # The chest is across the moat from the lobby
+    name = "Swamp Palace - Entrance"
+    model = new_model("Swamp_Palace")
+    model.add_tile(checks[name]["tile"], has_been_lit=True)
+    model.add_lobby_door("Swamp Lobby S", "Swamp_Palace")
+    model.update()
+    model.set_items(frozenset())
+    assert model.check_state(name) is CheckState.BLOCKED
+    model.set_items(frozenset({"Flippers"}))
+    assert model.check_state(name) is CheckState.OPEN
+
+
+def test_a_check_the_map_does_not_lead_to_is_unrouted():
+    # The chest is only reached across the gap from Moldorm; this door is the way out of the chest's room
+    name = "Ganons Tower - Validation Chest"
+    model = new_model("Ganons_Tower")
+    model.add_tile(checks[name]["tile"], has_been_lit=True)
+    model.update()
+    # A room nothing leads to is a place to start from, as nothing says how it is got to
+    assert model.check_state(name) is CheckState.OPEN
+    model.add_lobby_door("GT Validation WS", "Ganons_Tower")
+    model.update()
+    assert model.check_state(name) is CheckState.UNROUTED
 
 
 def test_hovering_a_check_names_it_and_says_when_it_is_collected(window, app):

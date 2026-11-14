@@ -32,13 +32,14 @@ from PySide6.QtWidgets import (
 )
 
 import data.doors_sprite_data as sprites
-from data.checks import checks
 from data.doors_data import dungeon_lobbies, eg_tile_multiuse
 from data.vanilla_data import vanilla_layout_optimized
 from data.worlds_data import World, dungeon_worlds
 from gui import files
 from gui.Doors import rooms
+from gui.Doors.checks import checks
 from gui.Doors.layout import REPEL_RANGE
+from gui.Doors.logic import items_held
 from gui.qt.graph_page import Assets, GraphPage
 
 WINDOW_SIZES = {"small": (1064, 632), "medium": (1588, 888), "large": (2088, 1144)}
@@ -222,7 +223,7 @@ class MainWindow(QMainWindow):
         self._latest: str | None = None  # autosave file the next launch loads, as LATEST says
         self.autosave_on: bool = self.settings["autosave"]  # File -> Autosave, for this run
         self.seed_hash: str | None = None  # of the game the map was made on, once known; kept in the tracker file
-        self.collected: set[str] = set()  # checks collected, by name in data/checks.py; kept in the tracker file
+        self.collected: set[str] = set()  # checks collected, by name in gui/Doors/checks.py; kept in the tracker file
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._save_after_change)
@@ -610,7 +611,7 @@ class MainWindow(QMainWindow):
             page.init_page()
 
     def checks_read(self, memory: Mapping[str, bytes]) -> None:
-        """The game's tables of what has been collected, as the auto-tracker just read them."""
+        """The game's tables of what has been collected and the items held, as the auto-tracker just read them."""
 
         def word(table: str, room: int) -> int:
             return int.from_bytes(memory[table][room * 2 : room * 2 + 2], "little")
@@ -621,6 +622,11 @@ class MainWindow(QMainWindow):
             for page in self.pages.values():
                 page.scene.update()
             self.map_changed()
+        items = items_held(memory["items"])
+        for page in self.pages.values():
+            if items != page.model.items:
+                page.model.set_items(items)
+                page.scene.update()
 
     def new_map(self) -> None:
         """File -> New: an empty map that belongs to no seed."""

@@ -13,7 +13,6 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
-from data.checks import checks
 from data.doors_data import (
     complex_tiles,
     dark_tiles,
@@ -26,7 +25,10 @@ from data.doors_data import (
 )
 from data.worlds_data import World, dungeon_worlds
 from gui.Doors import layout, rooms
+from gui.Doors.checks import checks
 from gui.Doors.layout import LINK_GAP, REPEL_RANGE, enclosing_circle
+from gui.Doors.logic import BIG_KEYS, holds
+from gui.Doors.rules import check_regions, check_rules, passage_rules
 from gui.Doors.rooms import (
     DEFAULT_DOORS,
     DOORS,
@@ -117,9 +119,26 @@ class DoorDot:
 
 @dataclass(frozen=True)
 class CheckSpot:
-    name: str  # in data/checks.py
+    name: str  # in gui/Doors/checks.py
     x: float  # relative to the node's centre, world units
     y: float
+
+
+class CheckState(Enum):
+    OPEN = "open"  # can be walked to and collected
+    BLOCKED = "blocked"  # takes items the player does not hold, to collect or on every route to it
+    UNROUTED = "unrouted"  # nothing on the map leads to it yet
+
+
+def regions_at(name: str) -> list[str]:
+    """The regions going through a door puts you in. A region's own name gives that region."""
+    found = doors_to_regions.get(name)
+    if found is None:
+        return [name]
+    regions = list(found) if isinstance(found, list) else [found]
+    if name in MANUAL_REGIONS_ADDED:
+        regions.append(MANUAL_REGIONS_ADDED[name])
+    return regions
 
 
 @dataclass(frozen=True)
@@ -159,6 +178,7 @@ class GraphModel:
         self.spacing = float(REPEL_RANGE)  # repulsion reach
         self.leaf_pull = 2.5  # pull boost for blocks linked to a single other block
         self.circle_repulsion = False  # repel as one enclosing circle per block
+        self.items: frozenset[str] | None = None  # what the player holds; None when no game has been read
         self._shown_rooms = rooms.Rooms(True, whole=self.is_hidden_dark)
         self.reset()
 
@@ -186,6 +206,8 @@ class GraphModel:
         self.compact: set[Node] = set()
         self.blocks = Blocks()
         self.doors_available: set[str] = set()
+        self._routed: set[str] = set()  # regions the map leads to; see _find_reach
+        self._reachable: set[str] = set()  # and those of them the player's items let them walk to
         self.player: Player | None = None
         self.visited: set[Node] = set()  # where the player has been; saved as reached_parts
         self._whole: set[Tile] = set()  # split supertiles shown whole; see nodes()
@@ -698,6 +720,7 @@ class GraphModel:
             for tile in sorted(led_to):
                 self._ensure_tile(tile)
         self.doors_available = self._reachable_doors()
+        self._find_reach()
 
         self._piece_cache = {}
         self.compact = self._compact_nodes()
@@ -755,6 +778,71 @@ class GraphModel:
                     push(name)
                 drain()
         return seen
+
+    def _regions_from(self, starts: list[str], items: frozenset[str] | None) -> set[str]:
+        """Regions that can be walked to from some doors, going through each door and passage only the way it goes.
+
+        items: what the player holds. A door or passage whose rule they do not meet is not gone through.
+        None for no rules.
+        """
+        leads = defaultdict(list)  # door or passage -> the doors and regions it comes out at
+        for a, b in DEFAULT_DOORS.items():
+            leads[a].append(b)
+        for a, b in interior_doors:
+            leads[b].append(a)
+        for link in self.door_links:
+            leads[link.door].append(link.linked_door)
+            if not self.decoupled():
+                leads[link.linked_door].append(link.door)
+
+        reached = set()
+        queue = deque()
+
+        def arrive(name):
+            for region in regions_at(name):
+                if region not in reached:
+                    reached.add(region)
+                    queue.append(region)
+
+        for start in starts:
+            arrive(start)
+        while queue:
+            for way_out in regions_to_doors.get(queue.popleft(), ()):
+                if items is None or holds(passage_rules.get(way_out, True), items):
+                    for target in leads.get(way_out, ()):
+                        arrive(target)
+        return reached
+
+    def _find_reach(self) -> None:
+        """Work out which regions the map leads to, and which of them the player's items let them walk to."""
+        starts = self.lobby_door_names()
+        routed = self._regions_from(starts, None)
+        # A room no lobby leads to is somewhere to start from, as nothing says how it is got to
+        for node in self.nodes():
+            names = self.rooms.doors(node)
+            if not any(region in routed for name in names for region in regions_at(name)):
+                starts = starts + names
+                routed = self._regions_from(starts, None)
+        self._routed = routed
+        self._reachable = routed if self.items is None else self._regions_from(starts, self.items)
+
+    def set_items(self, items: frozenset[str] | None) -> None:
+        self.items = items
+        self._find_reach()
+
+    def check_state(self, name: str) -> CheckState:
+        """Whether a check can be collected, as far as the map and the player's items say."""
+        region = check_regions[name]
+        rule = check_rules.get(name, True)
+        if name.endswith("- Big Chest"):
+            # A big chest takes the big key of the dungeon it is in, which with crossed doors is this tab's
+            rule = ("all", rule, BIG_KEYS[self.dungeon_name])
+        opens = self.items is None or holds(rule, self.items)
+        if opens and region in self._reachable:
+            return CheckState.OPEN
+        if not opens or region in self._routed:
+            return CheckState.BLOCKED
+        return CheckState.UNROUTED
 
     def _compact_nodes(self) -> set[Node]:
         """Nodes to collapse: fully linked, single-route supertiles."""

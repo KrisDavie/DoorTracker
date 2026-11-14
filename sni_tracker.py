@@ -12,6 +12,7 @@ import grpc.aio
 import sni.sni_pb2 as sni_pb2
 import sni.sni_pb2_grpc as sni
 from data.doors_data import dark_tiles, door_coordinates, doors_data
+from gui.Doors.logic import ITEMS_AT, ITEMS_LENGTH
 
 dungeon_ids = {
     "00": "Hyrule_Castle",
@@ -50,12 +51,14 @@ mem_addresses = {
 
 
 # What marks a check as collected: two bytes per room in each table, and one word for the dungeon prizes.
-# Read less often than the rest, as they are 1.8 KB together
+# With them, the items held. Read less often than the rest, as they are 1.9 KB together
+SAVE_DATA = 0xF5F000
 check_addresses = {
-    "room": (0xF5F000, 0x250),  # save data
+    "room": (SAVE_DATA, 0x250),
     "pot": (0xF66018, 0x250),  # the randomizer's table of pots emptied
     "enemy": (0xF66268, 0x250),  # and of enemy drops taken
-    "prize": (0xF5F472, 0x2),
+    "prize": (SAVE_DATA + 0x472, 0x2),
+    "items": (SAVE_DATA + ITEMS_AT, ITEMS_LENGTH),
 }
 READINGS_PER_CHECK_READ = 10
 

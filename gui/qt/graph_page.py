@@ -45,7 +45,7 @@ from data.doors_data import mandatory_tiles
 from data.doors_sprite_data import ITEM_SHEET_PATH
 from data.room_bounds import room_bounds
 from data.worlds_data import World
-from gui.Doors.graph_model import THUMB, Edge, GraphModel, TileState
+from gui.Doors.graph_model import THUMB, CheckState, Edge, GraphModel, TileState
 from gui.Doors.layout import LINK_GAP
 from gui.Doors.rooms import (
     DOORS,
@@ -62,8 +62,8 @@ from gui.Doors.rooms import (
 )
 from gui.qt.style import (
     BACKGROUND,
-    DOOR_LINKED,
-    DOOR_OPEN,
+    CHECK_COLLECTED,
+    CHECK_STYLES,
     DOOR_RADIUS,
     DOOR_SELECTED,
     DOOR_STYLES,
@@ -441,11 +441,13 @@ class DoorsItem(QGraphicsItem):
 
     def paint(self, painter, option, widget=None):
         page = self.page
-        # Checks are squares, under the door dots, in the doors' colours: green to find, grey once collected
+        # Checks are squares, under the door dots: green to find, red when the player's items do not get them
+        # it, hollow when the map does not lead to it yet, grey once collected
         half = CHECK_SIZE / 2
-        painter.setPen(QPen(QColor("#111"), 1.5))
         for check in self.checks:
-            painter.setBrush(QColor(DOOR_LINKED if check.name in page.top.collected else DOOR_OPEN))
+            style = CHECK_COLLECTED if check.name in page.top.collected else CHECK_STYLES[page.model.check_state(check.name)]
+            painter.setPen(QPen(QColor(style.outline), 1.5))
+            painter.setBrush(QColor(style.fill))
             painter.drawRect(QRectF(check.x - half, check.y - half, CHECK_SIZE, CHECK_SIZE))
         for dot in self.dots:
             style = DOOR_STYLES[dot.state]
@@ -1265,7 +1267,11 @@ class GraphPage(QWidget):
         elif hit.node is not None:
             node = hit.node
             if hit.check is not None:
-                text = hit.check + ("   (collected)" if hit.check in self.top.collected else "")
+                text = hit.check
+                if hit.check in self.top.collected:
+                    text += "   (collected)"
+                elif model.check_state(hit.check) is CheckState.UNROUTED:
+                    text += "   (no way to it on the map yet)"
             elif model.is_hidden_dark(node.tile):
                 text = "Dark room"
             else:

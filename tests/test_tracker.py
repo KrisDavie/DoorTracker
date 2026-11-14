@@ -8,6 +8,7 @@ import grpc
 import DoorsTracker
 import sni_tracker
 from data.doors_data import dark_tiles, door_coordinates, doors_data
+from gui.Doors.logic import ITEMS_AT
 from gui.Doors.rooms import INTERIOR_DOORS
 
 DUNGEON, TAB = "0c", "Palace_of_Darkness"
@@ -62,10 +63,11 @@ class PlaybackOver(grpc.aio.AioRpcError):
         pass
 
 
-def play(window, app, monkeypatch, steps, collected=()):
+def play(window, app, monkeypatch, steps, collected=(), equipment=None):
     """Feed the readings to the real loop. Returns the map's state as it was before each labelled reading, and at the end.
 
     collected: (table, room, mask) flags the game has set, for the tracker's reads of what has been collected.
+    equipment: {address in save data: byte} for the items held.
     """
     model = window.pages[TAB].model
     seen = {}
@@ -73,6 +75,8 @@ def play(window, app, monkeypatch, steps, collected=()):
     for table, room, mask in collected:
         word = int.from_bytes(tables[table][room * 2 : room * 2 + 2], "little") | mask
         tables[table][room * 2 : room * 2 + 2] = word.to_bytes(2, "little")
+    for address, value in (equipment or {}).items():
+        tables["items"][address - ITEMS_AT] = value
 
     def state():
         return {
@@ -188,6 +192,17 @@ def test_checks_the_game_has_flagged_are_collected(window, app, monkeypatch):
 
     play(window, app, monkeypatch, [("one", in_game), ("two", in_game)], collected=list(flagged.values()) + noise)
     assert window.collected == set(flagged)
+
+
+def test_the_items_the_game_holds_reach_every_tab(window, app, monkeypatch):
+    tile, door = door_facing("No")
+    in_game = reading(tile, door["x"], door["y"])
+    assert window.pages[TAB].model.items is None
+
+    # The hammer, and the mitts, which also lift what the glove lifts
+    play(window, app, monkeypatch, [("one", in_game), ("two", in_game)], equipment={0x34B: 1, 0x354: 2})
+    for page in window.pages.values():
+        assert page.model.items == {"Hammer", "Power Glove", "Titans Mitts"}
 
 
 def test_leaving_a_dungeon_before_a_position_is_read_adds_no_entrance(window, app, monkeypatch):

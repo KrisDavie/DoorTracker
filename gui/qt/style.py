@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from PIL import ImageColor
 
-from gui.Doors.graph_model import DoorState
+from gui.Doors.graph_model import CheckState, DoorState
 
 DOOR_RADIUS = 5.5  # an unexplored door; linked and interior doors are drawn smaller
 
@@ -49,6 +49,26 @@ DOOR_STYLES = {
     DoorState.LINKED: DoorStyle(DOOR_LINKED, 0.7, 1),
     DoorState.INTERIOR: DoorStyle(DOOR_INTERIOR, 0.7, 1),
 }
+
+
+CHECK_BLOCKED = "#e0262c"
+CHECK_OUTLINE = "#111"
+
+
+@dataclass(frozen=True)
+class CheckStyle:
+    fill: str
+    outline: str
+
+
+# How a check's square is drawn until it is collected; then it is the grey of a linked door
+CHECK_STYLES = {
+    CheckState.OPEN: CheckStyle(DOOR_OPEN, CHECK_OUTLINE),
+    CheckState.BLOCKED: CheckStyle(CHECK_BLOCKED, CHECK_OUTLINE),
+    # Hollow: it may well be findable, but the map does not show the way yet
+    CheckState.UNROUTED: CheckStyle(CHECK_OUTLINE, DOOR_OPEN),
+}
+CHECK_COLLECTED = CheckStyle(DOOR_LINKED, CHECK_OUTLINE)
 
 
 def dungeon_colour(dungeon: str | None) -> str:
