@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
+from data.checks import checks
 from data.doors_data import (
     complex_tiles,
     dark_tiles,
@@ -48,6 +49,10 @@ from gui.Doors.rooms import (
 )
 
 # Geometry, in world units (canvas pixels at zoom 1.0)
+CHECKS_BY_TILE: dict[Tile, list[str]] = defaultdict(list)
+for _name, _check in checks.items():
+    CHECKS_BY_TILE[_check["tile"]].append(_name)
+
 THUMB = 128  # supertile thumbnail edge
 COMPACT_W = 104  # pass-through tiles collapse to a pill
 COMPACT_H = 26
@@ -108,6 +113,13 @@ class DoorDot:
     x: float  # relative to the node's centre, world units
     y: float
     state: DoorState
+
+
+@dataclass(frozen=True)
+class CheckSpot:
+    name: str  # in data/checks.py
+    x: float  # relative to the node's centre, world units
+    y: float
 
 
 @dataclass(frozen=True)
@@ -1317,3 +1329,16 @@ class GraphModel:
             state = DoorState.INTERIOR if interior else DoorState.LINKED if linked else DoorState.OPEN
             dots.append(DoorDot(door, ox, oy, state))
         return dots
+
+    def check_spots(self, node: Node) -> list[CheckSpot]:
+        """The checks drawn on a node. None on a pill, or on a dark room not yet seen lit."""
+        if node in self.compact or self.is_hidden_dark(node.tile):
+            return []
+        split = self.rooms.part_count(node.tile) > 1
+        spots = []
+        for name in CHECKS_BY_TILE.get(node.tile, ()):
+            check = checks[name]
+            # A split supertile's checks each go on the part they are in
+            if not split or self.player_node(node.tile, check["x"], check["y"]) == node:
+                spots.append(CheckSpot(name, (check["x"] / 512 - 0.5) * THUMB, (check["y"] / 512 - 0.5) * THUMB))
+        return spots

@@ -62,10 +62,17 @@ class PlaybackOver(grpc.aio.AioRpcError):
         pass
 
 
-def play(window, app, monkeypatch, steps):
-    """Feed the readings to the real loop. Returns the map's state as it was before each labelled reading, and at the end."""
+def play(window, app, monkeypatch, steps, collected=()):
+    """Feed the readings to the real loop. Returns the map's state as it was before each labelled reading, and at the end.
+
+    collected: (table, room, mask) flags the game has set, for the tracker's reads of what has been collected.
+    """
     model = window.pages[TAB].model
     seen = {}
+    tables = {name: bytearray(size) for name, (_, size) in sni_tracker.check_addresses.items()}
+    for table, room, mask in collected:
+        word = int.from_bytes(tables[table][room * 2 : room * 2 + 2], "little") | mask
+        tables[table][room * 2 : room * 2 + 2] = word.to_bytes(2, "little")
 
     def state():
         return {
@@ -91,6 +98,8 @@ def play(window, app, monkeypatch, steps):
             return Reply(memoryMapping=0)
 
         async def MultiRead(self, request):
+            if request.requests[0].requestAddress == sni_tracker.check_addresses["room"][0]:
+                return Reply(responses=[Reply(data=bytes(tables[name])) for name in sni_tracker.check_addresses])
             app.processEvents()
             if self.served == len(steps):
                 seen["end"] = state()
@@ -159,6 +168,26 @@ def test_the_tracker_stops_when_the_window_says_to_disconnect(window, app, monke
     assert list(seen) == ["reading 0"]
     assert window.pages[TAB].model.player is None
     assert "disconnected" in window.windowTitle()
+
+
+def test_checks_the_game_has_flagged_are_collected(window, app, monkeypatch):
+    tile, door = door_facing("No")
+    in_game = reading(tile, door["x"], door["y"])
+    flagged = {
+        "Eastern Palace - Compass Chest": ("room", 0xA8, 0x10),
+        "Eastern Palace - Boss": ("room", 0xC8, 0x800),
+        "Eastern Palace - Prize": ("prize", 0, 0x2000),
+        # A key under a pot and one dropped by an enemy are flagged in the randomizer's own tables
+        "Eastern Palace - Dark Square Pot Key": ("pot", 0xBA, 0x8000 >> 4),
+        "Eastern Palace - Dark Eyegore Key Drop": ("enemy", 0x99, 0x8000 >> 3),
+        # or, as a fallback, by the room's "key taken" bit
+        "Hyrule Castle - Key Rat Key Drop": ("room", 0x21, 0x400),
+    }
+    # Flags that belong to no check, and a chest's neighbour bit, mark nothing
+    noise = [("room", 0xA8, 0x8000), ("pot", 0xBA, 0x8000 >> 5), ("enemy", 0x99, 0x8000 >> 2)]
+
+    play(window, app, monkeypatch, [("one", in_game), ("two", in_game)], collected=list(flagged.values()) + noise)
+    assert window.collected == set(flagged)
 
 
 def test_leaving_a_dungeon_before_a_position_is_read_adds_no_entrance(window, app, monkeypatch):

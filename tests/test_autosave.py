@@ -39,6 +39,7 @@ def test_a_change_is_saved_and_the_next_window_gets_the_map_back(open_window, tm
     page = first.pages[TAB]
     grow(page.model, 3)
     page.model.toggle_expanded(page.model.nodes()[0])
+    first.collected = {"Eastern Palace - Compass Chest"}
     page.rebuild()
     QTest.qWait(50)
 
@@ -50,6 +51,7 @@ def test_a_change_is_saved_and_the_next_window_gets_the_map_back(open_window, tm
     second.start_autosave(tmp_path, restore=True)
     model = second.pages[TAB].model
     assert second.seed_hash == "0102030405"
+    assert second.collected == {"Eastern Palace - Compass Chest"}
     assert links(second) == links(first)
     assert model.kept_expanded == page.model.kept_expanded
     assert positions(model) == {node: (round(x, 1), round(y, 1)) for node, (x, y) in positions(page.model).items()}

@@ -62,6 +62,8 @@ from gui.Doors.rooms import (
 )
 from gui.qt.style import (
     BACKGROUND,
+    DOOR_LINKED,
+    DOOR_OPEN,
     DOOR_RADIUS,
     DOOR_SELECTED,
     DOOR_STYLES,
@@ -87,6 +89,7 @@ MODEL_OPTIONS = {
     "dead_end_pull": "leaf_pull",
 }
 WORLD = 1_000_000  # scene half-extent
+CHECK_SIZE = 9.0  # side of a check's square, world units
 # A room this close to where it is drawn is not redrawn: under half a pixel at full zoom. A settled map still
 # shifts by less than this on every solver step, which would otherwise redraw everything
 STILL = 0.1
@@ -94,12 +97,13 @@ STILL = 0.1
 
 @dataclass(frozen=True)
 class Hit:
-    """What is under the mouse. One field is set, or none over the background."""
+    """What is under the mouse. One of the first four is set, or none over the background."""
 
     node: Node | None = None  # a room card
     door: str | None = None  # a door dot
     icon: str | None = None  # an icon, by the door it is on
     edge: Edge | None = None  # a line between doors, or the seam of a joined link
+    check: str | None = None  # a check's square, with the node it is on
 
 
 @dataclass
@@ -424,6 +428,7 @@ class DoorsItem(QGraphicsItem):
         # Door positions are relative to the full supertile, not the drawn pieces
         self.w, self.h = (page.model.size(node) if node in page.model.compact else (THUMB, THUMB))
         self.dots = page.model.door_dots(node)
+        self.checks = page.model.check_spots(node) if page.top.settings["show_checks"] else []
         self.setZValue(3)
         # Hit shape is the dots only
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
@@ -436,6 +441,12 @@ class DoorsItem(QGraphicsItem):
 
     def paint(self, painter, option, widget=None):
         page = self.page
+        # Checks are squares, under the door dots, in the doors' colours: green to find, grey once collected
+        half = CHECK_SIZE / 2
+        painter.setPen(QPen(QColor("#111"), 1.5))
+        for check in self.checks:
+            painter.setBrush(QColor(DOOR_LINKED if check.name in page.top.collected else DOOR_OPEN))
+            painter.drawRect(QRectF(check.x - half, check.y - half, CHECK_SIZE, CHECK_SIZE))
         for dot in self.dots:
             style = DOOR_STYLES[dot.state]
             fill, radius, outline = style.fill, DOOR_RADIUS * style.scale, style.outline
@@ -1077,10 +1088,18 @@ class GraphPage(QWidget):
             found = getattr(item, "hit", None)
             item = item.parentItem()
         hit = found if found is not None else Hit()
+        scene_pos = self.view.mapToScene(view_pos)
         if hit.icon is None:
-            door = self.door_at(self.view.mapToScene(view_pos))
+            door = self.door_at(scene_pos)
             if door is not None:
                 return Hit(door=door)
+        if hit.node is not None and hit.node in self._doors:
+            # Check squares are not separate items either
+            x, y = self.model.pos[hit.node]
+            reach = max(CHECK_SIZE / 2, 5 / self.view.zoom())
+            for check in self._doors[hit.node].checks:
+                if abs(scene_pos.x() - x - check.x) <= reach and abs(scene_pos.y() - y - check.y) <= reach:
+                    return Hit(node=hit.node, check=check.name)
         return hit
 
     # ------------------------------------------------------------------- mouse
@@ -1245,7 +1264,9 @@ class GraphPage(QWidget):
             focus = self._focus
         elif hit.node is not None:
             node = hit.node
-            if model.is_hidden_dark(node.tile):
+            if hit.check is not None:
+                text = hit.check + ("   (collected)" if hit.check in self.top.collected else "")
+            elif model.is_hidden_dark(node.tile):
                 text = "Dark room"
             else:
                 text = f"{', '.join(model.rooms.regions(node)[:4]) or model.rooms.title(node)}   (EG {node.x},{node.y})"

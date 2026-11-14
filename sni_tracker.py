@@ -49,9 +49,20 @@ mem_addresses = {
 }
 
 
-def build_multi_request(add_space, mem_mapping):
+# What marks a check as collected: two bytes per room in each table, and one word for the dungeon prizes.
+# Read less often than the rest, as they are 1.8 KB together
+check_addresses = {
+    "room": (0xF5F000, 0x250),  # save data
+    "pot": (0xF66018, 0x250),  # the randomizer's table of pots emptied
+    "enemy": (0xF66268, 0x250),  # and of enemy drops taken
+    "prize": (0xF5F472, 0x2),
+}
+READINGS_PER_CHECK_READ = 10
+
+
+def build_multi_request(add_space, mem_mapping, addresses=mem_addresses):
     requests = {}
-    for name, (address, size) in mem_addresses.items():
+    for name, (address, size) in addresses.items():
         request = sni_pb2.ReadMemoryRequest()
         request.requestAddressSpace = add_space
         request.requestMemoryMapping = mem_mapping
@@ -126,6 +137,8 @@ class TrackerUI(Protocol):
     def race_rom_warning(self) -> None: ...
 
     def seed_seen(self, seed_hash: str) -> bool: ...  # False to stop tracking
+
+    def checks_read(self, memory: Mapping[str, bytes]) -> None: ...  # by name in check_addresses
 
     def highlight_dungeon(self, name: str | None) -> None: ...
 
@@ -216,6 +229,8 @@ async def _sni_session(
     mem_mapping = mem_mapping.memoryMapping
     mem_request = build_multi_request(dev_addrspace, mem_mapping)
     mem_request_names = list(mem_request.keys())
+    check_request = build_multi_request(dev_addrspace, mem_mapping, check_addresses)
+    readings_to_check_read = 0
     ui.connected = True
 
     if not forced_autotrack:
@@ -275,6 +290,12 @@ async def _sni_session(
                 ui.race_rom_warning()
                 ui.set_title("Janker Door Tracker -Auto-tracking Disabled")
                 break
+
+            if readings_to_check_read == 0:
+                readings_to_check_read = READINGS_PER_CHECK_READ
+                reply = await mem_stub.MultiRead(sni_pb2.MultiReadMemoryRequest(uri=dev_uri, requests=list(check_request.values())))
+                ui.checks_read({name: bytes(response.data) for name, response in zip(check_request, reply.responses)})
+            readings_to_check_read -= 1
 
             # if args.darkpos:
             #     is_dark = False

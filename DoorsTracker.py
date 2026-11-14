@@ -6,6 +6,7 @@ import math
 import signal
 import sys
 import traceback
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 import data.doors_sprite_data as sprites
+from data.checks import checks
 from data.doors_data import dungeon_lobbies, eg_tile_multiuse
 from data.vanilla_data import vanilla_layout_optimized
 from data.worlds_data import World, dungeon_worlds
@@ -56,6 +58,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "window": None,  # QWidget.saveGeometry(), as hex
     # View and Experimental menus
     "show_all_doors": False,
+    "show_checks": True,
     "show_fps": False,
     "hide_single_route_tiles": False,
     "decoupled_doors": False,
@@ -219,6 +222,7 @@ class MainWindow(QMainWindow):
         self._latest: str | None = None  # autosave file the next launch loads, as LATEST says
         self.autosave_on: bool = self.settings["autosave"]  # File -> Autosave, for this run
         self.seed_hash: str | None = None  # of the game the map was made on, once known; kept in the tracker file
+        self.collected: set[str] = set()  # checks collected, by name in data/checks.py; kept in the tracker file
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._save_after_change)
@@ -286,6 +290,7 @@ class MainWindow(QMainWindow):
         experimental = bar.addMenu("Experimental")
         for menu, label, name in (
             (view_menu, "Show All Doors", "show_all_doors"),
+            (view_menu, "Show Checks", "show_checks"),
             (view_menu, "Show FPS", "show_fps"),
             (experimental, "Hide Single Route Tiles", "hide_single_route_tiles"),
             (experimental, "Enable Decoupled Support", "decoupled_doors"),
@@ -404,6 +409,7 @@ class MainWindow(QMainWindow):
         if "Agahnims_Tower" in data:
             data["Castle_Tower"] = data.pop("Agahnims_Tower")
         self.seed_hash = data.pop("seed_hash", None)
+        self.collected = set(data.pop("collected", None) or [])
         self._adopt_seed = False
         # A spoiler lists lobbies apart from the dungeons: file each under the dungeon that owns it
         for lobby, door in (data.pop("lobbies", None) or {}).items():
@@ -438,6 +444,7 @@ class MainWindow(QMainWindow):
         data: dict[str, Any] = {dungeon: page.return_connections() for dungeon, page in self.pages.items()}
         if self.seed_hash is not None:
             data["seed_hash"] = self.seed_hash
+        data["collected"] = sorted(self.collected)
         return data
 
     # ----------------------------------------------------------------- autosave
@@ -598,8 +605,22 @@ class MainWindow(QMainWindow):
         return buttons.get(box.clickedButton(), answers[-1])
 
     def _clear_map(self) -> None:
+        self.collected = set()
         for page in self.pages.values():
             page.init_page()
+
+    def checks_read(self, memory: Mapping[str, bytes]) -> None:
+        """The game's tables of what has been collected, as the auto-tracker just read them."""
+
+        def word(table: str, room: int) -> int:
+            return int.from_bytes(memory[table][room * 2 : room * 2 + 2], "little")
+
+        collected = {name for name, check in checks.items() if any(word(table, room) & mask for table, room, mask in check["flags"])}
+        if collected != self.collected:
+            self.collected = collected
+            for page in self.pages.values():
+                page.scene.update()
+            self.map_changed()
 
     def new_map(self) -> None:
         """File -> New: an empty map that belongs to no seed."""
