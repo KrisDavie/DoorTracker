@@ -1,4 +1,5 @@
 import argparse
+import gc
 import os
 
 import pytest
@@ -30,8 +31,11 @@ def open_window(app):
         return window
 
     yield open_window
-    for window in opened:
-        window.close()
+    while opened:
+        opened.pop().close()
+    # A window and its tabs refer to each other, so only the garbage collector frees them, and left to itself it
+    # runs too rarely: the windows of dozens of tests pile up, at over 300 MB each
+    gc.collect()
 
 
 @pytest.fixture

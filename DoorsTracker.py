@@ -39,7 +39,7 @@ from gui import files
 from gui.Doors import rooms
 from gui.Doors.checks import checks
 from gui.Doors.layout import REPEL_RANGE
-from gui.Doors.logic import items_held
+from gui.Doors.logic import items_held, small_keys
 from gui.qt.graph_page import Assets, GraphPage
 
 WINDOW_SIZES = {"small": (1064, 632), "medium": (1588, 888), "large": (2088, 1144)}
@@ -61,6 +61,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "show_all_doors": False,
     "show_checks": True,
     "show_fps": False,
+    "show_items": True,  # the items panel is open; its tab changes this
     "hide_single_route_tiles": False,
     "decoupled_doors": False,
     "vanilla_drops": True,
@@ -134,11 +135,13 @@ class IconPicker(QDialog):
             button.setToolTip(name.replace("_", " "))
             usable = (name in sprites.item_table or name in sprites.dungeon_lobbies[world]) and name != "Sanctuary_Mirror"
             button.setEnabled(usable)
-            button.clicked.connect(lambda checked=False, name=name: self._pick(name))
+            # Signals go to methods, never lambdas: Qt keeps a lambda that holds a widget alive, and the widget with it
+            button.setObjectName(name)
+            button.clicked.connect(self._pick)
             grid.addWidget(button, row, column)
 
-    def _pick(self, name):
-        self.choice = name
+    def _pick(self):
+        self.choice = self.sender().objectName()
         self.accept()
 
 
@@ -191,12 +194,12 @@ class EgPicker(QDialog):
         button.setToolTip(rooms.WHOLE.title(rooms.Node(*tile)))
         # Disabled if already on the map or used up
         button.setEnabled(tile not in unavailable)
-        button.clicked.connect(lambda checked=False: self._pick(tile))
+        button.clicked.connect(self._pick)
         self.buttons[tile] = button
         return button
 
-    def _pick(self, tile):
-        self.choice = tile
+    def _pick(self):
+        self.choice = next(tile for tile, button in self.buttons.items() if button is self.sender())
         self.accept()
 
 
@@ -224,6 +227,7 @@ class MainWindow(QMainWindow):
         self.autosave_on: bool = self.settings["autosave"]  # File -> Autosave, for this run
         self.seed_hash: str | None = None  # of the game the map was made on, once known; kept in the tracker file
         self.collected: set[str] = set()  # checks collected, by name in gui/Doors/checks.py; kept in the tracker file
+        self._held: tuple[frozenset[str], dict[str, int]] | None = None  # the items and small keys last read
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._save_after_change)
@@ -262,7 +266,7 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(page, dungeon.replace("_", " "))
         if self.settings["tab"] in self.pages:
             self.select_dungeon(self.settings["tab"])
-        self.tabs.currentChanged.connect(lambda: self.set_setting("tab", self.current_dungeon()))
+        self.tabs.currentChanged.connect(self._tab_changed)
         self._build_menus()
 
     # -------------------------------------------------------------------- menus
@@ -271,7 +275,7 @@ class MainWindow(QMainWindow):
         bar = self.menuBar()
         file_menu = bar.addMenu("File")
         file_menu.addAction("New", self.new_map).setShortcut(QKeySequence.StandardKey.New)
-        file_menu.addAction("Open Tracker Data", lambda: self.load_file()).setShortcut(QKeySequence.StandardKey.Open)
+        file_menu.addAction("Open Tracker Data", self._open).setShortcut(QKeySequence.StandardKey.Open)
         file_menu.addAction("Save Tracker Data", self.save_file).setShortcut(QKeySequence.StandardKey.Save)
         self.autosave_action = QAction("Autosave", self, checkable=True)
         self.autosave_action.setChecked(self.autosave_on)
@@ -279,15 +283,15 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.autosave_action)
         file_menu.addSeparator()
         file_menu.addAction("Stop Auto-tracking", self.stop_tracking)
-        file_menu.addAction("Reconnect to SNI", lambda: self.start_tracking())
+        file_menu.addAction("Reconnect to SNI", self._reconnect)
         self.devices_menu = file_menu.addMenu("Devices")
         self.set_devices([])
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
         view_menu = bar.addMenu("View")
-        view_menu.addAction("Fit to window", lambda: self.current_page().fit_view())
-        view_menu.addAction("Re-layout", lambda: self.current_page().relayout())
+        view_menu.addAction("Fit to window", self._fit)
+        view_menu.addAction("Re-layout", self._relayout)
         experimental = bar.addMenu("Experimental")
         for menu, label, name in (
             (view_menu, "Show All Doors", "show_all_doors"),
@@ -301,8 +305,41 @@ class MainWindow(QMainWindow):
         ):
             action = QAction(label, self, checkable=True)
             action.setChecked(self.settings[name])
-            action.toggled.connect(lambda checked, name=name: self.set_option(name, checked))
+            action.setObjectName(name)
+            action.toggled.connect(self._option_toggled)
             menu.addAction(action)
+
+    # What the menus and the toolbar call. Signals go to methods, never lambdas: Qt keeps a lambda that holds the
+    # window alive, and the window with it after it has closed
+
+    def _tab_changed(self) -> None:
+        self.set_setting("tab", self.current_dungeon())
+
+    def _open(self) -> None:
+        self.load_file()
+
+    def _reconnect(self) -> None:
+        self.start_tracking()
+
+    def _fit(self) -> None:
+        self.current_page().fit_view()
+
+    def _relayout(self) -> None:
+        self.current_page().relayout()
+
+    def _option_toggled(self, checked: bool) -> None:
+        """A menu option or a toolbar box, named after its setting, was toggled."""
+        self.set_option(self.sender().objectName(), checked)
+
+    def _slider_moved(self, value: int) -> None:
+        name = self.sender().objectName()
+        self.set_option(name, value / self._slider_steps[name])
+
+    def _device_picked(self) -> None:
+        self.start_tracking(device=self.sender().objectName())
+
+    def _force_tracking(self) -> None:
+        self.start_tracking(forced=True, device=self.device)
 
     def _build_toolbar(self) -> QWidget:
         toolbar = QWidget()
@@ -315,11 +352,13 @@ class MainWindow(QMainWindow):
             box = QCheckBox(label)
             box.setToolTip(tip)
             box.setChecked(self.settings[name])
-            box.toggled.connect(lambda checked: self.set_option(name, checked))
+            box.setObjectName(name)
+            box.toggled.connect(self._option_toggled)
             row.addWidget(box)
             self.boxes[name] = box
 
         self.sliders: dict[str, QSlider] = {}  # by setting
+        self._slider_steps: dict[str, int] = {}  # slider steps per unit of its setting
 
         def add_slider(name: str, label: str, low: int, high: int, width: int, steps_per_unit: int) -> None:
             slider = QSlider(Qt.Orientation.Horizontal)
@@ -328,7 +367,9 @@ class MainWindow(QMainWindow):
             slider.setValue(round(min(max(self.settings[name] * steps_per_unit, low), high)))
             self.settings[name] = slider.value() / steps_per_unit
             slider.setFixedWidth(width)
-            slider.valueChanged.connect(lambda value: self.set_option(name, value / steps_per_unit))
+            slider.setObjectName(name)
+            self._slider_steps[name] = steps_per_unit
+            slider.valueChanged.connect(self._slider_moved)
             row.addWidget(QLabel(label))
             row.addWidget(slider)
             self.sliders[name] = slider
@@ -622,11 +663,11 @@ class MainWindow(QMainWindow):
             for page in self.pages.values():
                 page.scene.update()
             self.map_changed()
-        items = items_held(memory["items"])
-        for page in self.pages.values():
-            if items != page.model.items:
-                page.model.set_items(items)
-                page.scene.update()
+        held = items_held(memory["items"]), small_keys(memory["items"], memory["dungeon"][0])
+        if held != self._held:
+            self._held = held
+            for page in self.pages.values():
+                page.set_items(*held)
 
     def new_map(self) -> None:
         """File -> New: an empty map that belongs to no seed."""
@@ -697,7 +738,9 @@ class MainWindow(QMainWindow):
         if not uris:
             self.devices_menu.addAction("No Devices...").setEnabled(False)
         for uri in uris:
-            self.devices_menu.addAction(uri, lambda uri=uri: self.start_tracking(device=uri))
+            action = self.devices_menu.addAction(uri)
+            action.setObjectName(uri)
+            action.triggered.connect(self._device_picked)
 
     def race_rom_warning(self) -> None:
         box = QMessageBox(self)
@@ -715,7 +758,7 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is force:
             # Deferred: this runs inside the task being restarted
-            QTimer.singleShot(0, lambda: self.start_tracking(forced=True, device=self.device))
+            QTimer.singleShot(0, self._force_tracking)
 
     def highlight_dungeon(self, name: str | None) -> None:
         for dungeon, page in self.pages.items():

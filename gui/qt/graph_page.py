@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -60,6 +61,7 @@ from gui.Doors.rooms import (
     entrance_only,
     supertile,
 )
+from gui.qt.items_panel import ItemsPanel
 from gui.qt.style import (
     BACKGROUND,
     CHECK_COLLECTED,
@@ -818,6 +820,9 @@ class GraphPage(QWidget):
         buttons.addWidget(fit)
         buttons.addWidget(relayout)
         panel.adjustSize()
+        # The items held, over the opposite corner; see set_items. Its tab opens and closes it in every tab
+        self.items_panel = ItemsPanel(self.view, self._items_tab_clicked)
+        self.items_panel.set_open(top.settings["show_items"])
         # View -> Show FPS. The readout is on the window's toolbar: a widget over the map makes the map
         # redraw whenever it changes, which would add to the count
         self._frames: deque[float] = deque()  # when each frame of the last second was drawn
@@ -865,6 +870,9 @@ class GraphPage(QWidget):
             for label in self._labels.values():
                 label.setVisible(value)
             self.scene.update()
+        elif name == "show_items":
+            self.items_panel.set_open(value)
+            self._place_items_panel()
         elif name == "show_repulsion":
             if self._reach is not None:
                 self._reach.setVisible(value)
@@ -1034,8 +1042,24 @@ class GraphPage(QWidget):
         self._settling_size = False
 
     def view_resized(self):
+        self._place_items_panel()
         if self._settling_size and self.model.pos:
             self.fit_view()
+
+    def set_items(self, items: frozenset[str] | None, small_keys: Mapping[str, int]) -> None:
+        """What the player holds, as the auto-tracker just read it. small_keys: how many, by dungeon."""
+        self.model.set_items(items)
+        self.items_panel.show_held(items, small_keys)
+        self._place_items_panel()
+        self.scene.update()
+
+    def _items_tab_clicked(self, is_open: bool) -> None:
+        self.top.set_option("show_items", is_open)
+
+    def _place_items_panel(self) -> None:
+        """Keep the items panel in the bottom right corner of the map."""
+        panel = self.items_panel
+        panel.move(self.view.width() - panel.width(), self.view.height() - panel.height())
 
     def relayout(self):
         # Can take a few seconds on a big map
@@ -1328,23 +1352,32 @@ class GraphPage(QWidget):
             model.remove_annotation(hit.icon)
             self.rebuild()
         elif hit.node is not None:
+            # The menus say what was chosen and this acts on it. An action is given no lambda to call: Qt would keep
+            # one that holds this page alive, and the page and its window with it
             node = hit.node
             menu = QMenu(self)
-            if node in model.fixed:
-                menu.addAction("Unpin", lambda: self.set_pinned(node, False))
-            else:
-                menu.addAction("Pin in place", lambda: self.set_pinned(node, True))
+            pinned = node in model.fixed
+            pin = menu.addAction("Unpin" if pinned else "Pin in place")
+            remove = None
             if node.tile not in mandatory_tiles[self.tab_world]:
                 menu.addSeparator()
-                menu.addAction("Remove supertile…", lambda: self.remove_tile(node.tile))
-            menu.exec(event.globalPosition().toPoint())
+                remove = menu.addAction("Remove supertile…")
+            chosen = menu.exec(event.globalPosition().toPoint())
+            menu.deleteLater()
+            if chosen is pin:
+                self.set_pinned(node, not pinned)
+            elif chosen is not None and chosen is remove:
+                self.remove_tile(node.tile)
         else:
             menu = QMenu(self)
             menu.addAction("Fit to window", self.fit_view)
             menu.addAction("Re-layout", self.relayout)
             menu.addAction("Unpin all", self.unpin_all)
-            menu.addAction("Add supertile here…", lambda: self.add_tile_from_picker(scene_pos.x(), scene_pos.y()))
-            menu.exec(event.globalPosition().toPoint())
+            add = menu.addAction("Add supertile here…")
+            chosen = menu.exec(event.globalPosition().toPoint())
+            menu.deleteLater()
+            if chosen is add:
+                self.add_tile_from_picker(scene_pos.x(), scene_pos.y())
 
     def set_pinned(self, node: Node, pinned: bool) -> None:
         self.model.set_pinned(node, pinned)

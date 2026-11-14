@@ -59,6 +59,7 @@ check_addresses = {
     "enemy": (0xF66268, 0x250),  # and of enemy drops taken
     "prize": (SAVE_DATA + 0x472, 0x2),
     "items": (SAVE_DATA + ITEMS_AT, ITEMS_LENGTH),
+    "dungeon": mem_addresses["dungeon"],  # which dungeon's keys the game is counting apart
 }
 READINGS_PER_CHECK_READ = 10
 

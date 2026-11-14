@@ -28,12 +28,13 @@ def test_every_check_is_drawn_on_exactly_one_part_of_its_supertile():
 
 def test_items_are_read_from_the_save_data():
     save = bytearray(ITEMS_LENGTH)
-    # Hammer, mitts, a swordless seed's sword byte, a shield that is not the mirror shield, red boomerang, bombs,
-    # and the big keys of Thieves' Town and Turtle Rock
-    for address, value in {0x34B: 1, 0x354: 2, 0x359: 0xFF, 0x35A: 2, 0x38C: 0x40, 0x370: 10, 0x366: 0x18}.items():
+    # Hammer, mitts, a swordless seed's sword byte, the red shield, red boomerang, something in the second bottle,
+    # bombs, and the big keys of Thieves' Town and Turtle Rock
+    equipment = {0x34B: 1, 0x354: 2, 0x359: 0xFF, 0x35A: 2, 0x38C: 0x40, 0x35D: 3, 0x370: 10, 0x366: 0x18}
+    for address, value in equipment.items():
         save[address - ITEMS_AT] = value
-    held = {"Hammer", "Power Glove", "Titans Mitts", "Red Boomerang", "Bombs", "Big Key (Thieves Town)", "Big Key (Turtle Rock)"}
-    assert items_held(bytes(save)) == held
+    held = {"Hammer", "Power Glove", "Titans Mitts", "Blue Shield", "Red Shield", "Red Boomerang", "Bottle", "Bombs"}
+    assert items_held(bytes(save)) == held | {"Big Key (Thieves Town)", "Big Key (Turtle Rock)"}
 
 
 def test_a_check_is_blocked_until_the_item_its_rule_names_is_held():
