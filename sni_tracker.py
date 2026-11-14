@@ -122,6 +122,8 @@ class TrackerPage(Protocol):
 
     def auto_add_lobby(self, door: str | None) -> None: ...
 
+    def auto_dropped_in(self, tile: tuple[int, int], x: float, y: float) -> None: ...
+
     def auto_add_door_link(self, door: str | None, linked_door: str | None) -> None: ...
 
 
@@ -167,6 +169,7 @@ class Stay:
     was_mirroring: bool = False
     boss_just_killed: bool = False
     resumed: bool = False  # the player did not walk in: the tracker reconnected, or another game was loaded
+    fell_in: bool = False  # the player came into the dungeon falling, down a drop
 
 
 @dataclass
@@ -344,6 +347,9 @@ async def _sni_session(
                 continue
 
             if data["falling"] != "00" and data["falling"] != "01":
+                if stay.eg_tile is None:
+                    # Falling before any room of this dungeon was read: from outside, not down a pit inside it
+                    stay.fell_in = True
                 stay.previous_tile = stay.current_tile = None
                 game.was_falling = True
                 continue
@@ -390,6 +396,9 @@ async def _sni_session(
                 stay.previous_tile = eg_tile
                 stay.current_tile = eg_tile
                 if game.was_falling or game.was_dead or stay.resumed:
+                    if stay.fell_in:
+                        stay.fell_in = False
+                        dp_content.auto_dropped_in(eg_tile, current_x, current_y)
                     game.was_falling = False
                     game.was_dead = False
                     stay.resumed = False

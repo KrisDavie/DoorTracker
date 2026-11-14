@@ -6,6 +6,7 @@ Static room data is in rooms.py and the solvers are in layout.py.
 Save format is compatible with the original grid tracker.
 """
 
+import math
 import random
 from collections import defaultdict, deque
 from collections.abc import Container
@@ -210,6 +211,7 @@ class GraphModel:
         self._reachable: set[str] = set()  # and those of them the player's items let them walk to
         self.player: Player | None = None
         self.visited: set[Node] = set()  # where the player has been; saved as reached_parts
+        self.used_entrances: set[str] = set()  # see assumed()
         self._whole: set[Tile] = set()  # split supertiles shown whole; see nodes()
         self.provisional: dict[Tile, Node] = {}  # guessed from position when the supertile was added
         self.located: Node | None = None  # where the player is, once known
@@ -384,6 +386,33 @@ class GraphModel:
         self.provisional.pop(node.tile, None)
         if self.player is not None and self.player.node.tile == node.tile:
             self.player = replace(self.player, node=node)
+        if self.assumed(door):
+            self._use_entrance(door)
+
+    def assumed(self, door: str) -> bool:
+        """Whether a door is an entrance the map has without the player having used it.
+
+        The drops into a dungeon and the mirror route into the sanctuary are put on the map as entrances because
+        they are always there. That does not say the player can get to them, so one counts as a way in only once
+        the player has come in by it, or has clicked it to say they can. Being seen in its room is not enough:
+        the room may have a part that the entrance's part cannot be reached from.
+        """
+        return entrance_only(door) and door not in self.used_entrances
+
+    def toggle_entrance(self, door: str) -> None:
+        """Say that the player can use one of those entrances, or take that back."""
+        self.used_entrances ^= {door}
+        self.update()
+
+    def dropped_in(self, tile: Tile, x: float, y: float) -> None:
+        """The player fell into the dungeon from outside and landed here: by the nearest drop into this supertile."""
+        drops = [d.door for d in self.lobby_doors if "Drop" in d.door and self.assumed(d.door) and d.door in DOORS and DOORS[d.door].tile == tile]
+        if drops:
+            self._use_entrance(min(drops, key=lambda door: math.dist((DOORS[door].x * 512, DOORS[door].y * 512), (x, y))))
+
+    def _use_entrance(self, door: str) -> None:
+        self.used_entrances.add(door)
+        self._find_reach()
 
     def locate(self, tile: Tile, x: float, y: float) -> Node | None:
         """Node the player is in, or None if not yet known.
@@ -562,6 +591,7 @@ class GraphModel:
                 self._join_rank[self.door_links[n]] = rank
         self.lobby_doors = [LobbyDoor(x["door"], x["lobby"]) for x in data.get("lobby_doors", [])]
         self.special_doors = dict(data.get("special_doors", {}))
+        self.used_entrances = set(data.get("used_entrances") or [])
         self.tiles = {}
         self.pos = {}
         self.fixed = set()
@@ -642,6 +672,7 @@ class GraphModel:
                 if n.tile in self.tiles and self.real_rooms.part_count(n.tile) > 1
             ),
             "special_doors": dict(self.special_doors),
+            "used_entrances": sorted(self.used_entrances),
             "expanded": sorted(f"{n.x}__{n.y}__{n.part}" for n in self.kept_expanded),
             "graph_layout": {
                 (f"{n.x}__{n.y}" if n.part == 0 else f"{n.x}__{n.y}__{n.part}"): [
@@ -815,13 +846,15 @@ class GraphModel:
 
     def _find_reach(self) -> None:
         """Work out which regions the map leads to, and which of them the player's items let them walk to."""
-        starts = self.lobby_door_names()
+        starts = [door for door in self.lobby_door_names() if not self.assumed(door)]
         routed = self._regions_from(starts, None)
-        # A room no lobby leads to is somewhere to start from, as nothing says how it is got to
+        # What only an entrance the player has not used leads to has no way to it yet
+        unused = self._regions_from([door for door in self.lobby_door_names() if self.assumed(door)], None)
+        # Any other room no lobby leads to is somewhere to start from, as nothing says how it is got to
         for node in self.nodes():
-            names = self.rooms.doors(node)
-            if not any(region in routed for name in names for region in regions_at(name)):
-                starts = starts + names
+            regions = {region for name in self.rooms.doors(node) for region in regions_at(name)}
+            if not regions & routed and not regions & unused:
+                starts = starts + self.rooms.doors(node)
                 routed = self._regions_from(starts, None)
         self._routed = routed
         self._reachable = routed if self.items is None else self._regions_from(starts, self.items)

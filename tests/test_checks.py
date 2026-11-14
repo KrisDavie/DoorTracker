@@ -1,6 +1,7 @@
 """Checks drawn on the cards."""
 
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtTest import QTest
 
 from gui.Doors.checks import checks
 from gui.Doors.graph_model import CHECKS_BY_TILE, CheckState
@@ -85,6 +86,50 @@ def test_a_check_the_map_does_not_lead_to_is_unrouted():
     model.add_lobby_door("GT Validation WS", "Ganons_Tower")
     model.update()
     assert model.check_state(name) is CheckState.UNROUTED
+
+
+def test_a_drop_is_no_way_in_until_the_player_has_used_it_or_says_so():
+    # The secret room's chests, in the room the sewer drop lands in, with no other way to it on the map
+    name = "Sewers - Secret Room - Left"
+    model = new_model("Hyrule_Castle")
+    assert model.assumed("Sewer Drop")
+    assert model.check_state(name) is CheckState.UNROUTED
+
+    model.toggle_entrance("Sewer Drop")
+    assert model.check_state(name) is CheckState.OPEN
+    model.toggle_entrance("Sewer Drop")
+    assert model.check_state(name) is CheckState.UNROUTED
+
+    # Being seen in the drop's supertile is not using the drop, nor is coming in by the stairs at its top, behind
+    # blocks that only push the other way
+    tile = checks[name]["tile"]
+    model.move_player(tile, 400, 290)
+    model.arrive("Sewers Secret Room Up Stairs")
+    assert model.assumed("Sewer Drop")
+    # Falling into the dungeon there is
+    model.dropped_in(tile, 400, 290)
+    assert not model.assumed("Sewer Drop")
+    assert model.check_state(name) is CheckState.OPEN
+    # and that is kept with the map
+    reloaded = new_model("Hyrule_Castle")
+    reloaded.load(model.save())
+    assert reloaded.check_state(name) is CheckState.OPEN
+
+
+def test_clicking_a_drops_marker_says_the_player_can_use_it(window, app):
+    window.select_dungeon("Hyrule_Castle")
+    page = window.pages["Hyrule_Castle"]
+    page.fit_view()
+    app.processEvents()
+    model = page.model
+    x, y = model.port("Sewer Drop")
+    marker = page.view.mapFromScene(QPointF(x, y))
+    assert page.hit_at(At(marker)).icon == "Sewer Drop"
+
+    QTest.mouseClick(page.view.viewport(), Qt.MouseButton.LeftButton, pos=marker)
+    assert not model.assumed("Sewer Drop")
+    QTest.mouseClick(page.view.viewport(), Qt.MouseButton.LeftButton, pos=marker)
+    assert model.assumed("Sewer Drop")
 
 
 def test_hovering_a_check_names_it_and_says_when_it_is_collected(window, app):

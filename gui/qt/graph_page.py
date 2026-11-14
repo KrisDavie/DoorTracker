@@ -46,7 +46,7 @@ from data.doors_data import mandatory_tiles
 from data.doors_sprite_data import ITEM_SHEET_PATH
 from data.room_bounds import room_bounds
 from data.worlds_data import World
-from gui.Doors.graph_model import THUMB, CheckState, Edge, GraphModel, TileState
+from gui.Doors.graph_model import THUMB, Edge, GraphModel, TileState
 from gui.Doors.layout import LINK_GAP
 from gui.Doors.rooms import (
     DOORS,
@@ -498,6 +498,7 @@ class IconItem(QGraphicsItem):
     ):
         super().__init__(parent)
         self.page = page
+        self.door = door
         self.hit = Hit(icon=door)
         self.icon = page.assets.icon(icon)
         self.lobby = lobby
@@ -519,10 +520,19 @@ class IconItem(QGraphicsItem):
             painter.setPen(QPen(QColor("#111"), 2.5, Qt.PenStyle.DashLine))
             painter.drawLine(self.origin, self.spot)
         box = QRectF(self.spot.x() - 9, self.spot.y() - 9, 18, 18)
+        # An entrance the player has not used: a white question mark on black until they do, or click it
+        assumed = bool(self.lobby) and self.page.model.assumed(self.door)
         painter.setPen(QPen(QColor("#111") if self.lobby else QColor("white"), 2 if self.lobby else 1))
-        painter.setBrush(QColor("white"))
+        painter.setBrush(QColor("black" if assumed else "white"))
         painter.drawRect(box.adjusted(-1, -1, 1, 1) if self.lobby else box)
-        if self.icon is not None:
+        if assumed:
+            font = QFont()
+            font.setPixelSize(15)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QColor("white"))
+            painter.drawText(box, Qt.AlignmentFlag.AlignCenter, "?")
+        elif self.icon is not None:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
             painter.drawPixmap(QRectF(self.spot.x() - 8, self.spot.y() - 8, 16, 16), self.icon, QRectF(0, 0, 16, 16))
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
@@ -1197,6 +1207,10 @@ class GraphPage(QWidget):
             return
         if press.hit.door is not None:
             self._door_clicked(press.hit.door)
+        elif press.hit.icon is not None and entrance_only(press.hit.icon):
+            # A drop or the mirror route: say the player can use it, or take that back
+            self.model.toggle_entrance(press.hit.icon)
+            self.rebuild()
         elif press.hit == Hit() and self.selected_door:
             self.cancel_selection()
 
@@ -1292,11 +1306,7 @@ class GraphPage(QWidget):
         elif hit.node is not None:
             node = hit.node
             if hit.check is not None:
-                text = hit.check
-                if hit.check in self.top.collected:
-                    text += "   (collected)"
-                elif model.check_state(hit.check) is CheckState.UNROUTED:
-                    text += "   (no way to it on the map yet)"
+                text = hit.check + ("   (collected)" if hit.check in self.top.collected else "")
             elif model.is_hidden_dark(node.tile):
                 text = "Dark room"
             else:
@@ -1465,11 +1475,20 @@ class GraphPage(QWidget):
         added = self.model.auto_add_lobby(door)
         self._arrived(door, added)
 
+    def auto_dropped_in(self, tile: Tile, x: float, y: float) -> None:
+        """The player fell into the dungeon from outside and landed at (x, y) of a supertile."""
+        used = len(self.model.used_entrances)
+        self.model.dropped_in(tile, x, y)
+        if len(self.model.used_entrances) != used:
+            self.rebuild()
+
     def _arrived(self, door: str | None, changed: bool) -> None:
         """Tell the model which door the player entered by, then refresh."""
+        used = len(self.model.used_entrances)
         if door is not None:
             self.model.arrive(door)
-        if changed:
+        # Coming in by a drop or the mirror route for the first time makes it a way in: its marker and the checks change
+        if changed or len(self.model.used_entrances) != used:
             self.rebuild()
         elif self.model.located is not None and self.model.located not in self._rooms:
             self.redraw_canvas()

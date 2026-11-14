@@ -27,7 +27,7 @@ def door_facing(facing, avoid=None):
     raise AssertionError(f"no {facing} door")
 
 
-def reading(tile, x, y, lamp=True, transitioning=False, indoors=True, seed="0102030405"):
+def reading(tile, x, y, lamp=True, transitioning=False, indoors=True, seed="0102030405", falling=False, dungeon=DUNGEON):
     """What the tracker reads from memory with the player at pixel (x, y) of a supertile."""
 
     def coordinate(supertile, pixel):
@@ -41,12 +41,12 @@ def reading(tile, x, y, lamp=True, transitioning=False, indoors=True, seed="0102
         "indoors": "01" if indoors else "00",
         "link_y": coordinate(tile[1], y),
         "link_x": coordinate(tile[0], x),
-        "falling": "00",
+        "falling": "02" if falling else "00",
         "mirror": "00",
         "transitioning": "01" if transitioning else "00",
         "layer": "00",
         "dead": "00",
-        "dungeon": DUNGEON,
+        "dungeon": dungeon,
         "lampcone": "01" if lamp else "00",
         "torches": "00",
         "dungeon_room": f"{tile[1] * 16 + tile[0]:02x}",
@@ -203,6 +203,17 @@ def test_the_items_the_game_holds_reach_every_tab(window, app, monkeypatch):
     play(window, app, monkeypatch, [("one", in_game), ("two", in_game)], equipment={0x34B: 1, 0x354: 2})
     for page in window.pages.values():
         assert page.model.items == {"Hammer", "Power Glove", "Titans Mitts"}
+
+
+def test_falling_into_a_dungeon_by_a_drop_makes_the_drop_a_way_in(window, app, monkeypatch):
+    castle = window.pages["Hyrule_Castle"].model
+    assert castle.assumed("Sewer Drop")
+    # The sewer drop's supertile, in the castle's dungeon, at about where the drop lands
+    landing = dict(tile=(1, 1), x=400, y=290, dungeon="00")
+    steps = [("falling", reading(**landing, falling=True))] + [(f"landed {k}", reading(**landing)) for k in range(3)]
+
+    play(window, app, monkeypatch, steps)
+    assert not castle.assumed("Sewer Drop")
 
 
 def test_leaving_a_dungeon_before_a_position_is_read_adds_no_entrance(window, app, monkeypatch):
