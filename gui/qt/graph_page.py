@@ -821,8 +821,9 @@ class GraphPage(QWidget):
         buttons.addWidget(relayout)
         panel.adjustSize()
         # The items held, over the opposite corner; see set_items. Its tab opens and closes it in every tab
-        self.items_panel = ItemsPanel(self.view, self._items_tab_clicked)
+        self.items_panel = ItemsPanel(self.view, self._items_tab_clicked, top.set_held)
         self.items_panel.set_open(top.settings["show_items"])
+        self._place_items_panel()
         # View -> Show FPS. The readout is on the window's toolbar: a widget over the map makes the map
         # redraw whenever it changes, which would add to the count
         self._frames: deque[float] = deque()  # when each frame of the last second was drawn

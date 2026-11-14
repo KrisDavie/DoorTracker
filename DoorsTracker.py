@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
         self.autosave_on: bool = self.settings["autosave"]  # File -> Autosave, for this run
         self.seed_hash: str | None = None  # of the game the map was made on, once known; kept in the tracker file
         self.collected: set[str] = set()  # checks collected, by name in gui/Doors/checks.py; kept in the tracker file
-        self._held: tuple[frozenset[str], dict[str, int]] | None = None  # the items and small keys last read
+        self._held: tuple[frozenset[str], dict[str, int]] | None = None  # the items and small keys last read or clicked
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._save_after_change)
@@ -665,9 +665,14 @@ class MainWindow(QMainWindow):
             self.map_changed()
         held = items_held(memory["items"]), small_keys(memory["items"], memory["dungeon"][0])
         if held != self._held:
-            self._held = held
-            for page in self.pages.values():
-                page.set_items(*held)
+            # This also puts back anything clicked in the items panel that the game does not agree with
+            self.set_held(*held)
+
+    def set_held(self, items: frozenset[str], small_keys: dict[str, int]) -> None:
+        """What the player holds: as read from the game, or as clicked in the items panel."""
+        self._held = items, small_keys
+        for page in self.pages.values():
+            page.set_items(items, small_keys)
 
     def new_map(self) -> None:
         """File -> New: an empty map that belongs to no seed."""

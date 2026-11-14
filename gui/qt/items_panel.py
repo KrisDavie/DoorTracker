@@ -1,12 +1,12 @@
 """The items panel: the game's item menu with what the player holds lit, and each dungeon's keys. It floats over a
 corner of the map, and its tab hides it."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPalette, QPixmap
-from PySide6.QtWidgets import QGridLayout, QLabel, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QLayout, QToolButton, QVBoxLayout, QWidget
 
 from gui.Doors.logic import BIG_KEYS, BOTTLE
 from gui.Doors.randomizer import FOLDER
@@ -41,45 +41,20 @@ def one(item: str) -> Slot:
     return Slot((item,))
 
 
-# Two columns of equipment, then the game's menu
-GRID: list[list[Slot | None]] = [
-    [
-        Slot(("Fighter Sword", "Master Sword", "Tempered Sword", "Golden Sword")),
-        Slot(("Blue Shield", "Red Shield", "Mirror Shield")),
-        one("Bow"),
-        Slot(("Blue Boomerang", "Red Boomerang"), together=True),
-        one("Hookshot"),
-        one("Bombs"),
-        Slot(("Mushroom", "Magic Powder"), together=True),
-    ],
-    [
-        Slot(("Blue Mail", "Red Mail"), start="Green Mail"),
-        None,
-        one("Fire Rod"),
-        one("Ice Rod"),
-        one("Bombos"),
-        one("Ether"),
-        one("Quake"),
-    ],
-    [
-        Slot(("Power Glove", "Titans Mitts")),
-        one("Pegasus Boots"),
-        one("Lamp"),
-        one("Hammer"),
-        Slot(("Shovel", "Ocarina"), together=True),
-        one("Bug Catching Net"),
-        one("Book of Mudora"),
-    ],
-    [
-        one("Flippers"),
-        one("Moon Pearl"),
-        one(BOTTLE),
-        one("Cane of Somaria"),
-        one("Cane of Byrna"),
-        one("Cape"),
-        one("Magic Mirror"),
-    ],
+# The grid of items in the game's menu, and what the menu shows apart from it: abilities and equipment
+MENU = [
+    [one("Bow"), Slot(("Blue Boomerang", "Red Boomerang"), together=True), one("Hookshot"), one("Bombs"), Slot(("Mushroom", "Magic Powder"), together=True)],
+    [one("Fire Rod"), one("Ice Rod"), one("Bombos"), one("Ether"), one("Quake")],
+    [one("Lamp"), one("Hammer"), Slot(("Shovel", "Ocarina"), together=True), one("Bug Catching Net"), one("Book of Mudora")],
+    [one(BOTTLE), one("Cane of Somaria"), one("Cane of Byrna"), one("Cape"), one("Magic Mirror")],
 ]
+ABILITIES = [one("Pegasus Boots"), Slot(("Power Glove", "Titans Mitts")), one("Flippers"), one("Moon Pearl")]
+EQUIPMENT = [
+    Slot(("Fighter Sword", "Master Sword", "Tempered Sword", "Golden Sword")),
+    Slot(("Blue Shield", "Red Shield", "Mirror Shield")),
+    Slot(("Blue Mail", "Red Mail"), start="Green Mail"),
+]
+SLOTS = [slot for row in (*MENU, ABILITIES, EQUIPMENT) for slot in row]
 # The tracker's name for a dungeon -> what the keys strip calls it, in the order of the tabs
 SHORT_NAMES = {
     "Hyrule_Castle": "HC",
@@ -137,14 +112,63 @@ def slot_picture(slot: Slot, held: frozenset[str]) -> QPixmap:
     return cell if mine or slot.start else greyed(cell)
 
 
+def states(slot: Slot) -> list[frozenset[str]]:
+    """What can be held of a slot's items, in the order that clicking goes through."""
+    if slot.together:
+        first, second = slot.items
+        return [frozenset(), frozenset({first}), frozenset({second}), frozenset({first, second})]
+    # A better sword is held along with the lesser ones, as the game's own count has it
+    return [frozenset(slot.items[:count]) for count in range(len(slot.items) + 1)]
+
+
+def clicked(slot: Slot, held: frozenset[str], step: int) -> frozenset[str]:
+    """What is held after a click on a slot (step 1) or a right click (step -1)."""
+    choices = states(slot)
+    mine = held & frozenset(slot.items)
+    now = choices.index(mine) if mine in choices else 0
+    return (held - mine) | choices[(now + step) % len(choices)]
+
+
+class Cell(QLabel):
+    """A picture or a number that a click or a right click adjusts."""
+
+    def __init__(self, pressed: Callable[[object, int], None], what: object):
+        """pressed(what, step): this was clicked (step 1) or right clicked (step -1)."""
+        super().__init__()
+        self.pressed = pressed
+        self.what = what
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.pressed(self.what, 1)
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.pressed(self.what, -1)
+
+
+def spread(columns: Sequence[QLayout]) -> QHBoxLayout:
+    """A row with the columns spread evenly over its width."""
+    row = QHBoxLayout()
+    row.setSpacing(0)
+    for place, column in enumerate(columns):
+        if place:
+            row.addStretch()
+        row.addLayout(column)
+    return row
+
+
 class ItemsPanel(QWidget):
-    def __init__(self, parent: QWidget, toggled: Callable[[bool], None]):
-        """toggled(open): the tab was clicked, to open the panel or to close it."""
+    def __init__(self, parent: QWidget, toggled: Callable[[bool], None], changed: Callable[[frozenset[str], dict[str, int]], None]):
+        """toggled(open): the tab was clicked, to open the panel or to close it.
+        changed(items, small keys): a click in the panel changed what is held to this.
+        """
         super().__init__(parent)
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(0)
         self.toggled = toggled
+        self.changed = changed
+        self.items: frozenset[str] = frozenset()  # as last shown
+        self.small_keys: dict[str, int] = {}
         self.tab = QToolButton()
         self.tab.setFixedSize(36, 16)
         # A method, not a lambda: Qt would keep a lambda that holds this panel alive, and with it the window
@@ -156,8 +180,10 @@ class ItemsPanel(QWidget):
         palette = self.body.palette()
         palette.setColor(QPalette.ColorRole.Window, QColor("#16161a"))
         palette.setColor(QPalette.ColorRole.WindowText, QColor("#f0f0f0"))
-        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor("#6a6a72"))
         self.body.setPalette(palette)
+        self.faint = QPalette(palette)  # for a count of no keys
+        self.faint.setColor(QPalette.ColorRole.WindowText, QColor("#6a6a72"))
+        self.bright = palette
         # Without this it takes the map view's role, which is not Window
         self.body.setBackgroundRole(QPalette.ColorRole.Window)
         self.body.setAutoFillBackground(True)
@@ -166,40 +192,70 @@ class ItemsPanel(QWidget):
         inside.setContentsMargins(4, 4, 4, 4)
         inside.setSpacing(4)
 
+        self.slots: list[tuple[Slot, QLabel]] = []
+
+        def cell(slot: Slot) -> QLabel:
+            label = Cell(self._pressed, slot)
+            label.setFixedSize(CELL, CELL)
+            self.slots.append((slot, label))
+            return label
+
         grid = QGridLayout()
         grid.setSpacing(2)
         inside.addLayout(grid)
-        self.slots: list[tuple[Slot, QLabel]] = []
-        for row, slots in enumerate(GRID):
+        for row, slots in enumerate(MENU):
             for place, slot in enumerate(slots):
-                if slot is not None:
-                    label = QLabel()
-                    label.setFixedSize(CELL, CELL)
-                    grid.addWidget(label, row, place)
-                    self.slots.append((slot, label))
+                grid.addWidget(cell(slot), row, place)
+        # To the right of the menu's grid, after a gap: a column of abilities and a column of equipment
+        width = len(MENU[0])
+        grid.setColumnMinimumWidth(width, 6)
+        for place, slots in enumerate((ABILITIES, EQUIPMENT)):
+            for row, slot in enumerate(slots):
+                grid.addWidget(cell(slot), row, width + 1 + place)
 
-        strip = QGridLayout()
-        strip.setSpacing(0)
-        inside.addLayout(strip)
         small = QFont(self.font())
         small.setPixelSize(10)
         self.counts: dict[str, QLabel] = {}  # small keys, by dungeon
         self.big_keys: dict[str, QLabel] = {}
         self.big_key = picture(BIG_KEY_PICTURE).scaled(CELL // 2, CELL // 2, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
         self.no_big_key = greyed(self.big_key)
-        for place, (dungeon, short) in enumerate(SHORT_NAMES.items()):
-            name, count, key = QLabel(short), QLabel("0"), QLabel()
+        columns = []
+        for dungeon, short in SHORT_NAMES.items():
+            name, count, key = QLabel(short), Cell(self._pressed, ("small keys", dungeon)), Cell(self._pressed, ("big key", dungeon))
             name.setFont(small)
-            for row, label in enumerate((name, count, key)):
+            column = QVBoxLayout()
+            column.setSpacing(0)
+            for label in (name, count, key):
                 label.setFixedWidth(KEY_CELL)
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 label.setToolTip(dungeon.replace("_", " "))
-                strip.addWidget(label, row, place)
+                column.addWidget(label)
+            columns.append(column)
             self.counts[dungeon], self.big_keys[dungeon] = count, key
-        self.hide()
+        inside.addLayout(spread(columns))
+        self.show_held(None, {})
 
     def _tab_clicked(self) -> None:
         self.toggled(self.body.isHidden())
+
+    def _pressed(self, what: object, step: int) -> None:
+        """A slot, a dungeon's small keys or its big key was clicked (step 1) or right clicked (step -1)."""
+        items, small_keys = self.items, dict(self.small_keys)
+        if isinstance(what, Slot):
+            items = clicked(what, items, step)
+        elif isinstance(what, tuple):
+            kind, dungeon = what
+            if kind == "big key":
+                items = items ^ {BIG_KEYS[dungeon]}
+            else:
+                small_keys[dungeon] = max(0, small_keys.get(dungeon, 0) + step)
+        self.changed(items, small_keys)
+
+    def mousePressEvent(self, event):
+        # A click between the pictures is not a click on the map under the panel
+        event.accept()
+
+    mouseReleaseEvent = mouseDoubleClickEvent = mousePressEvent
 
     def set_open(self, is_open: bool) -> None:
         """Show everything, or only the tab."""
@@ -208,17 +264,14 @@ class ItemsPanel(QWidget):
         self.adjustSize()
 
     def show_held(self, items: frozenset[str] | None, small_keys: Mapping[str, int]) -> None:
-        """Light what is held. With no items read, from no game, there is no panel."""
-        if items is None:
-            self.hide()
-            return
+        """Light what is held. items is None when none have been read or clicked: nothing is lit."""
+        self.items, self.small_keys = items or frozenset(), dict(small_keys)
         for slot, label in self.slots:
-            mine = [item for item in slot.items if item in items]
-            label.setPixmap(slot_picture(slot, items))
+            mine = [item for item in slot.items if item in self.items]
+            label.setPixmap(slot_picture(slot, self.items))
             label.setToolTip(", ".join(mine if slot.together else mine[-1:]) or slot.start or slot.items[0])
         for dungeon, count in self.counts.items():
-            count.setText(str(small_keys.get(dungeon, 0)))
-            # Not enabled: drawn in the grey set for that in the palette
-            count.setEnabled(small_keys.get(dungeon, 0) > 0)
-            self.big_keys[dungeon].setPixmap(self.big_key if BIG_KEYS[dungeon] in items else self.no_big_key)
-        self.show()
+            held = self.small_keys.get(dungeon, 0)
+            count.setText(str(held))
+            count.setPalette(self.bright if held else self.faint)
+            self.big_keys[dungeon].setPixmap(self.big_key if BIG_KEYS[dungeon] in self.items else self.no_big_key)
