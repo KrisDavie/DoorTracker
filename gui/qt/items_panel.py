@@ -4,9 +4,9 @@ corner of the map, and its tab hides it."""
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPalette, QPixmap
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QLayout, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPalette, QPixmap, QPolygonF
+from PySide6.QtWidgets import QAbstractButton, QGridLayout, QHBoxLayout, QLabel, QLayout, QVBoxLayout, QWidget
 
 from gui.Doors.logic import BIG_KEYS, BOTTLE
 from gui.Doors.randomizer import FOLDER
@@ -14,6 +14,9 @@ from gui.Doors.randomizer import FOLDER
 PICTURES = FOLDER / "data" / "itemgfx"  # the randomizer's own, 32 pixels high
 CELL = 32
 KEY_CELL = 18  # width of a dungeon's column of keys
+PANEL_COLOUR = "#16161a"  # near the black of the game's menu, which the pictures are drawn for
+TEXT_COLOUR = "#f0f0f0"
+CORNER = 6  # radius of the rounded corners
 # item -> its picture's name, where that is not the item's
 PICTURE_NAMES = {
     "Blue Boomerang": "Boomerang",
@@ -156,6 +159,46 @@ def spread(columns: Sequence[QLayout]) -> QHBoxLayout:
     return row
 
 
+def rounded(width: float, height: float) -> QPainterPath:
+    """A rectangle with its top left corner rounded off: the one corner of the tab, and of the panel under it,
+    that meets neither the other nor the edge of the map."""
+    path = QPainterPath()
+    path.moveTo(0, height)
+    path.lineTo(0, CORNER)
+    path.arcTo(0, 0, 2 * CORNER, 2 * CORNER, 180, -90)
+    path.lineTo(width, 0)
+    path.lineTo(width, height)
+    path.closeSubpath()
+    return path
+
+
+class Tab(QAbstractButton):
+    """The panel's tab, in the panel's colour: an arrow pointing the way a click moves the panel."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedSize(36, 16)
+        self.points_down = True
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillPath(rounded(self.width(), self.height()), QColor(PANEL_COLOUR))
+        x, y, reach = self.width() / 2, self.height() / 2, 3.5 if self.points_down else -3.5
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(TEXT_COLOUR))
+        painter.drawPolygon(QPolygonF([QPointF(x - 5, y - reach), QPointF(x + 5, y - reach), QPointF(x, y + reach)]))
+
+
+class Body(QWidget):
+    """What the tab opens and closes."""
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillPath(rounded(self.width(), self.height()), QColor(PANEL_COLOUR))
+
+
 class ItemsPanel(QWidget):
     def __init__(self, parent: QWidget, toggled: Callable[[bool], None], changed: Callable[[frozenset[str], dict[str, int]], None]):
         """toggled(open): the tab was clicked, to open the panel or to close it.
@@ -169,27 +212,21 @@ class ItemsPanel(QWidget):
         self.changed = changed
         self.items: frozenset[str] = frozenset()  # as last shown
         self.small_keys: dict[str, int] = {}
-        self.tab = QToolButton()
-        self.tab.setFixedSize(36, 16)
+        self.tab = Tab()
         # A method, not a lambda: Qt would keep a lambda that holds this panel alive, and with it the window
         self.tab.clicked.connect(self._tab_clicked)
         column.addWidget(self.tab, alignment=Qt.AlignmentFlag.AlignRight)
 
-        self.body = QWidget()
-        # The pictures are drawn for the game's black menu
+        self.body = Body()
         palette = self.body.palette()
-        palette.setColor(QPalette.ColorRole.Window, QColor("#16161a"))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor("#f0f0f0"))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(TEXT_COLOUR))
         self.body.setPalette(palette)
         self.faint = QPalette(palette)  # for a count of no keys
         self.faint.setColor(QPalette.ColorRole.WindowText, QColor("#6a6a72"))
         self.bright = palette
-        # Without this it takes the map view's role, which is not Window
-        self.body.setBackgroundRole(QPalette.ColorRole.Window)
-        self.body.setAutoFillBackground(True)
         column.addWidget(self.body)
         inside = QVBoxLayout(self.body)
-        inside.setContentsMargins(4, 4, 4, 4)
+        inside.setContentsMargins(9, 9, 9, 4)
         inside.setSpacing(4)
 
         self.slots: list[tuple[Slot, QLabel]] = []
@@ -206,12 +243,10 @@ class ItemsPanel(QWidget):
         for row, slots in enumerate(MENU):
             for place, slot in enumerate(slots):
                 grid.addWidget(cell(slot), row, place)
-        # To the right of the menu's grid, after a gap: a column of abilities and a column of equipment
-        width = len(MENU[0])
-        grid.setColumnMinimumWidth(width, 6)
+        # To the right of the menu's grid: a column of abilities and a column of equipment
         for place, slots in enumerate((ABILITIES, EQUIPMENT)):
             for row, slot in enumerate(slots):
-                grid.addWidget(cell(slot), row, width + 1 + place)
+                grid.addWidget(cell(slot), row, len(MENU[0]) + place)
 
         small = QFont(self.font())
         small.setPixelSize(10)
@@ -260,7 +295,8 @@ class ItemsPanel(QWidget):
     def set_open(self, is_open: bool) -> None:
         """Show everything, or only the tab."""
         self.body.setVisible(is_open)
-        self.tab.setArrowType(Qt.ArrowType.DownArrow if is_open else Qt.ArrowType.UpArrow)
+        self.tab.points_down = is_open
+        self.tab.update()
         self.adjustSize()
 
     def show_held(self, items: frozenset[str] | None, small_keys: Mapping[str, int]) -> None:
