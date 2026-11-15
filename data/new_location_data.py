@@ -373,8 +373,8 @@ underworld_items = {
         "Skull Woods - Prize": {"x": 387, "y": 381, "loc_type": "prize"},
     },
     (10, 2): {
-        "Palace of Darkness - The Arena - Bridge": {"x": 456, "y": 369, "loc_type": "chest"},
-        "Palace of Darkness - The Arena - Ledge": {"x": 376, "y": 360, "loc_type": "chest"},
+        "Palace of Darkness - The Arena - Bridge": {"x": 376, "y": 360, "loc_type": "chest"},
+        "Palace of Darkness - The Arena - Ledge": {"x": 456, "y": 369, "loc_type": "chest"},
         "PoD Arena Main Pot #1": {"x": 328, "y": 200, "loc_type": "pot"},
         "PoD Arena Main Pot #2": {"x": 328, "y": 312, "loc_type": "pot"},
     },

@@ -659,14 +659,23 @@ class MainWindow(QMainWindow):
 
         collected = {name for name, check in checks.items() if any(word(table, room) & mask for table, room, mask in check["flags"])}
         if collected != self.collected:
-            self.collected = collected
-            for page in self.pages.values():
-                page.scene.update()
-            self.map_changed()
+            # This also puts back any check clicked on the map that the game does not agree with
+            self._set_collected(collected)
         held = items_held(memory["items"]), small_keys(memory["items"], memory["dungeon"][0])
         if held != self._held:
             # This also puts back anything clicked in the items panel that the game does not agree with
             self.set_held(*held)
+
+    def set_collected(self, check: str, collected: bool) -> None:
+        """A check was clicked on the map to collect it, or right clicked to take that back."""
+        if (check in self.collected) != collected:
+            self._set_collected(self.collected ^ {check})
+
+    def _set_collected(self, collected: set[str]) -> None:
+        self.collected = collected
+        for page in self.pages.values():
+            page.scene.update()
+        self.map_changed()
 
     def set_held(self, items: frozenset[str], small_keys: dict[str, int]) -> None:
         """What the player holds: as read from the game, or as clicked in the items panel."""

@@ -57,7 +57,9 @@ def combine(kind: str, parts: list[Rule]) -> Rule:
 class Reader:
     """Turns what the randomizer writes for a rule into a Rule."""
 
-    def __init__(self) -> None:
+    def __init__(self, events: set[str]) -> None:
+        """events: what the randomizer counts as items that the tracker works out for itself; see read()."""
+        self.events = events
         self.tests = {}  # the tests of CollectionState, by name
         for node in ast.walk(parse("BaseClasses.py")):
             if isinstance(node, ast.ClassDef) and node.name == "CollectionState":
@@ -83,8 +85,8 @@ class Reader:
             return True
         if name in ("Has", "has"):
             item = text(node.args[0])
-            # An item the tracker cannot read, or more than one of it, counts as held
-            return item if item in READABLE and len(node.args) == 2 else True
+            # An item the tracker can neither read nor work out, or more than one of it, counts as held
+            return item if item is not None and (item in READABLE or item in self.events) and len(node.args) == 2 else True
         if name in ("and_rule", "or_rule"):
             return combine("all" if name == "and_rule" else "any", [self.rule(a) for a in node.args])
         if name == "Primitive" and len(node.args) == 2:
@@ -105,9 +107,8 @@ def spot(node: ast.AST, loop: dict[str, list[str]]) -> list[tuple[str, str]]:
     return [(kind, name) for name in names]
 
 
-def read_rules() -> dict[tuple[str, str], Rule]:
+def read_rules(reader: Reader) -> dict[tuple[str, str], Rule]:
     """(kind, name) -> rule, for every rule set outright or in a loop over a list of names."""
-    reader = Reader()
     found: dict[tuple[str, str], Rule] = {}
     lists: dict[str, list[str]] = {}
 
@@ -132,40 +133,50 @@ def read_rules() -> dict[tuple[str, str], Rule]:
     return found
 
 
-def read_regions() -> tuple[dict[str, str], dict[str, str]]:
-    """(check -> the randomizer's region, exit -> its region), from the dungeon regions in Regions.py."""
-    where, exits = {}, {}
-    for node in ast.walk(parse("Regions.py")):
+def assigned(module: ast.Module, name: str):
+    """A list or dict assigned to a name at the top of one of the randomizer's files."""
+    for node in module.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name:
+            return ast.literal_eval(node.value)
+    raise LookupError(name)
+
+
+def read() -> tuple[dict[str, Rule], dict[str, Rule], dict[str, str], dict[str, tuple[str, Rule]]]:
+    """(passage rules, check rules, each check's region, events)."""
+    module = parse("Regions.py")
+    # Location -> the randomizer's region, and exit -> its region, from the dungeon regions
+    where, exit_region = {}, {}
+    for node in ast.walk(module):
         if called(node) == "create_dungeon_region":
             assert isinstance(node, ast.Call)
             region, things = ast.literal_eval(node.args[1]), [ast.literal_eval(a) or [] for a in node.args[3:5]]
             where.update(dict.fromkeys(things[0], region))
-            exits.update(dict.fromkeys(things[1] if len(things) > 1 else [], region))
-    return where, exits
+            exit_region.update(dict.fromkeys(things[1] if len(things) > 1 else [], region))
+    # A location in a region the tracker does not have is put in the region the randomizer leads into it from
+    leads = {region: exit_region[name] for name, region in assigned(parse("DoorShuffle.py"), "logical_connections") if name in exit_region}
 
+    def region_of(location: str) -> str | None:
+        """The tracker's region for a location; None when it is not in a dungeon the tracker knows."""
+        region = where.get(location)
+        while region is not None and region not in regions_to_doors:
+            region = leads.get(region)
+        return region
 
-def read() -> tuple[dict[str, Rule], dict[str, Rule], dict[str, str]]:
-    """(passage rules, check rules, each check's region)."""
-    found = read_rules()
-    where, exit_region = read_regions()
+    # The randomizer gives an "item" for doing something somewhere, like pulling the lever that drains the swamp.
+    # The tracker cannot read those, but for the ones done in a dungeon it can work out whether the place can be
+    # reached. Event -> where it is done
+    gives = assigned(module, "location_events")
+    done_at = {event: location for location, event in gives.items() if list(gives.values()).count(event) == 1 and region_of(location)}
+
+    found = read_rules(Reader(set(done_at)))
     walked = {name for names in regions_to_doors.values() for name in names}
     passages = {name: rule for (kind, name), rule in found.items() if kind == "get_entrance" and name in walked and rule is not True}
     of_checks = {name: rule for (kind, name), rule in found.items() if kind == "get_location" and name in checks and rule is not True}
-
-    # A check in a region the tracker does not have is put in the region the randomizer leads into it from
-    leads = {}
-    for node in parse("DoorShuffle.py").body:
-        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "logical_connections":
-            leads = {region: exit_region[name] for name, region in ast.literal_eval(node.value) if name in exit_region}
-    regions = {}
-    for name in checks:
-        region = where[name]
-        while region not in regions_to_doors:
-            region = leads[region]
-        regions[name] = region
-    return passages, of_checks, regions
+    regions = {name: str(region_of(name)) for name in checks}
+    happen = {event: (str(region_of(location)), found.get(("get_location", location), True)) for event, location in done_at.items()}
+    return passages, of_checks, regions, happen
 
 
-# What leaving a region through a door or passage takes; what collecting a check takes, once in its region; and
-# the region each check is in
-passage_rules, check_rules, check_regions = read()
+# What leaving a region through a door or passage takes; what collecting a check takes, once in its region; the
+# region each check is in; and event -> (the region it is done in, what doing it takes)
+passage_rules, check_rules, check_regions, events = read()

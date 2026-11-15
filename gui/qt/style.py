@@ -67,6 +67,7 @@ CHECK_STYLES = {
     CheckState.BLOCKED: CheckStyle(CHECK_BLOCKED, CHECK_OUTLINE),
     # Hollow: it may well be findable, but the map does not show the way yet
     CheckState.UNROUTED: CheckStyle(CHECK_OUTLINE, DOOR_OPEN),
+    CheckState.UNROUTED_BLOCKED: CheckStyle(CHECK_OUTLINE, CHECK_BLOCKED),
 }
 CHECK_COLLECTED = CheckStyle(DOOR_LINKED, CHECK_OUTLINE)
 

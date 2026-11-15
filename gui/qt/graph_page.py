@@ -1207,9 +1207,12 @@ class GraphPage(QWidget):
             return
         if press.hit.door is not None:
             self._door_clicked(press.hit.door)
+        elif press.hit.check is not None:
+            # A click collects and a right click takes it back, here as for the drops; see _context
+            self.top.set_collected(press.hit.check, True)
         elif press.hit.icon is not None and entrance_only(press.hit.icon):
-            # A drop or the mirror route: say the player can use it, or take that back
-            self.model.toggle_entrance(press.hit.icon)
+            # A drop or the mirror route: the player can use it
+            self.model.set_entrance_used(press.hit.icon, True)
             self.rebuild()
         elif press.hit == Hit() and self.selected_door:
             self.cancel_selection()
@@ -1239,24 +1242,29 @@ class GraphPage(QWidget):
         if self.selected_door is None:
             if model.has_target(door):
                 return
-            self.selected_door = door
-            self._repaint_doors()
+            self._select(door)
+            self.rebuild()
             return
         if door == self.selected_door:
             self.cancel_selection()
             return
         if model.has_target(door) and not model.decoupled():
             return
-        source, self.selected_door = self.selected_door, None
+        source = self.selected_door
+        self._select(None)
         model.add_link(source, door)
         self.rebuild()
 
+    def _select(self, door: str | None) -> None:
+        """Set the first door of a link being made, or None. While there is one the map shows every door."""
+        self.selected_door = door
+        self.model.linking = door is not None
+
     def cancel_selection(self):
-        self.selected_door = None
-        if self._rubber is not None:
-            self.scene.removeItem(self._rubber)
-            self._rubber = None
-        self._repaint_doors()
+        if self.selected_door is None:
+            return
+        self._select(None)
+        self.rebuild()
 
     def _draw_rubber(self, scene_pos: QPointF) -> None:
         """Draw the line from the door being linked to the mouse."""
@@ -1348,7 +1356,12 @@ class GraphPage(QWidget):
 
     def _context(self, event, hit: Hit, scene_pos: QPointF) -> None:
         model = self.model
-        if hit.door is not None:
+        if hit.check is not None:
+            self.top.set_collected(hit.check, False)
+        elif hit.icon is not None and entrance_only(hit.icon):
+            model.set_entrance_used(hit.icon, False)
+            self.rebuild()
+        elif hit.door is not None:
             icon = self.top.pick_icon(self.tab_world)
             if icon:
                 import data.doors_sprite_data as sprites
@@ -1442,13 +1455,13 @@ class GraphPage(QWidget):
 
     def init_page(self):
         self.model.reset()
-        self.selected_door = None
+        self._select(None)
         self._needs_fit = True
         self.rebuild()
 
     def load_yaml(self, data):
         had_positions = self.model.load(data)
-        self.selected_door = None
+        self._select(None)
         camera = data.get("camera")
         self._needs_fit = not (camera and had_positions)
         self.rebuild()
