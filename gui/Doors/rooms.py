@@ -143,10 +143,12 @@ DOORLESS_ROOMS = {
     "Hera Fairies": DoorlessRoom((7, 10), "Tower_of_Hera", 0.27, 0.25),
 }
 
-# Known warp tile positions. warp: (tile, landing), each 0..1 in its supertile picture
+# Known warp tile and hole positions. warp or hole: (start, landing), each 0..1 in its supertile picture
 WARP_SPOTS = {
     # Under the moving spikes; lands at the right of the Firesnake room
     "GT Spike Crystals Warp": ((0.885, 0.26), (0.89, 0.265)),
+    # Off the east side of the landing, where its rail has a gap. A fall lands at the same place in the room below
+    "PoD Big Key Landing Hole": ((0.57, 0.27), (0.57, 0.27)),
 }
 
 

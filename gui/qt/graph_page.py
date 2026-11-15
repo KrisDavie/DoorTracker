@@ -550,6 +550,21 @@ class IconItem(QGraphicsItem):
                 painter.drawText(text_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, self.lobby.replace("_", " "))
 
 
+def one_way(model: GraphModel, edge: Edge) -> tuple[str, str] | None:
+    """(from, to) for an edge that is only gone through one way; None for one gone through both ways."""
+    a, b = edge.a, edge.b
+    if edge.kind in (EdgeKind.WARP, EdgeKind.HOLE, EdgeKind.DROP):
+        if edge.both_ways:
+            return None
+    elif edge.kind is EdgeKind.INTERIOR:
+        return None
+    elif not model.decoupled() and (door_vector(a) is not None or "Stairs" in a or "Ladder" in a):
+        return None
+    # A tracked drop can be stored either way round: it goes from the pit to the landing
+    backwards = not model.decoupled() and door_direction(a) == "Up" and door_direction(b) == "Dn"
+    return (b, a) if backwards else (a, b)
+
+
 class LinkItem(QGraphicsPathItem):
     """A link, interior connection, drop or warp between two doors."""
 
@@ -571,14 +586,9 @@ class LinkItem(QGraphicsPathItem):
         self.facing_a = door_vector(a) if not model.is_hidden_dark(self.node_a.tile) else None
         self.facing_b = door_vector(b) if not model.is_hidden_dark(self.node_b.tile) else None
         self.same_block = model.blocks.root.get(self.node_a) == model.blocks.root.get(self.node_b)
-        if edge.kind in (EdgeKind.WARP, EdgeKind.HOLE, EdgeKind.DROP):
-            self.one_way = not edge.both_ways
-        else:
-            self.one_way = not self.interior and (
-                model.decoupled() or (door_vector(a) is None and "Stairs" not in a and "Ladder" not in a)
-            )
-        # Tracked drops can be stored either way round; the arrow always points pit -> landing
-        self.backwards = not model.decoupled() and door_direction(a) == "Up" and door_direction(b) == "Dn"
+        way = one_way(model, edge)
+        self.one_way = way is not None
+        self.backwards = way == (b, a)  # the arrow's head is at a
         self.setZValue(2)
         self.set_state(faded=False, strong=False)
         self.update_path()
@@ -1300,7 +1310,8 @@ class GraphPage(QWidget):
             focus = model.rooms.node(door)
         elif hit.edge is not None:
             edge = hit.edge
-            text = f"{edge.a}  ↔  {edge.b}"
+            way = one_way(model, edge)
+            text = f"{way[0]}  →  {way[1]}" if way else f"{edge.a}  ↔  {edge.b}"
             if edge.link in model.blocks.joined:
                 text += "   (joined — middle click to split)"
             elif edge.link is not None and model.join_offset(edge.a, edge.b) is not None:
