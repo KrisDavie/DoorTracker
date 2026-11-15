@@ -17,6 +17,10 @@ if not (FOLDER / "Rules.py").exists():
 _utils = types.ModuleType("Utils")
 setattr(_utils, "parse_yaml", None)
 sys.modules.setdefault("Utils", _utils)
+# Its client, MultiClient.py, imports three packages to talk to a server. The tracker only takes tables from it,
+# so an empty module stands in for each that is not installed
+for _name in ("aioconsole", "colorama", "websockets"):
+    sys.modules.setdefault(_name, types.ModuleType(_name))
 
 
 @cache
@@ -26,33 +30,20 @@ def parse(name: str) -> ast.Module:
 
 
 def literals(name: str, *wanted: str) -> list:
-    """The lists and dicts one of its files assigns to these names, anywhere in the file."""
-    found = {}
-    for node in ast.walk(parse(name)):
-        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id in wanted:
-            found[node.targets[0].id] = ast.literal_eval(node.value)
-    return [found[name] for name in wanted]
+    """The lists and dicts one of its files assigns to these names: at the top of the file, or else the one
+    place inside a function."""
+    module = parse(name)
+    found = []
+    for target in wanted:
 
+        def assigns(node: ast.AST) -> bool:
+            return isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id == target
 
-def numbers(name: str) -> dict[str, int]:
-    """The whole numbers one of its files names at the top, some as sums of ones named before."""
-    found: dict[str, int] = {}
-
-    def number(node: ast.expr) -> int | None:
-        if isinstance(node, ast.Constant) and type(node.value) is int:
-            return node.value
-        if isinstance(node, ast.Name):
-            return found.get(node.id)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left, right = number(node.left), number(node.right)
-            return None if left is None or right is None else left + right
-        return None
-
-    for node in parse(name).body:
-        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
-            worth = number(node.value)
-            if worth is not None:
-                found[node.targets[0].id] = worth
+        places = [node for node in module.body if assigns(node)] or [node for node in ast.walk(module) if assigns(node)]
+        if len(places) != 1:
+            raise LookupError(f"{name} assigns {target} in {len(places)} places")
+        assert isinstance(places[0], ast.Assign)
+        found.append(ast.literal_eval(places[0].value))
     return found
 
 

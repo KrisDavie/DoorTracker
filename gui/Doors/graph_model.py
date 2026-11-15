@@ -33,6 +33,7 @@ from gui.Doors.rules import check_regions, check_rules, events, passage_rules
 from gui.Doors.rooms import (
     DEFAULT_DOORS,
     DOORS,
+    DROPS_IN,
     Box,
     EdgeKind,
     HOLES,
@@ -415,7 +416,7 @@ class GraphModel:
 
     def dropped_in(self, tile: Tile, x: float, y: float) -> None:
         """The player fell into the dungeon from outside and landed here: by the nearest drop into this supertile."""
-        drops = [d.door for d in self.lobby_doors if "Drop" in d.door and self.assumed(d.door) and d.door in DOORS and DOORS[d.door].tile == tile]
+        drops = [d.door for d in self.lobby_doors if d.door in DROPS_IN and self.assumed(d.door) and DOORS[d.door].tile == tile]
         if drops:
             self._use_entrance(min(drops, key=lambda door: math.dist((DOORS[door].x * 512, DOORS[door].y * 512), (x, y))))
 

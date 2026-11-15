@@ -3,6 +3,7 @@ corner of the map, and its tab hides it."""
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cache
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPalette, QPixmap, QPolygonF
@@ -76,7 +77,9 @@ SHORT_NAMES = {
 }
 
 
+@cache
 def picture(name: str) -> QPixmap:
+    """One of the randomizer's item pictures. Read once: every tab's panel shows them, anew on each change."""
     return QPixmap(str(PICTURES / f"{name}.gif"))
 
 

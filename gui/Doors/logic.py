@@ -3,6 +3,11 @@
 from data.worlds_data import dungeon_worlds
 from gui.Doors.randomizer import dungeon_name, literals
 
+# After gui.Doors.randomizer, which makes the randomizer importable. The randomizer's name for a dungeon -> a
+# tuple that ends in the game's number for the dungeon, -> its big key, and -> its small key
+from ALttPDoorRandomizer.DoorShuffle import compass_data  # noqa: E402
+from ALttPDoorRandomizer.Dungeons import dungeon_bigs, dungeon_keys  # noqa: E402
+
 # An item's name, ("all", rule, ...), ("any", rule, ...), or a bool
 Rule = bool | str | tuple
 
@@ -14,12 +19,8 @@ ITEMS_LENGTH = 0x4F
 # with a slot of its own, item -> (address, bit) for the big keys among others, and small key -> the addresses
 # its count is kept at
 _SLOTS, _FLAGS, _COUNTS = literals("InitialSram.py", "set_table", "or_table", "keys")
-# The randomizer's name for a dungeon -> its small key and its big key, and -> a tuple that ends in the game's
-# number for the dungeon
-_SMALL_KEYS, _BIG_KEYS = literals("Dungeons.py", "dungeon_keys", "dungeon_bigs")
-(_COMPASSES,) = literals("DoorShuffle.py", "compass_data")
 # The tracker's names for the dungeons
-DUNGEONS = [tab for tab in dungeon_worlds if dungeon_name(tab) in _BIG_KEYS]
+DUNGEONS = [tab for tab in dungeon_worlds if dungeon_name(tab) in dungeon_bigs]
 
 # item -> (address, least value that means it is held). The ones listed here InitialSram.py sets by other means
 AT_LEAST = {
@@ -50,13 +51,13 @@ BITS = {
     "Magic Powder": (0x38C, 0x10),
     "Shovel": (0x38C, 0x04),
     "Ocarina": (0x38C, 0x03),  # working or not
-    **{key: _FLAGS[key] for key in _BIG_KEYS.values()},
+    **{key: _FLAGS[key] for key in dungeon_bigs.values()},
 }
 # The tracker's name for a dungeon -> its big key, and -> where its small keys are counted
-BIG_KEYS = {tab: _BIG_KEYS[dungeon_name(tab)] for tab in DUNGEONS}
-SMALL_KEYS_AT = {tab: _COUNTS[_SMALL_KEYS[dungeon_name(tab)]][0] for tab in DUNGEONS}
+BIG_KEYS = {tab: dungeon_bigs[dungeon_name(tab)] for tab in DUNGEONS}
+SMALL_KEYS_AT = {tab: _COUNTS[dungeon_keys[dungeon_name(tab)]][0] for tab in DUNGEONS}
 # The game's number for a dungeon -> the tracker's name for it. The sewers have a number of their own
-DUNGEON_NUMBERS = {0x00: "Hyrule_Castle"} | {_COMPASSES[dungeon_name(tab)][4]: tab for tab in DUNGEONS}
+DUNGEON_NUMBERS = {0x00: "Hyrule_Castle"} | {compass_data[dungeon_name(tab)][4]: tab for tab in DUNGEONS}
 KEYS_HERE_AT = 0x36F  # the small keys for the dungeon the player is in; 0xFF outside
 BOTTLES_AT = range(0x35C, 0x360)  # what is in each of the four bottles; 0 for no bottle
 BOTTLE = "Bottle"

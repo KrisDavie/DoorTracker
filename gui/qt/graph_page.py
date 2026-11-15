@@ -443,8 +443,8 @@ class DoorsItem(QGraphicsItem):
 
     def paint(self, painter, option, widget=None):
         page = self.page
-        # Checks are squares, under the door dots: green to find, red when the player's items do not get them
-        # it, hollow when the map does not lead to it yet, grey once collected
+        # Checks are squares, under the door dots: green to find, red when the player's items do not get it,
+        # hollow when the map does not lead to it yet, grey once collected
         half = CHECK_SIZE / 2
         for check in self.checks:
             style = CHECK_COLLECTED if check.name in page.top.collected else CHECK_STYLES[page.model.check_state(check.name)]

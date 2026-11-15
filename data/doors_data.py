@@ -3,7 +3,23 @@ from collections import defaultdict
 from typing import List, Tuple, Dict, TypedDict
 
 from data.worlds_data import World
-from gui.Doors.randomizer import literals, parse
+from gui.Doors.randomizer import parse
+
+# The randomizer's tables of what leads where. Each is a list of (door or passage, the door or region it leads to).
+# After gui.Doors.randomizer, which makes the randomizer importable
+from ALttPDoorRandomizer.DoorShuffle import (  # noqa: E402, F401
+    default_door_connections,
+    default_one_way_connections,
+    dungeon_warps,
+    falldown_pits,
+    interior_doors,
+    ladders,
+    logical_connections,
+    open_edges,
+    spiral_staircases,
+    straight_staircases,
+    vanilla_logical_connections,
+)
 
 
 class DoorEntry(TypedDict):
@@ -41,34 +57,6 @@ door_fix_map = {
     "Ice Cross Top Push Block Bottom": "Ice Cross Bottom SE",
     "Ice Cross Top Push Block Right": "Ice Cross Right ES",
 }
-
-# The randomizer's tables of what leads where. Each is a list of (door or passage, the door or region it leads to)
-(
-    logical_connections,
-    vanilla_logical_connections,
-    spiral_staircases,
-    straight_staircases,
-    open_edges,
-    falldown_pits,
-    dungeon_warps,
-    ladders,
-    interior_doors,
-    default_door_connections,
-    default_one_way_connections,
-) = literals(
-    "DoorShuffle.py",
-    "logical_connections",
-    "vanilla_logical_connections",
-    "spiral_staircases",
-    "straight_staircases",
-    "open_edges",
-    "falldown_pits",
-    "dungeon_warps",
-    "ladders",
-    "interior_doors",
-    "default_door_connections",
-    "default_one_way_connections",
-)
 
 # Doors only the tracker has, where a drop into a dungeon from outside lands: region -> door
 DROP_ENTRANCES = {

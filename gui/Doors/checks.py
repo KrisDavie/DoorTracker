@@ -17,12 +17,12 @@ bit is listed for those as well, in case a version of the rom sets that instead.
 from typing import TypedDict
 
 from data.new_location_data import underworld_items
-from gui.Doors.randomizer import literals
 from gui.Doors.rooms import SUPERTILES
 
-# After gui.Doors.randomizer, which makes these importable
+# After gui.Doors.rooms, which goes by gui.Doors.randomizer: that makes these importable
 from ALttPDoorRandomizer import PotShuffle  # noqa: E402
 from ALttPDoorRandomizer.BaseClasses import PotItem  # noqa: E402
+from ALttPDoorRandomizer.MultiClient import location_table_boss, location_table_uw  # noqa: E402
 from ALttPDoorRandomizer.source.rom.DataTables import get_uw_enemy_table  # noqa: E402
 
 KINDS = ("chest", "prize")  # what is placed by data/new_location_data.py
@@ -64,9 +64,9 @@ def key_drops() -> dict[str, Check]:
 
 
 def read() -> dict[str, Check]:
-    # Check -> (room, mask in the room's save data), and dungeon prize -> mask in the prizes word. From the
-    # randomizer's client, read as text as it needs packages the tracker does not have
-    in_rooms, prizes = literals("MultiClient.py", "location_table_uw", "location_table_boss")
+    # From the randomizer's client: check -> (room, mask in the room's save data), and dungeon prize -> mask in
+    # the prizes word
+    in_rooms, prizes = location_table_uw, location_table_boss
     found = key_drops()
     for name, check in found.items():
         if name in in_rooms:

@@ -13,7 +13,9 @@ import sni.sni_pb2 as sni_pb2
 import sni.sni_pb2_grpc as sni
 from data.doors_data import dark_tiles, door_coordinates, doors_data
 from gui.Doors.logic import DUNGEON_NUMBERS, ITEMS_AT, ITEMS_LENGTH
-from gui.Doors.randomizer import numbers
+
+# After gui.Doors.logic, which makes the randomizer importable
+from ALttPDoorRandomizer.MultiClient import ITEM_SRAM_SIZE, POT_ITEMS_SRAM_START, SAVEDATA_START, SPRITE_ITEMS_SRAM_START  # noqa: E402
 
 # The "dungeon" byte, as it is read, -> the tracker's name for the dungeon
 dungeon_ids = {f"{number:02x}": tab for number, tab in DUNGEON_NUMBERS.items()}
@@ -39,14 +41,12 @@ mem_addresses = {
 
 # Read less often than the rest, as it is 1.9 KB together: the flags that mark checks as collected (two bytes
 # per room in each table, and one word for the dungeon prizes) and the player's items
-CLIENT = numbers("MultiClient.py")  # the addresses the randomizer's client names
-SAVE_DATA = CLIENT["SAVEDATA_START"]
 check_addresses = {
-    "room": (SAVE_DATA, 0x250),
-    "pot": (CLIENT["POT_ITEMS_SRAM_START"], CLIENT["ITEM_SRAM_SIZE"]),  # the randomizer's table of pots emptied
-    "enemy": (CLIENT["SPRITE_ITEMS_SRAM_START"], CLIENT["ITEM_SRAM_SIZE"]),  # and of enemy drops taken
-    "prize": (SAVE_DATA + 0x472, 0x2),
-    "items": (SAVE_DATA + ITEMS_AT, ITEMS_LENGTH),
+    "room": (SAVEDATA_START, 0x250),
+    "pot": (POT_ITEMS_SRAM_START, ITEM_SRAM_SIZE),  # the randomizer's table of pots emptied
+    "enemy": (SPRITE_ITEMS_SRAM_START, ITEM_SRAM_SIZE),  # and of enemy drops taken
+    "prize": (SAVEDATA_START + 0x472, 0x2),
+    "items": (SAVEDATA_START + ITEMS_AT, ITEMS_LENGTH),
     "dungeon": mem_addresses["dungeon"],  # which dungeon's keys the game is counting apart
 }
 READINGS_PER_CHECK_READ = 10

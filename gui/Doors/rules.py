@@ -12,7 +12,7 @@ met, so a rule here never asks for more than the randomizer does.
 
 import ast
 
-from data.doors_data import regions_to_doors
+from data.doors_data import logical_connections, regions_to_doors
 from gui.Doors.checks import checks
 from gui.Doors.logic import READABLE, Rule
 from gui.Doors.randomizer import parse
@@ -153,7 +153,7 @@ def read() -> tuple[dict[str, Rule], dict[str, Rule], dict[str, str], dict[str, 
             where.update(dict.fromkeys(things[0], region))
             exit_region.update(dict.fromkeys(things[1] if len(things) > 1 else [], region))
     # A location in a region the tracker does not have is put in the region the randomizer leads into it from
-    leads = {region: exit_region[name] for name, region in assigned(parse("DoorShuffle.py"), "logical_connections") if name in exit_region}
+    leads = {region: exit_region[name] for name, region in logical_connections if name in exit_region}
 
     def region_of(location: str) -> str | None:
         """The tracker's region for a location; None when it is not in a dungeon the tracker knows."""
