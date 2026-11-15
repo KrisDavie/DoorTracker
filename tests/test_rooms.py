@@ -2,48 +2,27 @@
 
 import ast
 
-import data.doors_data as doors_data
-from gui.Doors.randomizer import literals, parse
+from data.doors_data import door_coordinates
+from gui.Doors.randomizer import parse
 from gui.Doors.rooms import DOORS, ROOM_LINKS, ROOM_PORTS, SPLIT, SUPERTILES, WHOLE
 from gui.Doors.rules import called
 
-# The randomizer's tables that data/doors_data.py holds a copy of
-COPIED = (
-    "logical_connections",
-    "vanilla_logical_connections",
-    "spiral_staircases",
-    "straight_staircases",
-    "open_edges",
-    "falldown_pits",
-    "dungeon_warps",
-    "ladders",
-    "interior_doors",
-    "default_door_connections",
-    "default_one_way_connections",
-)
+# The kinds of door in the randomizer's Doors.py that are walked through, which the tracker draws
+WALKED = {"Nrml", "Intr", "Sprl", "StrS", "Lddr", "Open"}
 
 
-def test_the_copied_door_tables_are_the_randomizers():
-    for name in COPIED:
-        (theirs,) = literals("DoorShuffle.py", name)
-        assert sorted(map(tuple, getattr(doors_data, name))) == sorted(map(tuple, theirs)), name
-
-
-def test_the_regions_are_the_randomizers_but_for_what_the_tracker_adds():
-    theirs = {}
-    for node in ast.walk(parse("Regions.py")):
-        if isinstance(node, ast.Call) and called(node) == "create_dungeon_region":
-            theirs[ast.literal_eval(node.args[1])] = (ast.literal_eval(node.args[4]) or []) if len(node.args) > 4 else []
-    assert set(doors_data.regions_to_doors) == set(theirs)
-
-    def own(name):
-        """A door the tracker puts where a drop lands."""
-        return "Drop Entrance" in name or name == "Sewer Drop"
-
-    for region, exits in theirs.items():
-        # The tracker has a block pushed across the ice cross leave by the door it slides out of
-        expected = {doors_data.door_fix_map.get(name, name) for name in exits if not own(name)}
-        assert {name for name in doors_data.regions_to_doors[region] if not own(name)} == expected, region
+def test_the_doors_placed_by_hand_are_the_randomizers():
+    kinds = {}
+    for node in ast.walk(parse("Doors.py")):
+        if isinstance(node, ast.Call) and called(node) == "create_door" and len(node.args) == 3:
+            kind = node.args[2]
+            assert isinstance(kind, ast.Name)
+            kinds[ast.literal_eval(node.args[1])] = kind.id
+    placed = {entry["name"] for entries in door_coordinates.values() for entry in entries}
+    # A door the randomizer renames or adds has no place until data/doors_data.py gives it one
+    assert {name for name, kind in kinds.items() if kind in WALKED} <= placed
+    # The places for doors the randomizer lacks are the tracker's own, where a drop lands
+    assert all("Drop Entrance" in name or name == "Sewer Drop" for name in placed - set(kinds))
 
 
 def test_every_door_is_in_exactly_one_part_of_its_supertile():
