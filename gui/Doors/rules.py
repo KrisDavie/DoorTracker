@@ -12,10 +12,13 @@ met, so a rule here never asks for more than the randomizer does.
 
 import ast
 
-from data.doors_data import logical_connections, regions_to_doors
+from data.doors_data import regions_to_doors
 from gui.Doors.checks import checks
 from gui.Doors.logic import READABLE, Rule
-from gui.Doors.randomizer import parse
+from gui.Doors.randomizer import dungeon_regions, parse
+
+# After gui.Doors.randomizer, which makes the randomizer importable: location -> the event it gives
+from ALttPDoorRandomizer.Regions import location_events  # noqa: E402
 
 # The functions in Rules.py whose rules do not depend on the seed's settings
 FUNCTIONS = ("global_rules", "bomb_rules")
@@ -133,47 +136,23 @@ def read_rules(reader: Reader) -> dict[tuple[str, str], Rule]:
     return found
 
 
-def assigned(module: ast.Module, name: str):
-    """A list or dict assigned to a name at the top of one of the randomizer's files."""
-    for node in module.body:
-        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name:
-            return ast.literal_eval(node.value)
-    raise LookupError(name)
-
-
 def read() -> tuple[dict[str, Rule], dict[str, Rule], dict[str, str], dict[str, tuple[str, Rule]]]:
     """(passage rules, check rules, each check's region, events)."""
-    module = parse("Regions.py")
-    # Location -> the randomizer's region, and exit -> its region, from the dungeon regions
-    where, exit_region = {}, {}
-    for node in ast.walk(module):
-        if called(node) == "create_dungeon_region":
-            assert isinstance(node, ast.Call)
-            region, things = ast.literal_eval(node.args[1]), [ast.literal_eval(a) or [] for a in node.args[3:5]]
-            where.update(dict.fromkeys(things[0], region))
-            exit_region.update(dict.fromkeys(things[1] if len(things) > 1 else [], region))
-    # A location in a region the tracker does not have is put in the region the randomizer leads into it from
-    leads = {region: exit_region[name] for name, region in logical_connections if name in exit_region}
-
-    def region_of(location: str) -> str | None:
-        """The tracker's region for a location; None when it is not in a dungeon the tracker knows."""
-        region = where.get(location)
-        while region is not None and region not in regions_to_doors:
-            region = leads.get(region)
-        return region
+    # Each location in a dungeon -> its region
+    where = {location.name: region.name for region in dungeon_regions() for location in region.locations}
 
     # The randomizer gives an "item" for doing something somewhere, like pulling the lever that drains the swamp.
     # The tracker cannot read those, but for the ones done in a dungeon it can work out whether the place can be
     # reached. Event -> where it is done
-    gives = assigned(module, "location_events")
-    done_at = {event: location for location, event in gives.items() if list(gives.values()).count(event) == 1 and region_of(location)}
+    gives = location_events
+    done_at = {event: location for location, event in gives.items() if list(gives.values()).count(event) == 1 and location in where}
 
     found = read_rules(Reader(set(done_at)))
     walked = {name for names in regions_to_doors.values() for name in names}
     passages = {name: rule for (kind, name), rule in found.items() if kind == "get_entrance" and name in walked and rule is not True}
     of_checks = {name: rule for (kind, name), rule in found.items() if kind == "get_location" and name in checks and rule is not True}
-    regions = {name: str(region_of(name)) for name in checks}
-    happen = {event: (str(region_of(location)), found.get(("get_location", location), True)) for event, location in done_at.items()}
+    regions = {name: where[name] for name in checks}
+    happen = {event: (where[location], found.get(("get_location", location), True)) for event, location in done_at.items()}
     return passages, of_checks, regions, happen
 
 

@@ -47,6 +47,34 @@ def literals(name: str, *wanted: str) -> list:
     return found
 
 
+class _World:
+    """As much of the randomizer's world as building its regions asks of one."""
+
+    def __init__(self) -> None:
+        self.mode = {1: "open"}  # the regions come out the same in standard mode
+        self.regions: list = []
+
+    def initialize_regions(self) -> None:
+        pass
+
+    def get_region(self, name: str, player: int):
+        return next(region for region in self.regions if region.name == name)
+
+
+@cache
+def dungeon_regions() -> tuple:
+    """The randomizer's dungeon regions, built by its own code. Each has a name, and its exits and locations
+    have names."""
+    from ALttPDoorRandomizer import Regions
+    from ALttPDoorRandomizer.BaseClasses import RegionType
+
+    world = _World()
+    # The first makes a region in a dungeon too: where the drop into the sewers lands
+    Regions.create_regions(world, 1)
+    Regions.create_dungeon_regions(world, 1)
+    return tuple(region for region in world.regions if region.type == RegionType.Dungeon)
+
+
 def dungeon_name(tab: str) -> str:
     """The randomizer's name for a dungeon, from the tracker's name for its tab."""
     return "Agahnims Tower" if tab == "Castle_Tower" else tab.replace("_", " ")

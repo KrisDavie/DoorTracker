@@ -1,9 +1,8 @@
-import ast
 from collections import defaultdict
 from typing import List, Tuple, Dict, TypedDict
 
 from data.worlds_data import World
-from gui.Doors.randomizer import parse
+from gui.Doors.randomizer import dungeon_regions
 
 # The randomizer's tables of what leads where. Each is a list of (door or passage, the door or region it leads to).
 # After gui.Doors.randomizer, which makes the randomizer importable
@@ -69,12 +68,8 @@ DROP_ENTRANCES = {
 
 
 def _read_regions() -> dict[str, list[str]]:
-    """Each dungeon region's ways out, from the randomizer's Regions.py, and the tracker's own doors."""
-    regions = {}
-    for node in ast.walk(parse("Regions.py")):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "create_dungeon_region":
-            ways_out = (ast.literal_eval(node.args[4]) or []) if len(node.args) > 4 else []
-            regions[ast.literal_eval(node.args[1])] = [door_fix_map.get(name, name) for name in ways_out]
+    """Each of the randomizer's dungeon regions' ways out, and the tracker's own doors."""
+    regions = {region.name: [door_fix_map.get(way.name, way.name) for way in region.exits] for region in dungeon_regions()}
     for region, door in DROP_ENTRANCES.items():
         regions[region].append(door)
     return regions
