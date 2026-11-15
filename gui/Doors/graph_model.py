@@ -135,7 +135,9 @@ class CheckState(Enum):
 def regions_at(name: str) -> list[str]:
     """The regions going through a door puts you in. A region's own name gives that region."""
     found = doors_to_regions.get(name)
-    if found is None:
+    # The randomizer names one passage after the region it leads to. Nothing arrives at a passage, so that name
+    # is the region
+    if found is None or (name in regions_to_doors and name not in DOORS):
         return [name]
     regions = list(found) if isinstance(found, list) else [found]
     if name in MANUAL_REGIONS_ADDED:
