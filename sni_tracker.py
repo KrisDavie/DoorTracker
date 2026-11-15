@@ -335,8 +335,9 @@ async def _sni_session(
                 continue
 
             if data["falling"] != "00" and data["falling"] != "01":
-                if stay.eg_tile is None:
-                    # Falling before any room of this dungeon was read: from outside, not down a pit inside it
+                if stay.eg_tile is None and not stay.resumed:
+                    # Falling before any room of this dungeon was read: from outside, not down a pit inside it.
+                    # A stay the tracker joined part way through says nothing either way
                     stay.fell_in = True
                 stay.previous_tile = stay.current_tile = None
                 game.was_falling = True
@@ -383,10 +384,10 @@ async def _sni_session(
             ):
                 stay.previous_tile = eg_tile
                 stay.current_tile = eg_tile
+                if stay.fell_in:
+                    stay.fell_in = False
+                    dp_content.auto_dropped_in(eg_tile, current_x, current_y)
                 if game.was_falling or game.was_dead or stay.resumed:
-                    if stay.fell_in:
-                        stay.fell_in = False
-                        dp_content.auto_dropped_in(eg_tile, current_x, current_y)
                     game.was_falling = False
                     game.was_dead = False
                     stay.resumed = False

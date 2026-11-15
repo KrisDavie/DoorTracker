@@ -35,6 +35,7 @@ from gui.Doors.rooms import (
     DOORS,
     Box,
     EdgeKind,
+    HOLES,
     Node,
     INTERIOR_DOORS,
     MANUAL_DROPS,
@@ -825,14 +826,21 @@ class GraphModel:
         None for no rules.
         """
         leads = defaultdict(list)  # door or passage -> the doors and regions it comes out at
+        # Where a hole lands in the original game is only where it lands here if the option says so
+        moved = set() if self.experimental_flags.get("vanilla_drops") else HOLES
         for a, b in DEFAULT_DOORS.items():
-            leads[a].append(b)
+            if a not in moved:
+                leads[a].append(b)
         for a, b in interior_doors:
             leads[b].append(a)
         for link in self.door_links:
-            leads[link.door].append(link.linked_door)
+            ways = [(link.door, link.linked_door)]
             if not self.decoupled():
-                leads[link.linked_door].append(link.door)
+                ways.append((link.linked_door, link.door))
+            for a, b in ways:
+                # A fall is tracked as a link too, and nothing comes up out of a hole
+                if b not in ONE_WAY:
+                    leads[a].append(b)
 
         reached = set()
         queue = deque()

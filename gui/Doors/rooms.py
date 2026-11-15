@@ -135,6 +135,8 @@ for _door_set in [logical_connections, interior_doors, falldown_pits, dungeon_wa
 DEFAULT_DOORS.update(MANUAL_DROPS)
 # Keys of DEFAULT_DOORS that cannot be gone back through: holes, warps and drops
 ONE_WAY = {name for name, _target in list(falldown_pits) + list(dungeon_warps)} | set(MANUAL_DROPS)
+# The holes among them. A seed can send a hole somewhere else; a warp always goes where it goes
+HOLES = {name for name, _target in falldown_pits} | set(MANUAL_DROPS)
 
 # Rooms with no doors, by region
 DOORLESS_ROOMS = {

@@ -127,6 +127,29 @@ def test_a_check_the_map_does_not_lead_to_that_takes_an_item_not_held_is_both():
     assert model.check_state(name) is CheckState.UNROUTED_BLOCKED
 
 
+def test_a_fall_is_not_a_way_back_up():
+    # The chest is in the room with the hole; the entrance is in the room the hole lands in
+    name = "Ice Palace - Freezor Chest"
+    for fall in (("Ice Freezors Hole", "Ice Big Chest View Drop Entrance"), ("Ice Big Chest View Drop Entrance", "Ice Freezors Hole")):
+        model = new_model("Ice_Palace")
+        model.add_tile(checks[name]["tile"], has_been_lit=True)
+        model.add_lobby_door("Ice Big Chest View ES", "Ice_Palace")
+        # A fall the tracker saw is kept as a link, either way round
+        model.add_link(*fall)
+        assert model.check_state(name) is CheckState.UNROUTED, fall
+
+
+def test_a_hole_leads_where_it_did_only_when_drops_are_not_shuffled():
+    # The chest is where the pit room's freefall lands in the original game
+    name = "Palace of Darkness - Stalfos Basement"
+    for as_they_were, state in ((True, CheckState.OPEN), (False, CheckState.UNROUTED)):
+        model = new_model("Palace_of_Darkness", vanilla_drops=as_they_were)
+        model.add_tile(checks[name]["tile"], has_been_lit=True)
+        model.add_lobby_door("PoD Pit Room NE", "Palace_of_Darkness")
+        model.update()
+        assert model.check_state(name) is state, as_they_were
+
+
 def test_a_drop_is_no_way_in_until_the_player_has_used_it_or_says_so():
     # The secret room's chests, in the room the sewer drop lands in, with no other way to it on the map
     name = "Sewers - Secret Room - Left"
