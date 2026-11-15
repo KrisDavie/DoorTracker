@@ -1,9 +1,9 @@
 """The door randomizer's rules: the items it takes to go through a door or passage, or to collect a check.
 
 Read when the tracker starts, out of the randomizer (gui/Doors/randomizer.py): Rules.py sets the rules, and
-BaseClasses.py defines the tests they use, like can_lift_rocks. The files are read as text and not run. The randomizer only has
-rules once it has generated a whole seed, and by then one that holds in every seed looks the same as one that
-depends on that seed's settings.
+CollectionState in BaseClasses.py defines the tests they use, like can_lift_rocks. They are read as they are
+written and not run. The randomizer only has rules once it has generated a whole seed, and by then one that holds
+in every seed looks the same as one that depends on that seed's settings.
 
 Only what holds in every seed is kept. A rule set under an "if" depends on the seed, and so do key doors, crystal
 barriers, bosses and dark rooms; and the tracker cannot read events like "Open Floodgate". All of those count as
@@ -15,13 +15,16 @@ import ast
 from data.doors_data import regions_to_doors
 from gui.Doors.checks import checks
 from gui.Doors.logic import READABLE, Rule
-from gui.Doors.randomizer import dungeon_regions, parse
+from gui.Doors.randomizer import dungeon_regions, syntax
 
-# After gui.Doors.randomizer, which makes the randomizer importable: location -> the event it gives
-from ALttPDoorRandomizer.Regions import location_events  # noqa: E402
+# After gui.Doors.randomizer, which makes the randomizer importable
+from ALttPDoorRandomizer import Rules  # noqa: E402
+from ALttPDoorRandomizer.BaseClasses import CollectionState  # noqa: E402
+from ALttPDoorRandomizer.Regions import location_events  # noqa: E402  location -> the event it gives
 
-# The functions in Rules.py whose rules do not depend on the seed's settings
-FUNCTIONS = ("global_rules", "bomb_rules")
+# The randomizer's functions whose rules do not depend on the seed's settings, in the order it has them: a later
+# rule can add to an earlier one
+FUNCTIONS = (Rules.global_rules, Rules.bomb_rules)
 # Tests whose definition asks about the seed's settings: the item that stands for them
 TESTS_BY_HAND = {
     "can_use_bombs": "Bombs",  # needs the bomb bag where there is one: read as room for bombs
@@ -63,10 +66,8 @@ class Reader:
     def __init__(self, events: set[str]) -> None:
         """events: what the randomizer counts as items that the tracker works out for itself; see read()."""
         self.events = events
-        self.tests = {}  # the tests of CollectionState, by name
-        for node in ast.walk(parse("BaseClasses.py")):
-            if isinstance(node, ast.ClassDef) and node.name == "CollectionState":
-                self.tests = {f.name: f for f in node.body if isinstance(f, ast.FunctionDef)}
+        # The tests of CollectionState, by name
+        self.tests = {f.name: f for f in syntax(CollectionState).body if isinstance(f, ast.FunctionDef)}
 
     def test(self, name: str) -> Rule:
         """A test as a rule: its body, when that is one expression."""
@@ -129,10 +130,9 @@ def read_rules(reader: Reader) -> dict[tuple[str, str], Rule]:
                 rule = reader.rule(node.value.args[1])
                 found[key] = rule if called(node.value) == "set_rule" else combine("all", [found.get(key, True), rule])
 
-    for function in parse("Rules.py").body:
-        if isinstance(function, ast.FunctionDef) and function.name in FUNCTIONS:
-            for node in function.body:
-                statement(node, {})
+    for function in FUNCTIONS:
+        for node in syntax(function).body:
+            statement(node, {})
     return found
 
 

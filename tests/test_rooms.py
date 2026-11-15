@@ -3,17 +3,19 @@
 import ast
 
 from data.doors_data import door_coordinates
-from gui.Doors.randomizer import parse
+from gui.Doors.randomizer import syntax
 from gui.Doors.rooms import DOORS, ROOM_LINKS, ROOM_PORTS, SPLIT, SUPERTILES, WHOLE
 from gui.Doors.rules import called
 
-# The kinds of door in the randomizer's Doors.py that are walked through, which the tracker draws
+from ALttPDoorRandomizer import Doors  # noqa: E402  after gui.Doors.randomizer, which makes it importable
+
+# The kinds of door the randomizer makes that are walked through, which the tracker draws
 WALKED = {"Nrml", "Intr", "Sprl", "StrS", "Lddr", "Open"}
 
 
 def test_the_doors_placed_by_hand_are_the_randomizers():
     kinds = {}
-    for node in ast.walk(parse("Doors.py")):
+    for node in ast.walk(syntax(Doors.create_doors)):
         if isinstance(node, ast.Call) and called(node) == "create_door" and len(node.args) == 3:
             kind = node.args[2]
             assert isinstance(kind, ast.Name)

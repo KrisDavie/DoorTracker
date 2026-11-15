@@ -4,7 +4,9 @@ Import this before importing anything from ALttPDoorRandomizer.
 """
 
 import ast
+import inspect
 import sys
+import textwrap
 import types
 from functools import cache
 from pathlib import Path
@@ -23,26 +25,25 @@ for _name in ("aioconsole", "colorama", "websockets"):
     sys.modules.setdefault(_name, types.ModuleType(_name))
 
 
-@cache
-def parse(name: str) -> ast.Module:
-    """One of its files, read as text and not run."""
-    return ast.parse((FOLDER / name).read_text(encoding="utf-8"))
+def syntax(thing: types.FunctionType | type) -> ast.FunctionDef | ast.ClassDef:
+    """One of its functions or classes as written: its syntax tree, for what running it would not give."""
+    (definition,) = ast.parse(textwrap.dedent(inspect.getsource(thing))).body
+    assert isinstance(definition, ast.FunctionDef | ast.ClassDef)
+    return definition
 
 
-def literals(name: str, *wanted: str) -> list:
-    """The lists and dicts one of its files assigns to these names: at the top of the file, or else the one
-    place inside a function."""
-    module = parse(name)
+def tables_in(function: types.FunctionType, *wanted: str) -> list:
+    """The lists and dicts one of its functions assigns to these names. They are the function's own, made and
+    dropped each time it runs, so they are read from how it is written."""
     found = []
     for target in wanted:
-
-        def assigns(node: ast.AST) -> bool:
-            return isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id == target
-
-        places = [node for node in module.body if assigns(node)] or [node for node in ast.walk(module) if assigns(node)]
+        places = [
+            node
+            for node in ast.walk(syntax(function))
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id == target
+        ]
         if len(places) != 1:
-            raise LookupError(f"{name} assigns {target} in {len(places)} places")
-        assert isinstance(places[0], ast.Assign)
+            raise LookupError(f"{function.__qualname__} assigns {target} in {len(places)} places")
         found.append(ast.literal_eval(places[0].value))
     return found
 

@@ -1,12 +1,13 @@
 """What the player holds, and whether that meets one of the randomizer's rules (gui/Doors/rules.py)."""
 
 from data.worlds_data import dungeon_worlds
-from gui.Doors.randomizer import dungeon_name, literals
+from gui.Doors.randomizer import dungeon_name, tables_in
 
 # After gui.Doors.randomizer, which makes the randomizer importable. The randomizer's name for a dungeon -> a
 # tuple that ends in the game's number for the dungeon, -> its big key, and -> its small key
 from ALttPDoorRandomizer.DoorShuffle import compass_data  # noqa: E402
 from ALttPDoorRandomizer.Dungeons import dungeon_bigs, dungeon_keys  # noqa: E402
+from ALttPDoorRandomizer.InitialSram import InitialSram  # noqa: E402
 
 # An item's name, ("all", rule, ...), ("any", rule, ...), or a bool
 Rule = bool | str | tuple
@@ -15,10 +16,10 @@ Rule = bool | str | tuple
 ITEMS_AT = 0x340
 ITEMS_LENGTH = 0x4F
 
-# What the randomizer's InitialSram.py gives a starting item by: item -> (address in save data, value) for an item
-# with a slot of its own, item -> (address, bit) for the big keys among others, and small key -> the addresses
-# its count is kept at
-_SLOTS, _FLAGS, _COUNTS = literals("InitialSram.py", "set_table", "or_table", "keys")
+# What the randomizer gives a starting item by: item -> (address in save data, value) for an item with a slot of
+# its own, item -> (address, bit) for the big keys among others, and small key -> the addresses its count is kept
+# at
+_SLOTS, _FLAGS, _COUNTS = tables_in(InitialSram.set_starting_equipment, "set_table", "or_table", "keys")
 # The tracker's names for the dungeons
 DUNGEONS = [tab for tab in dungeon_worlds if dungeon_name(tab) in dungeon_bigs]
 
