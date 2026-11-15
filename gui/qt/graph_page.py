@@ -1309,7 +1309,8 @@ class GraphPage(QWidget):
                 if edge.kind in (EdgeKind.WARP, EdgeKind.HOLE):
                     # The far end is a port, not a door: name the room it lands in
                     text = f"{edge.a}  →  {model.rooms.title(model.rooms.node(edge.b))}"
-                text += "   (warp)" if edge.kind is EdgeKind.WARP else "   (vanilla drop, assumed)"
+                if edge.kind is EdgeKind.WARP:
+                    text += "   (warp)"
             focus = self._focus
         elif hit.node is not None:
             node = hit.node

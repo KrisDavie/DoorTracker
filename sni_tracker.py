@@ -12,24 +12,11 @@ import grpc.aio
 import sni.sni_pb2 as sni_pb2
 import sni.sni_pb2_grpc as sni
 from data.doors_data import dark_tiles, door_coordinates, doors_data
-from gui.Doors.logic import ITEMS_AT, ITEMS_LENGTH
+from gui.Doors.logic import DUNGEON_NUMBERS, ITEMS_AT, ITEMS_LENGTH
+from gui.Doors.randomizer import numbers
 
-dungeon_ids = {
-    "00": "Hyrule_Castle",
-    "02": "Hyrule_Castle",
-    "04": "Eastern_Palace",
-    "06": "Desert_Palace",
-    "14": "Tower_of_Hera",
-    "08": "Castle_Tower",
-    "0c": "Palace_of_Darkness",
-    "0a": "Swamp_Palace",
-    "10": "Skull_Woods",
-    "16": "Thieves_Town",
-    "12": "Ice_Palace",
-    "0e": "Misery_Mire",
-    "18": "Turtle_Rock",
-    "1a": "Ganons_Tower",
-}
+# The "dungeon" byte, as it is read, -> the tracker's name for the dungeon
+dungeon_ids = {f"{number:02x}": tab for number, tab in DUNGEON_NUMBERS.items()}
 
 mem_addresses = {
     "race": (0x180213, 0x1),
@@ -52,11 +39,12 @@ mem_addresses = {
 
 # Read less often than the rest, as it is 1.9 KB together: the flags that mark checks as collected (two bytes
 # per room in each table, and one word for the dungeon prizes) and the player's items
-SAVE_DATA = 0xF5F000
+CLIENT = numbers("MultiClient.py")  # the addresses the randomizer's client names
+SAVE_DATA = CLIENT["SAVEDATA_START"]
 check_addresses = {
     "room": (SAVE_DATA, 0x250),
-    "pot": (0xF66018, 0x250),  # the randomizer's table of pots emptied
-    "enemy": (0xF66268, 0x250),  # and of enemy drops taken
+    "pot": (CLIENT["POT_ITEMS_SRAM_START"], CLIENT["ITEM_SRAM_SIZE"]),  # the randomizer's table of pots emptied
+    "enemy": (CLIENT["SPRITE_ITEMS_SRAM_START"], CLIENT["ITEM_SRAM_SIZE"]),  # and of enemy drops taken
     "prize": (SAVE_DATA + 0x472, 0x2),
     "items": (SAVE_DATA + ITEMS_AT, ITEMS_LENGTH),
     "dungeon": mem_addresses["dungeon"],  # which dungeon's keys the game is counting apart

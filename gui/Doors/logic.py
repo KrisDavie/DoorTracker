@@ -1,5 +1,8 @@
 """What the player holds, and whether that meets one of the randomizer's rules (gui/Doors/rules.py)."""
 
+from data.worlds_data import dungeon_worlds
+from gui.Doors.randomizer import dungeon_name, literals
+
 # An item's name, ("all", rule, ...), ("any", rule, ...), or a bool
 Rule = bool | str | tuple
 
@@ -7,28 +10,25 @@ Rule = bool | str | tuple
 ITEMS_AT = 0x340
 ITEMS_LENGTH = 0x4F
 
-# item -> (address in save data, least value that means it is held). From the randomizer's InitialSram.py
+# What the randomizer's InitialSram.py gives a starting item by: item -> (address in save data, value) for an item
+# with a slot of its own, item -> (address, bit) for the big keys among others, and small key -> the addresses
+# its count is kept at
+_SLOTS, _FLAGS, _COUNTS = literals("InitialSram.py", "set_table", "or_table", "keys")
+# The randomizer's name for a dungeon -> its small key and its big key, and -> a tuple that ends in the game's
+# number for the dungeon
+_SMALL_KEYS, _BIG_KEYS = literals("Dungeons.py", "dungeon_keys", "dungeon_bigs")
+(_COMPASSES,) = literals("DoorShuffle.py", "compass_data")
+# The tracker's names for the dungeons
+DUNGEONS = [tab for tab in dungeon_worlds if dungeon_name(tab) in _BIG_KEYS]
+
+# item -> (address, least value that means it is held). The ones listed here InitialSram.py sets by other means
 AT_LEAST = {
+    **_SLOTS,
     "Bow": (0x340, 1),
-    "Hookshot": (0x342, 1),
-    "Fire Rod": (0x345, 1),
-    "Ice Rod": (0x346, 1),
-    "Bombos": (0x347, 1),
-    "Ether": (0x348, 1),
-    "Quake": (0x349, 1),
-    "Lamp": (0x34A, 1),
-    "Hammer": (0x34B, 1),
-    "Bug Catching Net": (0x34D, 1),
-    "Book of Mudora": (0x34E, 1),
-    "Cane of Somaria": (0x350, 1),
-    "Cane of Byrna": (0x351, 1),
-    "Cape": (0x352, 1),
-    "Magic Mirror": (0x353, 2),  # 1 is the scroll that only works in dungeons
     "Power Glove": (0x354, 1),
     "Titans Mitts": (0x354, 2),
     "Pegasus Boots": (0x355, 1),
     "Flippers": (0x356, 1),
-    "Moon Pearl": (0x357, 1),
     "Fighter Sword": (0x359, 1),
     "Master Sword": (0x359, 2),
     "Tempered Sword": (0x359, 3),
@@ -50,53 +50,13 @@ BITS = {
     "Magic Powder": (0x38C, 0x10),
     "Shovel": (0x38C, 0x04),
     "Ocarina": (0x38C, 0x03),  # working or not
-    "Big Key (Escape)": (0x367, 0xC0),
-    "Big Key (Eastern Palace)": (0x367, 0x20),
-    "Big Key (Desert Palace)": (0x367, 0x10),
-    "Big Key (Tower of Hera)": (0x366, 0x20),
-    "Big Key (Agahnims Tower)": (0x367, 0x08),
-    "Big Key (Palace of Darkness)": (0x367, 0x02),
-    "Big Key (Swamp Palace)": (0x367, 0x04),
-    "Big Key (Skull Woods)": (0x366, 0x80),
-    "Big Key (Thieves Town)": (0x366, 0x10),
-    "Big Key (Ice Palace)": (0x366, 0x40),
-    "Big Key (Misery Mire)": (0x367, 0x01),
-    "Big Key (Turtle Rock)": (0x366, 0x08),
-    "Big Key (Ganons Tower)": (0x366, 0x04),
+    **{key: _FLAGS[key] for key in _BIG_KEYS.values()},
 }
-# The tracker's name for a dungeon -> its big key
-BIG_KEYS = {
-    "Hyrule_Castle": "Big Key (Escape)",
-    "Eastern_Palace": "Big Key (Eastern Palace)",
-    "Desert_Palace": "Big Key (Desert Palace)",
-    "Tower_of_Hera": "Big Key (Tower of Hera)",
-    "Castle_Tower": "Big Key (Agahnims Tower)",
-    "Palace_of_Darkness": "Big Key (Palace of Darkness)",
-    "Swamp_Palace": "Big Key (Swamp Palace)",
-    "Skull_Woods": "Big Key (Skull Woods)",
-    "Thieves_Town": "Big Key (Thieves Town)",
-    "Ice_Palace": "Big Key (Ice Palace)",
-    "Misery_Mire": "Big Key (Misery Mire)",
-    "Turtle_Rock": "Big Key (Turtle Rock)",
-    "Ganons_Tower": "Big Key (Ganons Tower)",
-}
-# The tracker's name for a dungeon -> where its small keys are counted. The game numbers the dungeons in twos, in
-# this order from 0, with the sewers and the castle sharing the first count
-SMALL_KEYS_AT = {
-    "Hyrule_Castle": 0x37C,
-    "Eastern_Palace": 0x37E,
-    "Desert_Palace": 0x37F,
-    "Castle_Tower": 0x380,
-    "Swamp_Palace": 0x381,
-    "Palace_of_Darkness": 0x382,
-    "Misery_Mire": 0x383,
-    "Skull_Woods": 0x384,
-    "Ice_Palace": 0x385,
-    "Tower_of_Hera": 0x386,
-    "Thieves_Town": 0x387,
-    "Turtle_Rock": 0x388,
-    "Ganons_Tower": 0x389,
-}
+# The tracker's name for a dungeon -> its big key, and -> where its small keys are counted
+BIG_KEYS = {tab: _BIG_KEYS[dungeon_name(tab)] for tab in DUNGEONS}
+SMALL_KEYS_AT = {tab: _COUNTS[_SMALL_KEYS[dungeon_name(tab)]][0] for tab in DUNGEONS}
+# The game's number for a dungeon -> the tracker's name for it. The sewers have a number of their own
+DUNGEON_NUMBERS = {0x00: "Hyrule_Castle"} | {_COMPASSES[dungeon_name(tab)][4]: tab for tab in DUNGEONS}
 KEYS_HERE_AT = 0x36F  # the small keys for the dungeon the player is in; 0xFF outside
 BOTTLES_AT = range(0x35C, 0x360)  # what is in each of the four bottles; 0 for no bottle
 BOTTLE = "Bottle"
@@ -127,11 +87,8 @@ def small_keys(save: bytes, dungeon: int) -> dict[str, int]:
     """
     keys = {name: save[address - ITEMS_AT] for name, address in SMALL_KEYS_AT.items()}
     here = save[KEYS_HERE_AT - ITEMS_AT]
-    if here != 0xFF:
-        counted_at = 0x37C if dungeon <= 2 else 0x37C + dungeon // 2
-        for name, address in SMALL_KEYS_AT.items():
-            if address == counted_at:
-                keys[name] = here
+    if here != 0xFF and dungeon in DUNGEON_NUMBERS:
+        keys[DUNGEON_NUMBERS[dungeon]] = here
     return keys
 
 
