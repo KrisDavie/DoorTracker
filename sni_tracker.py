@@ -50,8 +50,8 @@ mem_addresses = {
 }
 
 
-# What marks a check as collected: two bytes per room in each table, and one word for the dungeon prizes.
-# With them, the items held. Read less often than the rest, as they are 1.9 KB together
+# Read less often than the rest, as it is 1.9 KB together: the flags that mark checks as collected (two bytes
+# per room in each table, and one word for the dungeon prizes) and the player's items
 SAVE_DATA = 0xF5F000
 check_addresses = {
     "room": (SAVE_DATA, 0x250),
